@@ -1,126 +1,42 @@
-# LumiCreate-Local
+# renderer - 前端应用
 
-一个本地AI视频创作工具，集成文案生成、分镜设计、图片生成、音频生成、视频合成于一体。
+Vue 3 + Vite + Electron 前端应用。
 
-## 项目架构
+更多项目信息请参看根目录的 [README.md](../README.md)
 
-- **前端**：Vue 3 + Vite + Electron
-- **后端**：FastAPI (Python) + ComfyUI (图片生成) + GPT-SoVITS (语音合成)
-- **数据库**：本地 JSON 文件存储
+## 开发设置
 
-## 核心功能
-
-### 📝 文案创建
-- 创建和编辑项目文案
-- 支持Markdown格式
-- 自动保存进度
-
-### 🎞 分镜设计
-- 从文案自动生成分镜提纲
-- 编辑分镜描述、起始帧提示词、结束帧提示词
-- 添加/删除/重排分镜
-- 支持台词管理和编辑
-- 可滚动分镜列表（支持大量分镜）
-
-### 🖼 图片生成
-- 集成 ComfyUI 工作流
-- Master-detail 分割布局
-- 支持多工作流选择，自动保存工作流选择
-- 批量生成（跳过已有图片）、单个分镜生成、单个帧操作
-- 图片预览和管理
-- WebSocket 流式进度更新
-- 生成的图片自动保存和加载
-
-### 🎙 音频生成
-- 基于台词文本生成音频
-- 集成 GPT-SoVITS 声音模型
-- 支持多版本生成
-- 音频试听和管理
-- 可滚动音频列表（支持大量台词）
-
-### 🎬 视频生成  
-- 合并图片、音频、字幕
-- 支持多种分辨率和帧率
-- 预览和导出
-
-## 安装与运行
-
-### 前端设置
 ```sh
-cd renderer
 npm install
-npm run dev      # 开发模式（Vite + HMR）
+npm run dev      # 启动 Vite 开发服务器（带HMR）
 npm run build    # 生产构建
-npx electron .   # 运行 Electron 应用
-```
-
-### 后端设置
-```sh
-cd backend
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-python main.py   # 启动 FastAPI 服务 (http://localhost:18520)
 ```
 
 ## 项目结构
 
-```
-LumiCreate-local/
-├── renderer/              # Vue 3 + Electron 前端
-│   ├── src/
-│   │   ├── views/        # 页面
-│   │   ├── components/   # 组件（tabs/*, common/*）
-│   │   └── assets/       # 样式/资源
-│   └── main.js           # Electron 入口
-├── backend/              # FastAPI 后端
-│   ├── routers/         # API 路由
-│   ├── services/        # ComfyUI/GPT-SoVITS 集成
-│   ├── config.py        # 全局设置
-│   └── main.py          # 应用入口
-└── project.md           # 项目进度跟踪
-```
+- `src/views/` - 页面（HomeView、ProjectView 等）
+- `src/components/` - 可复用组件
+  - `tabs/` - 项目标签页（ManuscriptTab、ScenesTab、ImagesTab、AudioTab、VideoTab）
+  - 通用组件（TitleBar、UnsavedDialog 等）
+- `src/stores/` - Pinia 状态管理
+- `src/router/` - Vue Router 路由配置
+- `src/assets/` - 样式和资源文件
+- `src/style/` - 全局样式（global.css 等）
 
-## 配置
+## 与 Electron 集成
 
-全局设置存储在：`%APPDATA%/LumiCreate-Local/settings.json`
+通过 `window.electronAPI` 访问主进程 API：
+- `windowClose()` - 关闭窗口
+- `windowCloseConfirmed()` - 确认关闭
+- `onMenuSaveProject()` - 菜单保存项目事件
+- `onBeforeClose()` - 窗口关闭前事件
+- 等等...
 
-支持的引擎配置：
-- **文本引擎**：Ollama / LM Studio / Deepseek / OpenAI 兼容
-- **图片引擎**：ComfyUI + 可选工作流选择记忆
-- **音频引擎**：GPT-SoVITS
-- **视频引擎**：ComfyUI + FFmpeg
+## 样式系统
 
-## 最近更新
+使用 CSS 变量主题（在 `style/global.css` 中定义）：
+- `--color-accent` - 强调色
+- `--color-success` - 成功色
+- `--color-error` - 错误色
+- 等等...
 
-- ✅ ImagesTab master-detail 分割布局
-- ✅ 图片持久化保存/加载
-- ✅ WebSocket 二进制帧处理
-- ✅ 分镜/音频列表滚动支持
-- ✅ 项目进度显示更新
-- ✅ 工作流选择自动记忆
-
-## 开发指南
-
-### 热重载
-- 前端：Vite HMR 自动刷新
-- 后端：修改代码后手动重启 `python main.py`
-
-### 文件编码注意事项**（Windows GBK 环境）
-- 不要用 PowerShell `Get-Content`/`Set-Content` 编辑 UTF-8 文件
-- 使用 Python 脚本或 VS Code 编辑器处理中文字符
-
-### 组件生命周期
-- 标签页组件监听 `lumi:save-project` 事件并自动保存数据
-- 所有数据更新应触发 `emit('dirty')` 来标记项目修改
-
-## 常见问题
-
-**Q: 分镜标签过多时会被压缩？**
-A: 已修复 — 卡片现在设置 `flex-shrink: 0` 并支持滚动
-
-**Q: 图片生成后进度仍显示 0%？**
-A: 已修复 — 保存图片时自动更新 `progress.images`
-
-**Q: 每次进入都要重选工作流？**
-A: 已修复 — 选择的工作流自动保存到全局设置
