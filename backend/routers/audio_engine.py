@@ -7,11 +7,16 @@ Endpoints:
   GET  /emotion-refs          — list available emotion reference files
   POST /generate-stream       — SSE: single dialogue
   POST /generate-batch-stream — SSE: batch dialogues
+  POST /stitch-scene          — merge clips for one scene into a single WAV
 """
 
 import asyncio
+import base64
+import io
 import json
 import os
+import struct
+import wave
 from typing import Optional
 
 import httpx
@@ -213,3 +218,64 @@ async def generate_batch_stream(req: BatchGenerateRequest):
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── Stitch ─────────────────────────────────────────────────────────────────────
+
+class StitchClip(BaseModel):
+    data: str           # base64 WAV
+    pre_silence_ms:  int = 0
+    post_silence_ms: int = 0
+
+
+class StitchRequest(BaseModel):
+    clips: list[StitchClip]
+
+
+def _make_silence(n_channels: int, sampwidth: int, framerate: int, duration_ms: int) -> bytes:
+    if duration_ms <= 0:
+        return b""
+    n_frames = int(framerate * duration_ms / 1000)
+    return b"\x00" * (n_frames * n_channels * sampwidth)
+
+
+def _stitch_wavs(clips: list[StitchClip]) -> bytes:
+    segments: list[bytes] = []
+    params = None
+
+    for clip in clips:
+        raw = base64.b64decode(clip.data)
+        with wave.open(io.BytesIO(raw)) as wf:
+            p = wf.getparams()
+            pcm = wf.readframes(wf.getnframes())
+        if params is None:
+            params = p
+        nc, sw, fr = params.nchannels, params.sampwidth, params.framerate
+        segments.append(_make_silence(nc, sw, fr, clip.pre_silence_ms) + pcm + _make_silence(nc, sw, fr, clip.post_silence_ms))
+
+    if not segments or params is None:
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as out:
+            out.setnchannels(1); out.setsampwidth(2); out.setframerate(24000)
+            out.writeframes(_make_silence(1, 2, 24000, 100))
+        return buf.getvalue()
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as out:
+        out.setnchannels(params.nchannels)
+        out.setsampwidth(params.sampwidth)
+        out.setframerate(params.framerate)
+        out.writeframes(b"".join(segments))
+    return buf.getvalue()
+
+
+@router.post("/stitch-scene")
+async def stitch_scene(req: StitchRequest):
+    """Merge clips for one scene into a single WAV (with pre/post silence)."""
+    if not req.clips:
+        return {"data": "", "duration_ms": 0}
+    loop = asyncio.get_event_loop()
+    wav_bytes = await loop.run_in_executor(None, _stitch_wavs, req.clips)
+    with wave.open(io.BytesIO(wav_bytes)) as wf:
+        duration_ms = int(wf.getnframes() / wf.getframerate() * 1000)
+    return {"data": base64.b64encode(wav_bytes).decode(), "duration_ms": duration_ms}

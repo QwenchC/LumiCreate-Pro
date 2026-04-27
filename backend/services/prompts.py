@@ -51,13 +51,29 @@ SCENES_USER_TEMPLATE = """请根据以下漫剧文案，设计完整的分镜方
     {{
       "character": "角色名",
       "text": "台词内容",
-      "emotion": "情绪（从：喜悦/愤怒/悲伤/平静/惊讶/恐惧/害羞 中选一个）"
+      "emotion": "情绪（从：喜悦/愤怒/悲伤/平静/惊讶/恐惧/害羞/厌恶/低落 中选一个）",
+      "pause_before": 0.5,
+      "pause_after": 0.0
     }}
+  ],
+  "audio_timeline": [
+    {{"type": "silence", "duration": 0.5}},
+    {{"type": "dialogue", "dialogue_index": 0}},
+    {{"type": "silence", "duration": 1.0}},
+    {{"type": "dialogue", "dialogue_index": 1}}
   ]
 }}
+
+字段说明：
+- dialogues[].emotion：角色当前的情绪状态，用于情感参考音频匹配
+- dialogues[].pause_before/pause_after：该台词前/后的静默（秒），默认0，允许用户手动调整
+- audio_timeline：定义本分镜音频的拼接顺序
+  - type="silence"：插入静默，duration单位为秒
+  - type="dialogue"：插入某条台词音频，dialogue_index为dialogues数组的下标
+  - 若分镜只有一条台词，timeline可简化为 [{{"type":"dialogue","dialogue_index":0}}]
 
 注意：
 - start_frame_prompt 和 end_frame_prompt 应使用专业的图像生成提示词风格（英文）
 - 每个分镜的台词不超过3条
-- 纯场景描述（无对话）的分镜 dialogues 为空数组 []
+- 纯场景描述（无对话）的分镜 dialogues 为空数组 []，audio_timeline 为空数组 []
 - 直接输出JSON数组，不要有其他文字"""

@@ -24,6 +24,10 @@ renderer/dist/
 backend/*.pyc
 backend/.pytest_cache/
 
+# Test outputs
+test_output*.wav
+test_output*.mp3
+
 # Local config
 settings.json
 

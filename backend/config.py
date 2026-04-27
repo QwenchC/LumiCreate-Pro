@@ -28,9 +28,14 @@ class ImageEngineConfig(BaseModel):
 
 
 class AudioEngineConfig(BaseModel):
-    engine_type: Literal["gptsovits", "manual"] = "gptsovits"
-    api_url: str = "http://localhost:9880"
+    engine_type: Literal["gptsovits", "indextts", "manual"] = "indextts"
+    api_url: str = "http://localhost:7860"
     default_gen_count: int = Field(default=3, ge=1, le=10)
+    # IndexTTS reference audio settings
+    voice_ref_dir: str = ""       # folder containing reference .mp3/.wav files
+    emotion_ref_dir: str = ""     # folder containing emotion reference .wav files
+    default_voice_ref: str = ""   # default voice reference filename (relative to voice_ref_dir)
+    default_emo_weight: float = Field(default=0.8, ge=0.0, le=1.6)
 
 
 class VideoEngineConfig(BaseModel):

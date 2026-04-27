@@ -54,6 +54,26 @@
           <span class="scene-num">{{ String(scene.sceneIndex).padStart(2,'0') }}</span>
           <span class="scene-group-title">{{ scene.description || `场景 ${scene.sceneIndex}` }}</span>
           <span class="badge badge-blue" style="margin-left:auto">{{ scene.clips.length }} 段</span>
+          <button
+            class="btn btn-secondary btn-xs"
+            :disabled="running || scene.stitching || !sceneHasAllAudio(scene)"
+            @click="stitchScene(scene)"
+            :title="sceneHasAllAudio(scene) ? '合并本场景全部音频片段' : '请先生成本场景全部音频'"
+          >
+            {{ scene.stitching ? '合并中…' : '⛓ 合并' }}
+          </button>
+        </div>
+
+        <!-- Merged audio preview -->
+        <div v-if="scene.stitchedData" class="stitched-preview">
+          <span class="dlg-label">合并音频</span>
+          <audio
+            :ref="el => setSceneAudioRef(scene.sceneId, el)"
+            :src="'data:audio/wav;base64,' + scene.stitchedData"
+            controls
+            class="stitched-player"
+          />
+          <span class="text-muted" style="font-size:11px">{{ formatMs(scene.stitchedDurationMs) }}</span>
         </div>
 
         <!-- Clip cards -->
@@ -141,7 +161,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({ projectId: String })
-
+const emit  = defineEmits(['dirty', 'saved'])
 // ── state ──────────────────────────────────────────────────────────────────
 const loadingScenes = ref(false)
 const loadError     = ref('')
@@ -180,7 +200,8 @@ async function loadData() {
     // Load scenes
     const r = await fetch(`http://localhost:18520/api/projects/${props.projectId}/scenes`)
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
-    const scenes = await r.json()
+    const scenesData = await r.json()
+    const scenes = scenesData.scenes || scenesData || []
 
     // Load existing audio
     let savedAudio = {}
@@ -237,7 +258,15 @@ async function loadData() {
           })),
         }
       })
-      result.push({ sceneId: scene.id || scene.index, sceneIndex: scene.index, description: scene.description, clips })
+      result.push({
+        sceneId: scene.id || scene.index,
+        sceneIndex: scene.index,
+        description: scene.description,
+        clips,
+        stitching: false,
+        stitchedData: savedAudio[`__stitched__${scene.id || scene.index}`]?.data || null,
+        stitchedDurationMs: savedAudio[`__stitched__${scene.id || scene.index}`]?.duration_ms || 0,
+      })
     }
     scenesWithClips.value = result
   } catch (e) {
@@ -271,10 +300,20 @@ async function saveAudio() {
       slots: clip.slots.map(s => ({ data: s.data, duration: s.duration })),
     }
   }
+  // Save stitched audio per scene
+  for (const scene of scenesWithClips.value) {
+    if (scene.stitchedData) {
+      payload[`__stitched__${scene.sceneId}`] = {
+        data: scene.stitchedData,
+        duration_ms: scene.stitchedDurationMs,
+      }
+    }
+  }
   await fetch(
     `http://localhost:18520/api/projects/${props.projectId}/audio`,
     { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }
   )
+  emit('saved')
 }
 
 // ── generate ─────────────────────────────────────────────────────────────────
@@ -351,6 +390,7 @@ function handleEvent(ev) {
     slot.data = ev.data
     slot.generating = false
     completedCount.value++
+    emit('dirty')
   } else if (ev.event === 'error') {
     slot.generating = false
     completedCount.value++
@@ -405,6 +445,54 @@ function stopBatch() {
   running.value = false
 }
 
+// ── stitch ───────────────────────────────────────────────────────────────────
+const sceneAudioRefs = {}
+
+function setSceneAudioRef(sceneId, el) {
+  if (el) sceneAudioRefs[sceneId] = el
+}
+
+function sceneHasAllAudio(scene) {
+  return scene.clips.length > 0 && scene.clips.every(c => {
+    const slot = c.slots[c.selectedSlot]
+    return slot && slot.data
+  })
+}
+
+function formatMs(ms) {
+  if (!ms) return ''
+  const s = (ms / 1000).toFixed(1)
+  return `${s}s`
+}
+
+async function stitchScene(scene) {
+  if (scene.stitching) return
+  scene.stitching = true
+  try {
+    const clips = scene.clips.map(c => ({
+      data:            c.slots[c.selectedSlot]?.data || '',
+      pre_silence_ms:  c.pre_silence_ms,
+      post_silence_ms: c.post_silence_ms,
+    })).filter(c => c.data)
+
+    const res = await fetch('http://localhost:18520/api/audio-engine/stitch-scene', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clips }),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const result = await res.json()
+    scene.stitchedData = result.data
+    scene.stitchedDurationMs = result.duration_ms
+    emit('dirty')
+    await saveAudio()
+  } catch (e) {
+    console.error('stitch failed', e)
+  } finally {
+    scene.stitching = false
+  }
+}
+
 // ── lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(async () => {
   await loadData()
@@ -446,6 +534,12 @@ onUnmounted(() => {
   border-bottom:1px solid var(--border-color);
 }
 .scene-group-title { font-weight:500; font-size:13px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+.stitched-preview {
+  display:flex; align-items:center; gap:8px; padding:6px 4px 2px;
+  border-top:1px dashed var(--border-color); margin-top:2px;
+}
+.stitched-player { height:32px; flex:1; min-width:0; }
 
 .dialogue-card {
   flex-shrink:0; border:1px solid var(--border-color); border-radius:8px;
