@@ -132,6 +132,10 @@
           <label>引擎类型</label>
           <div class="radio-group">
             <label class="radio-item">
+              <input type="radio" value="indextts" v-model="settings.audio_engine.engine_type" />
+              IndexTTS-2.0（本地 Gradio）
+            </label>
+            <label class="radio-item">
               <input type="radio" value="gptsovits" v-model="settings.audio_engine.engine_type" />
               GPT-SoVITS（本地 API）
             </label>
@@ -141,10 +145,44 @@
             </label>
           </div>
         </div>
+
+        <!-- IndexTTS settings -->
+        <template v-if="settings.audio_engine.engine_type === 'indextts'">
+          <div class="form-group">
+            <label>IndexTTS 地址</label>
+            <input v-model="settings.audio_engine.api_url" class="input" placeholder="http://localhost:7860" />
+          </div>
+          <div class="form-group">
+            <label>音色参考文件夹</label>
+            <div class="input-with-btn">
+              <input v-model="settings.audio_engine.voice_ref_dir" class="input" placeholder="存放音色参考 .wav/.mp3 的文件夹路径" />
+              <button class="btn btn-secondary btn-sm" @click="browseFolder('voice_ref_dir')">浏览…</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>情感参考文件夹</label>
+            <div class="input-with-btn">
+              <input v-model="settings.audio_engine.emotion_ref_dir" class="input" placeholder="存放情感参考 .wav/.mp3 的文件夹路径" />
+              <button class="btn btn-secondary btn-sm" @click="browseFolder('emotion_ref_dir')">浏览…</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>默认音色参考文件名</label>
+            <input v-model="settings.audio_engine.default_voice_ref" class="input" placeholder="default.wav" />
+          </div>
+          <div class="form-group">
+            <label>默认情感权重 {{ settings.audio_engine.default_emo_weight }}</label>
+            <input type="range" min="0" max="1.6" step="0.1"
+              v-model.number="settings.audio_engine.default_emo_weight" class="input" style="padding:0" />
+          </div>
+        </template>
+
+        <!-- GPT-SoVITS settings -->
         <div class="form-group" v-if="settings.audio_engine.engine_type === 'gptsovits'">
           <label>API 地址</label>
           <input v-model="settings.audio_engine.api_url" class="input" placeholder="http://localhost:9880" />
         </div>
+
         <div class="form-group">
           <label>默认生成版本数</label>
           <input type="number" v-model.number="settings.audio_engine.default_gen_count" class="input" min="1" max="10" style="width:80px" />
@@ -265,6 +303,11 @@ async function save() {
   }
 }
 
+async function browseFolder(field) {
+  const folder = await window.electronAPI?.selectFolder()
+  if (folder) settings.value.audio_engine[field] = folder
+}
+
 async function testConnection() {
   testing.value = true
   testResult.value = null
@@ -325,6 +368,7 @@ async function chooseDir() {
 .form-row { display: flex; gap: 20px; }
 .half { flex: 1; }
 .input-row { display: flex; gap: 8px; }
+.input-with-btn { display: flex; gap: 8px; }
 .hint { font-size: 11px; color: var(--color-text-muted); margin-top: 5px; }
 .form-hint { font-size: 11px; color: var(--color-text-muted); margin-top: 5px; }
 .form-hint-inline { font-size: 11px; color: var(--color-text-muted); font-weight: 400; }

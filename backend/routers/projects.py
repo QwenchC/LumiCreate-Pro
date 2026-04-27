@@ -257,3 +257,31 @@ async def save_scenes(project_id: str, data: ScenesData):
     progress = meta.progress.model_dump()
     progress["scenes"] = 100 if data.scenes else 0
     return await update_project(project_id, {"progress": progress})
+
+
+# ── Audio ──────────────────────────────────────────────────────────────────────
+
+@router.get("/{project_id}/audio")
+async def get_audio(project_id: str):
+    _read_meta(project_id)
+    path = _project_dir(project_id) / "audio.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@router.put("/{project_id}/audio")
+async def save_audio(project_id: str, data: dict):
+    meta = _read_meta(project_id)
+    proj_dir = _project_dir(project_id)
+    (proj_dir / "audio.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    # Count clips that have at least one completed slot
+    done = sum(
+        1 for v in data.values()
+        if any(s.get("data") for s in (v.get("slots") or []))
+    )
+    progress = meta.progress.model_dump()
+    progress["audio"] = 100 if done else 0
+    return await update_project(project_id, {"progress": progress})

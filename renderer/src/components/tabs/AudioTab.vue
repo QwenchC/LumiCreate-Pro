@@ -5,8 +5,8 @@
     <div class="audio-toolbar">
       <div class="toolbar-left">
         <h3 class="toolbar-title">音频生成</h3>
-        <span class="text-muted" style="font-size:13px" v-if="dialogues.length">
-          {{ dialogues.length }} 条台词 · 每条 {{ genCount }} 个版本
+        <span class="text-muted" style="font-size:13px" v-if="allClips.length">
+          {{ allClips.length }} 个音频片段 · 每段 {{ genCount }} 个版本
         </span>
       </div>
       <div class="toolbar-right">
@@ -15,7 +15,7 @@
           <input class="input input-num" type="number" min="1" max="10" v-model.number="genCount" :disabled="running" />
         </div>
         <button class="btn btn-danger btn-sm" v-if="running" @click="stopBatch">⏹ 停止</button>
-        <button class="btn btn-primary btn-sm" v-else :disabled="!dialogues.length" @click="runBatch">
+        <button class="btn btn-primary btn-sm" v-else :disabled="!allClips.length" @click="runBatch">
           ▶ 批量生成
         </button>
       </div>
@@ -23,22 +23,19 @@
 
     <!-- ── States ── -->
     <div v-if="loadError" class="empty-state">
-      <div class="empty-icon">⚠</div>
-      <p>{{ loadError }}</p>
+      <div class="empty-icon">⚠</div><p>{{ loadError }}</p>
       <button class="btn btn-secondary btn-sm" @click="loadData">重试</button>
     </div>
-
     <div v-else-if="loadingScenes" class="empty-state">
       <div class="spinner" /><p class="text-muted">加载分镜中…</p>
     </div>
-
-    <div v-else-if="!dialogues.length" class="empty-state">
-      <div class="empty-icon">🎞</div>
+    <div v-else-if="!allClips.length" class="empty-state">
+      <div class="empty-icon">🎙</div>
       <p>请先在「分镜设计」添加台词并保存</p>
     </div>
 
     <!-- ── Batch progress ── -->
-    <div v-if="(running || batchDone) && dialogues.length" class="batch-progress-bar-wrap">
+    <div v-if="(running || batchDone) && allClips.length" class="batch-progress-bar-wrap">
       <div class="batch-progress-label">
         <span>批量生成进度</span>
         <span>{{ completedCount }} / {{ totalCount }}</span>
@@ -48,479 +45,446 @@
       </div>
     </div>
 
-    <!-- ── Dialogue list ── -->
-    <div class="dialogue-list" v-if="dialogues.length">
-      <div v-for="item in dialogues" :key="item.id" class="dialogue-card card">
+    <!-- ── Scene groups ── -->
+    <div class="scenes-audio-list" v-if="allClips.length">
+      <div v-for="scene in scenesWithClips" :key="scene.sceneId" class="scene-audio-group card">
 
-        <!-- Card header -->
-        <div class="dlg-header">
-          <span class="scene-num">{{ String(item.sceneIndex).padStart(2, '0') }}</span>
-          <span class="dlg-character">{{ item.character }}</span>
-          <span class="dlg-emotion badge badge-blue" v-if="item.emotion">{{ item.emotion }}</span>
-          <button
-            class="btn btn-ghost btn-xs regen-btn"
-            :disabled="running"
-            @click="regenDialogue(item)"
-            title="重新生成全部版本"
-          >↺</button>
+        <!-- Scene header -->
+        <div class="scene-group-header">
+          <span class="scene-num">{{ String(scene.sceneIndex).padStart(2,'0') }}</span>
+          <span class="scene-group-title">{{ scene.description || `场景 ${scene.sceneIndex}` }}</span>
+          <span class="badge badge-blue" style="margin-left:auto">{{ scene.clips.length }} 段</span>
         </div>
 
-        <!-- Dialogue text -->
-        <div class="dlg-text">"{{ item.text }}"</div>
+        <!-- Clip cards -->
+        <div v-for="clip in scene.clips" :key="clip.id" class="dialogue-card">
 
-        <!-- TTS settings row -->
-        <div class="dlg-settings">
-          <div class="dlg-setting-group">
-            <label class="dlg-label">声音</label>
-            <select class="input select-compact" v-model="item._speaker" :disabled="running">
-              <option value="">— 默认 —</option>
-              <option v-for="m in voiceModels" :key="m" :value="m">{{ m }}</option>
-            </select>
-          </div>
-          <div class="dlg-setting-group">
-            <label class="dlg-label">速度</label>
-            <input class="input input-num" type="number" min="0.5" max="2.0" step="0.1"
-              v-model.number="item._speed" :disabled="running" style="width:64px" />
-          </div>
-          <div class="dlg-setting-group" style="flex:1">
-            <label class="dlg-label">参考音频路径</label>
-            <input class="input" type="text" placeholder="（可选）ref_audio.wav"
-              v-model="item._refAudio" :disabled="running" />
-          </div>
-        </div>
-
-        <!-- Audio version slots -->
-        <div class="audio-slots">
-          <div
-            v-for="slot in genCount"
-            :key="slot - 1"
-            class="audio-slot"
-            :class="{
-              selected:  item._selected === slot - 1,
-              loading:   isLoading(item.id, slot - 1),
-              errored:   isErrored(item.id, slot - 1),
-            }"
-          >
-            <!-- Loading -->
-            <div v-if="isLoading(item.id, slot - 1)" class="slot-inner slot-loading-state">
-              <div class="spinner spinner-sm" />
-              <span class="text-muted" style="font-size:11px">生成中…</span>
+          <!-- Clip header row -->
+          <div class="dlg-header">
+            <span class="dlg-character">{{ clip.character }}</span>
+            <span class="dlg-emotion badge badge-purple" v-if="clip.emotion">{{ clip.emotion }}</span>
+            <div class="silence-group">
+              <label class="dlg-label">前静音</label>
+              <input class="input input-num-sm" type="number" min="0" max="5000" step="100"
+                v-model.number="clip.pre_silence_ms" :disabled="running" />
+              <span class="text-muted" style="font-size:11px">ms</span>
             </div>
-
-            <!-- Error -->
-            <div v-else-if="isErrored(item.id, slot - 1)" class="slot-inner slot-err-state">
-              <span style="font-size:18px">⚠</span>
-              <span class="text-muted" style="font-size:10px;word-break:break-all">{{ getError(item.id, slot - 1) }}</span>
+            <div class="silence-group">
+              <label class="dlg-label">后静音</label>
+              <input class="input input-num-sm" type="number" min="0" max="5000" step="100"
+                v-model.number="clip.post_silence_ms" :disabled="running" />
+              <span class="text-muted" style="font-size:11px">ms</span>
             </div>
+            <button class="btn btn-ghost btn-xs regen-btn" :disabled="running" @click="regenClip(clip)" title="重新生成">↺</button>
+          </div>
 
-            <!-- Audio ready -->
-            <div v-else-if="getAudio(item.id, slot - 1)" class="slot-inner slot-ready-state">
-              <span class="slot-num">V{{ slot }}</span>
-              <button class="btn btn-ghost btn-xs play-btn" @click="playAudio(item.id, slot - 1)" title="播放">
-                {{ isPlaying(item.id, slot - 1) ? '⏸' : '▶' }}
-              </button>
-              <span class="slot-select-btn" @click="selectSlot(item, slot - 1)">
-                {{ item._selected === slot - 1 ? '✓ 使用中' : '选用' }}
-              </span>
+          <!-- Dialogue text -->
+          <div class="dlg-text">"{{ clip.text }}"</div>
+
+          <!-- Voice settings -->
+          <div class="dlg-settings">
+            <div class="dlg-setting-group">
+              <label class="dlg-label">音色参考</label>
+              <select class="input select-compact" v-model="clip._voiceRef" :disabled="running">
+                <option value="">— 默认 —</option>
+                <option v-for="f in voiceRefs" :key="f" :value="f">{{ f }}</option>
+              </select>
             </div>
-
-            <!-- Empty -->
-            <div v-else class="slot-inner slot-empty-state">
-              <span class="text-muted">V{{ slot }}</span>
+            <div class="dlg-setting-group">
+              <label class="dlg-label">情感控制</label>
+              <select class="input select-compact" v-model="clip._emoMethod" :disabled="running">
+                <option value="与音色参考音频相同">与音色参考相同</option>
+                <option value="使用情感参考音频">使用情感参考音频</option>
+              </select>
+            </div>
+            <div class="dlg-setting-group" v-if="clip._emoMethod === '使用情感参考音频'">
+              <label class="dlg-label">情感参考</label>
+              <select class="input select-compact" v-model="clip._emoRef" :disabled="running">
+                <option value="">— 无 —</option>
+                <option v-for="f in emoRefs" :key="f" :value="f">{{ f }}</option>
+              </select>
+            </div>
+            <div class="dlg-setting-group">
+              <label class="dlg-label">情感权重 {{ clip._emoWeight.toFixed(1) }}</label>
+              <input type="range" min="0" max="1.6" step="0.1"
+                v-model.number="clip._emoWeight" :disabled="running" class="slider-compact" />
             </div>
           </div>
-        </div>
 
-      </div><!-- /dialogue-card -->
-    </div><!-- /dialogue-list -->
+          <!-- Audio slots -->
+          <div class="slot-row">
+            <div v-for="slot in clip.slots" :key="slot.index"
+              class="slot-card"
+              :class="{ 'slot-selected': slot.index === clip.selectedSlot, 'slot-generating': slot.generating }"
+              @click="clip.selectedSlot = slot.index">
+              <div class="slot-label">V{{ slot.index + 1 }}</div>
+              <div v-if="slot.generating" class="slot-status text-muted">生成中…</div>
+              <div v-else-if="slot.data" class="slot-status">
+                <audio :ref="el => setAudioRef(clip.id, slot.index, el)"
+                  :src="'data:audio/wav;base64,' + slot.data"
+                  style="display:none" />
+                <button class="btn btn-ghost btn-xs" @click.stop="playSlot(clip.id, slot.index)">▶</button>
+                <span class="text-muted" style="font-size:11px">{{ slot.duration || '' }}</span>
+              </div>
+              <div v-else class="slot-status text-muted">—</div>
+            </div>
+          </div>
 
-    <!-- Hidden audio element for playback -->
-    <audio ref="audioEl" style="display:none" @ended="onAudioEnded" />
+        </div><!-- end clip card -->
+      </div><!-- end scene group -->
+    </div>
+
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import axios from 'axios'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({ projectId: String })
-const emit = defineEmits(['dirty', 'saved'])
 
-const API = 'http://localhost:18520/api'
-
-// ── State ──────────────────────────────────────────────────────────────────────
-const scenes        = ref([])
-const dialogues     = ref([])   // flat list: {id, sceneIndex, character, emotion, text, _speaker, _speed, _refAudio, _selected}
+// ── state ──────────────────────────────────────────────────────────────────
 const loadingScenes = ref(false)
 const loadError     = ref('')
-const voiceModels   = ref([])
+const scenesWithClips = ref([])  // [{ sceneId, sceneIndex, description, clips: [...] }]
+const voiceRefs     = ref([])
+const emoRefs       = ref([])
 const genCount      = ref(3)
 const running       = ref(false)
 const batchDone     = ref(false)
-const stopFlag      = ref(false)
+const completedCount = ref(0)
+const totalCount     = ref(0)
+const abortController = ref(null)
+const audioRefs       = {}  // { "clipId:slotIndex": HTMLAudioElement }
 
-// Slot state maps
-const slotAudio   = ref({})   // key → base64 wav string
-const slotLoading = ref({})
-const slotError   = ref({})
-
-// Playback
-const audioEl       = ref(null)
-const playingKey    = ref(null)
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-function slotKey(dlgId, slot) { return `${dlgId}:${slot}` }
-function getAudio(dlgId, slot)  { return slotAudio.value[slotKey(dlgId, slot)] || null }
-function isLoading(dlgId, slot) { return !!slotLoading.value[slotKey(dlgId, slot)] }
-function isErrored(dlgId, slot) { return !!slotError.value[slotKey(dlgId, slot)] }
-function getError(dlgId, slot)  { return slotError.value[slotKey(dlgId, slot)] || '' }
-function isPlaying(dlgId, slot) { return playingKey.value === slotKey(dlgId, slot) }
-
-const totalCount = computed(() => dialogues.value.length * genCount.value)
-const completedCount = computed(() =>
-  Object.values(slotAudio.value).filter(Boolean).length +
-  Object.values(slotError.value).filter(Boolean).length
-)
+// ── derived ─────────────────────────────────────────────────────────────────
+const allClips = computed(() => scenesWithClips.value.flatMap(s => s.clips))
 const progressPct = computed(() =>
-  totalCount.value ? Math.round((completedCount.value / totalCount.value) * 100) : 0
+  totalCount.value > 0 ? Math.round((completedCount.value / totalCount.value) * 100) : 0
 )
 
-// ── Load data ──────────────────────────────────────────────────────────────────
-async function loadData() {
-  loadError.value   = ''
-  loadingScenes.value = true
-  try {
-    const [scenesRes, settingsRes, modelsRes] = await Promise.all([
-      axios.get(`${API}/projects/${props.projectId}/scenes`),
-      axios.get(`${API}/settings`),
-      axios.get(`${API}/audio-engine/voice-models`).catch(() => ({ data: [] }))
-    ])
-    const rawScenes = scenesRes.data?.scenes || []
-    const audioCfg  = settingsRes.data?.audio_engine || {}
-    genCount.value  = audioCfg.default_gen_count ?? 3
-    voiceModels.value = modelsRes.data || []
+// ── audio element refs ────────────────────────────────────────────────────────
+function setAudioRef(clipId, slotIndex, el) {
+  if (el) audioRefs[`${clipId}:${slotIndex}`] = el
+}
+function playSlot(clipId, slotIndex) {
+  const el = audioRefs[`${clipId}:${slotIndex}`]
+  if (el) { el.currentTime = 0; el.play() }
+}
 
-    // Flatten all dialogues from all scenes
-    const flat = []
-    for (const scene of rawScenes) {
-      for (const dlg of (scene.dialogues || [])) {
-        flat.push({
-          id:         `${scene.id}:${dlg.id ?? dlg.character + flat.length}`,
-          sceneId:    scene.id,
-          sceneIndex: scene.index,
-          character:  dlg.character || '',
-          emotion:    dlg.emotion   || '',
-          text:       dlg.text      || '',
-          _speaker:   '',
-          _speed:     1.0,
-          _refAudio:  '',
-          _selected:  dlg._selected_audio ?? 0,
-        })
+// ── load ─────────────────────────────────────────────────────────────────────
+async function loadData() {
+  if (!props.projectId) return
+  loadingScenes.value = true
+  loadError.value = ''
+  try {
+    // Load scenes
+    const r = await fetch(`http://localhost:18520/api/projects/${props.projectId}/scenes`)
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    const scenes = await r.json()
+
+    // Load existing audio
+    let savedAudio = {}
+    try {
+      const ar = await fetch(`http://localhost:18520/api/projects/${props.projectId}/audio`)
+      if (ar.ok) savedAudio = await ar.json()
+    } catch { /* ignore */ }
+
+    // Load settings for defaults
+    try {
+      const sr = await fetch('http://localhost:18520/api/settings')
+      if (sr.ok) {
+        const s = await sr.json()
+        genCount.value = s.audio_engine?.default_gen_count ?? 3
       }
+    } catch { /* ignore */ }
+
+    // Load ref file lists
+    try {
+      const [vr, er] = await Promise.all([
+        fetch('http://localhost:18520/api/audio-engine/voice-refs').then(r => r.ok ? r.json() : []),
+        fetch('http://localhost:18520/api/audio-engine/emotion-refs').then(r => r.ok ? r.json() : []),
+      ])
+      voiceRefs.value = vr
+      emoRefs.value = er
+    } catch { /* ignore */ }
+
+    // Build scenesWithClips
+    const result = []
+    for (const scene of scenes) {
+      const rawClips = scene.audio_clips || scene_dialogues_to_clips(scene)
+      if (!rawClips.length) continue
+      const clips = rawClips.map((ac, idx) => {
+        const clipId = `${scene.id || scene.index}:${idx}`
+        const saved  = savedAudio[clipId] || {}
+        return {
+          id:             clipId,
+          sceneId:        scene.id || scene.index,
+          character:      ac.character || '',
+          emotion:        ac.emotion   || '',
+          text:           ac.text      || '',
+          pre_silence_ms:  ac.pre_silence_ms  ?? 500,
+          post_silence_ms: ac.post_silence_ms ?? 1000,
+          _voiceRef:  saved.voiceRef  || '',
+          _emoRef:    saved.emoRef    || '',
+          _emoMethod: saved.emoMethod || '与音色参考音频相同',
+          _emoWeight: saved.emoWeight ?? 0.8,
+          selectedSlot: saved.selectedSlot ?? 0,
+          slots: Array.from({ length: genCount.value }, (_, i) => ({
+            index:      i,
+            data:       saved.slots?.[i]?.data || null,
+            duration:   saved.slots?.[i]?.duration || '',
+            generating: false,
+          })),
+        }
+      })
+      result.push({ sceneId: scene.id || scene.index, sceneIndex: scene.index, description: scene.description, clips })
     }
-    dialogues.value = flat
-    scenes.value    = rawScenes
+    scenesWithClips.value = result
   } catch (e) {
-    loadError.value = e?.response?.data?.detail || e.message || '加载失败'
+    loadError.value = e.message
   } finally {
     loadingScenes.value = false
   }
 }
 
-onMounted(loadData)
+function scene_dialogues_to_clips(scene) {
+  return (scene.dialogues || []).map(d => ({
+    character:       d.character || '',
+    emotion:         d.emotion   || '',
+    text:            d.text      || '',
+    pre_silence_ms:  500,
+    post_silence_ms: 1000,
+  }))
+}
 
-// ── Audio playback ─────────────────────────────────────────────────────────────
-function playAudio(dlgId, slot) {
-  const key  = slotKey(dlgId, slot)
-  const data = slotAudio.value[key]
-  if (!data) return
-  if (playingKey.value === key) {
-    audioEl.value.pause()
-    playingKey.value = null
-    return
+// ── save ─────────────────────────────────────────────────────────────────────
+async function saveAudio() {
+  if (!props.projectId) return
+  const payload = {}
+  for (const clip of allClips.value) {
+    payload[clip.id] = {
+      voiceRef:     clip._voiceRef,
+      emoRef:       clip._emoRef,
+      emoMethod:    clip._emoMethod,
+      emoWeight:    clip._emoWeight,
+      selectedSlot: clip.selectedSlot,
+      slots: clip.slots.map(s => ({ data: s.data, duration: s.duration })),
+    }
   }
-  audioEl.value.src = `data:audio/wav;base64,${data}`
-  audioEl.value.play()
-  playingKey.value = key
-}
-function onAudioEnded() { playingKey.value = null }
-
-function selectSlot(item, slot) {
-  item._selected = slot
-  emit('dirty')
+  await fetch(
+    `http://localhost:18520/api/projects/${props.projectId}/audio`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }
+  )
 }
 
-// ── Batch SSE generation ───────────────────────────────────────────────────────
-let currentReader = null
-
+// ── generate ─────────────────────────────────────────────────────────────────
 async function runBatch() {
+  if (running.value || !allClips.value.length) return
   running.value  = true
   batchDone.value = false
-  stopFlag.value  = false
+  completedCount.value = 0
+  totalCount.value = allClips.value.length * genCount.value
+  abortController.value = new AbortController()
 
-  slotAudio.value   = {}
-  slotError.value   = {}
-  slotLoading.value = {}
-  for (const dlg of dialogues.value) {
-    for (let s = 0; s < genCount.value; s++) {
-      slotLoading.value[slotKey(dlg.id, s)] = true
-    }
+  const payload = {
+    gen_count: genCount.value,
+    dialogues: allClips.value.map(c => ({
+      scene_id:    String(c.sceneId),
+      dialogue_id: c.id,
+      text:        c.text,
+      voice_ref:   c._voiceRef || null,
+      emo_ref:     c._emoRef   || null,
+      emo_weight:  c._emoWeight,
+      lang:        'zh',
+    })),
+  }
+
+  // Reset slot states
+  for (const clip of allClips.value) {
+    clip.slots = Array.from({ length: genCount.value }, (_, i) => ({
+      index: i, data: null, duration: '', generating: true,
+    }))
   }
 
   try {
-    const response = await fetch(`${API}/audio-engine/generate-batch-stream`, {
-      method:  'POST',
+    const resp = await fetch('http://localhost:18520/api/audio-engine/generate-batch-stream', {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        gen_count: genCount.value,
-        dialogues: dialogues.value.map(d => ({
-          scene_id:    d.sceneId,
-          dialogue_id: d.id,
-          text:        d.text,
-          lang:        'zh',
-          speaker:     d._speaker || null,
-          ref_audio_path: d._refAudio || null,
-        }))
-      })
+      body: JSON.stringify(payload),
+      signal: abortController.value.signal,
     })
-
-    currentReader = response.body.getReader()
+    const reader = resp.body.getReader()
     const decoder = new TextDecoder()
-    let buffer = ''
-
+    let buf = ''
     while (true) {
-      if (stopFlag.value) { currentReader.cancel(); break }
-      const { done, value } = await currentReader.read()
+      const { value, done } = await reader.read()
       if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop()
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop()
       for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const raw = line.slice(6).trim()
-        if (raw === '[DONE]') { batchDone.value = true; break }
-        try { handleEvent(JSON.parse(raw)) } catch {}
+        if (!line.startsWith('data:')) continue
+        const raw = line.slice(5).trim()
+        if (raw === '[DONE]') break
+        try { handleEvent(JSON.parse(raw)) } catch { /* ignore */ }
       }
     }
   } catch (e) {
-    if (!stopFlag.value) loadError.value = `生成失败: ${e.message}`
+    if (e.name !== 'AbortError') loadError.value = e.message
   } finally {
-    running.value   = false
-    currentReader   = null
-    emit('dirty')
+    running.value = false
+    batchDone.value = true
+    // clear generating states
+    for (const clip of allClips.value)
+      for (const slot of clip.slots) slot.generating = false
+    await saveAudio()
   }
 }
 
-function handleEvent(evt) {
-  const { event, dialogue_id, slot_index } = evt
-  if (!dialogue_id) return
-  const key = slotKey(dialogue_id, slot_index)
-  if (event === 'completed') {
-    slotLoading.value[key] = false
-    slotAudio.value[key]   = evt.data
-  } else if (event === 'error') {
-    slotLoading.value[key] = false
-    slotError.value[key]   = evt.message || '错误'
+function handleEvent(ev) {
+  if (ev.event === 'batch_done') return
+  const clip = allClips.value.find(c => c.id === ev.dialogue_id)
+  if (!clip) return
+  const slot = clip.slots[ev.slot_index]
+  if (!slot) return
+  if (ev.event === 'completed') {
+    slot.data = ev.data
+    slot.generating = false
+    completedCount.value++
+  } else if (ev.event === 'error') {
+    slot.generating = false
+    completedCount.value++
   }
 }
 
-function stopBatch() {
-  stopFlag.value = true
-  currentReader?.cancel()
-  running.value = false
-}
+async function regenClip(clip) {
+  if (running.value) return
+  running.value = true
+  for (const slot of clip.slots) slot.generating = true
 
-// ── Single dialogue regeneration ───────────────────────────────────────────────
-async function regenDialogue(item) {
-  if (!item.text) return
-  for (let s = 0; s < genCount.value; s++) {
-    const key = slotKey(item.id, s)
-    slotLoading.value[key] = true
-    slotAudio.value[key]   = undefined
-    slotError.value[key]   = ''
+  const payload = {
+    gen_count: genCount.value,
+    dialogues: [{
+      scene_id:    String(clip.sceneId),
+      dialogue_id: clip.id,
+      text:        clip.text,
+      voice_ref:   clip._voiceRef || null,
+      emo_ref:     clip._emoRef   || null,
+      emo_weight:  clip._emoWeight,
+      lang:        'zh',
+    }],
   }
-  const promises = Array.from({ length: genCount.value }, (_, s) => runSingleSlot(item, s))
-  await Promise.allSettled(promises)
-  emit('dirty')
-}
-
-async function runSingleSlot(item, slotIndex) {
-  const key = slotKey(item.id, slotIndex)
   try {
-    const response = await fetch(`${API}/audio-engine/generate-stream`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text:          item.text,
-        lang:          'zh',
-        speaker:       item._speaker || null,
-        ref_audio_path: item._refAudio || null,
-        speed:         item._speed,
-        scene_id:      item.sceneId,
-        dialogue_id:   item.id,
-        slot_index:    slotIndex
-      })
+    const resp = await fetch('http://localhost:18520/api/audio-engine/generate-batch-stream', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     })
-    const reader  = response.body.getReader()
+    const reader = resp.body.getReader()
     const decoder = new TextDecoder()
-    let buffer = ''
+    let buf = ''
     while (true) {
-      const { done, value } = await reader.read()
+      const { value, done } = await reader.read()
       if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop()
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop()
       for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const raw = line.slice(6).trim()
+        if (!line.startsWith('data:')) continue
+        const raw = line.slice(5).trim()
         if (raw === '[DONE]') break
         try { handleEvent(JSON.parse(raw)) } catch {}
       }
     }
-  } catch (e) {
-    slotError.value[key]   = e.message
-    slotLoading.value[key] = false
+  } finally {
+    running.value = false
+    for (const slot of clip.slots) slot.generating = false
+    await saveAudio()
   }
 }
+
+function stopBatch() {
+  abortController.value?.abort()
+  running.value = false
+}
+
+// ── lifecycle ─────────────────────────────────────────────────────────────────
+onMounted(async () => {
+  await loadData()
+  window.addEventListener('lumi:save-project', saveAudio)
+})
+onUnmounted(() => {
+  window.removeEventListener('lumi:save-project', saveAudio)
+})
 </script>
 
 <style scoped>
-/* ── Layout ── */
-.audio-tab {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-/* ── Toolbar ── */
+.audio-tab { display:flex; flex-direction:column; height:100%; overflow:hidden; }
 .audio-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  gap: 10px;
+  display:flex; align-items:center; justify-content:space-between;
+  padding:12px 16px 8px; gap:12px; flex-shrink:0;
 }
-.toolbar-left  { display: flex; align-items: center; gap: 10px; }
-.toolbar-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.toolbar-title { font-weight: 700; font-size: 15px; margin: 0; }
-.gen-count-group { display: flex; align-items: center; gap: 6px; }
-.input-num  { height: 32px; width: 56px; text-align: center; padding: 0 6px; font-size: 13px; }
+.toolbar-left  { display:flex; align-items:center; gap:12px; }
+.toolbar-right { display:flex; align-items:center; gap:8px; }
+.toolbar-title { margin:0; font-size:15px; font-weight:600; }
+.gen-count-group { display:flex; align-items:center; gap:6px; }
+.input-num { width:56px; text-align:center; }
+.input-num-sm { width:60px; text-align:center; padding:2px 4px; font-size:12px; }
 
-/* ── Batch progress ── */
 .batch-progress-bar-wrap {
-  padding: 8px 16px;
-  background: var(--bg-panel);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
+  padding:0 16px 8px; flex-shrink:0;
 }
-.batch-progress-label {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
-.batch-progress-track { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
-.batch-progress-fill  { height: 100%; background: var(--accent); border-radius: 2px; transition: width .3s ease; }
+.batch-progress-label { display:flex; justify-content:space-between; font-size:12px; color:var(--text-muted); margin-bottom:4px; }
+.batch-progress-track { height:6px; border-radius:4px; background:var(--bg-tertiary); overflow:hidden; }
+.batch-progress-fill  { height:100%; background:var(--accent); transition:width .3s; }
 
-/* ── Empty/error states ── */
+.scenes-audio-list {
+  flex:1; overflow-y:auto; padding:0 16px 16px; display:flex; flex-direction:column; gap:12px;
+}
+.scene-audio-group {
+  flex-shrink:0; padding:12px; display:flex; flex-direction:column; gap:8px;
+}
+.scene-group-header {
+  display:flex; align-items:center; gap:8px; padding-bottom:8px;
+  border-bottom:1px solid var(--border-color);
+}
+.scene-group-title { font-weight:500; font-size:13px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+.dialogue-card {
+  flex-shrink:0; border:1px solid var(--border-color); border-radius:8px;
+  padding:10px 12px; display:flex; flex-direction:column; gap:6px;
+  background:var(--bg-secondary);
+}
+.dlg-header  { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+.dlg-character { font-weight:600; font-size:13px; }
+.dlg-emotion   { font-size:11px; }
+.dlg-text      { font-size:13px; color:var(--text-secondary); font-style:italic; }
+.regen-btn     { margin-left:auto; }
+
+.silence-group { display:flex; align-items:center; gap:4px; }
+.dlg-label  { font-size:11px; color:var(--text-muted); white-space:nowrap; }
+
+.dlg-settings { display:flex; flex-wrap:wrap; gap:8px; }
+.dlg-setting-group { display:flex; align-items:center; gap:6px; }
+.select-compact { min-width:120px; max-width:200px; font-size:12px; padding:3px 6px; }
+.slider-compact { width:100px; }
+
+.slot-row { display:flex; gap:6px; flex-wrap:wrap; }
+.slot-card {
+  border:1px solid var(--border-color); border-radius:6px;
+  padding:4px 10px; cursor:pointer; min-width:70px;
+  display:flex; align-items:center; gap:6px;
+  transition:border-color .15s, background .15s;
+  background:var(--bg-primary);
+}
+.slot-card:hover  { border-color:var(--accent); }
+.slot-selected    { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 12%, transparent); }
+.slot-generating  { opacity:.7; }
+.slot-label  { font-size:11px; font-weight:600; color:var(--text-muted); }
+.slot-status { font-size:12px; display:flex; align-items:center; gap:4px; }
+.scene-num { font-size:11px; font-weight:700; background:var(--accent); color:#fff; border-radius:4px; padding:1px 6px; }
+
 .empty-state {
-  flex: 1;
-  display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
-  gap: 10px; color: var(--text-muted);
+  flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; opacity:.7;
 }
-.empty-icon { font-size: 48px; }
-
-/* ── Dialogue list ── */
-.dialogue-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 14px;
-  display: flex; flex-direction: column; gap: 12px;
-}
-
-/* ── Dialogue card ── */
-.dialogue-card { padding: 0; overflow: hidden; flex-shrink: 0; }
-
-.dlg-header {
-  display: flex; align-items: center; gap: 8px;
-  padding: 10px 14px 8px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-input);
-}
-.scene-num      { font-size: 16px; font-weight: 800; color: var(--accent); min-width: 26px; }
-.dlg-character  { font-size: 14px; font-weight: 600; }
-.dlg-emotion    { font-size: 11px; padding: 2px 6px; border-radius: 4px; }
-.badge-blue { background: rgba(99,179,237,.15); color: #63b3ed; }
-.regen-btn { margin-left: auto; }
-
-.dlg-text {
-  padding: 10px 14px;
-  font-size: 14px;
-  color: var(--text);
-  line-height: 1.5;
-  border-bottom: 1px solid var(--border);
-}
-
-.dlg-settings {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
-}
-.dlg-setting-group { display: flex; align-items: center; gap: 6px; }
-.dlg-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
-.select-compact { height: 28px; padding: 0 6px; font-size: 12px; min-width: 140px; }
-
-/* ── Audio slots ── */
-.audio-slots {
-  display: flex; gap: 8px; flex-wrap: wrap;
-  padding: 10px 14px 12px;
-}
-.audio-slot {
-  width: 120px;
-  height: 72px;
-  border-radius: 8px;
-  border: 2px solid var(--border);
-  background: var(--bg-input);
-  overflow: hidden;
-  position: relative;
-  transition: border-color .15s;
-}
-.audio-slot.selected  { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(99,179,237,.3); }
-.audio-slot.errored   { border-color: var(--danger, #fc8181); }
-
-.slot-inner {
-  width: 100%; height: 100%;
-  display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
-  gap: 4px; padding: 4px;
-}
-.slot-loading-state { gap: 6px; }
-.slot-ready-state   { gap: 4px; }
-.slot-empty-state   { opacity: .5; }
-.slot-err-state     { gap: 2px; }
-
-.slot-num { font-size: 11px; font-weight: 700; color: var(--text-muted); }
-.play-btn { font-size: 16px; padding: 0; height: 28px; width: 28px; }
-.slot-select-btn {
-  font-size: 10px; cursor: pointer;
-  color: var(--accent);
-  padding: 2px 6px; border-radius: 4px;
-  border: 1px solid var(--accent);
-  user-select: none;
-}
-.slot-select-btn:hover { background: rgba(99,179,237,.15); }
-
-/* ── Spinner ── */
-.spinner-sm { width: 20px; height: 20px; border-width: 2px; }
-.btn-danger { background: var(--danger,#e53e3e); color:#fff; border-color:var(--danger,#e53e3e); }
-.btn-danger:hover { opacity:.85; }
-.btn-xs { padding: 2px 6px; font-size: 12px; height: 24px; line-height: 1; }
+.empty-icon { font-size:40px; }
+.spinner { width:24px; height:24px; border:2px solid var(--border-color); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
 </style>
