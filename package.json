@@ -8,7 +8,9 @@
     "dev:renderer": "cd renderer && npm run dev",
     "dev:electron": "wait-on http://localhost:5173 && electron .",
     "build:renderer": "cd renderer && npm run build",
-    "build": "npm run build:renderer && electron-builder",
+    "prebuild": "node prebuild-wincscode.js",
+    "build": "npm run build:renderer && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
+    "build:installer": "npm run build:renderer && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "preview": "electron ."
   },
   "build": {
@@ -19,7 +21,11 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "sign": null,
+      "signingHashAlgorithms": null,
+      "certificateSubjectName": null,
+      "rfc3161TimeStampServer": null
     },
     "nsis": {
       "oneClick": false,
@@ -42,11 +48,17 @@
       }
     ]
   },
-  "keywords": ["comic", "manga", "ai", "generation"],
+  "keywords": [
+    "comic",
+    "manga",
+    "ai",
+    "generation"
+  ],
   "author": "LumiCreate Team",
   "license": "MIT",
   "devDependencies": {
     "concurrently": "^9.0.0",
+    "cross-env": "^10.1.0",
     "electron": "^35.0.0",
     "electron-builder": "^25.0.0",
     "wait-on": "^8.0.0"

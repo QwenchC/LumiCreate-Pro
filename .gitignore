@@ -21,6 +21,7 @@ build/
 
 # Output
 renderer/dist/
+dist-app/
 backend/*.pyc
 backend/.pytest_cache/
 
