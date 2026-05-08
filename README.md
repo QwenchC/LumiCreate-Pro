@@ -1,12 +1,189 @@
 # LumiCreate-Pro
 
-一个本地AI视频创作工具，集成文案生成、分镜设计、图片生成、音频生成、视频合成于一体。
+一个本地AI视频创作工具，集成文案生成、分镜设计、图片生成、音频生成、视频生成并合成于一体。
 
 ## 项目架构
 
 - **前端**：Vue 3 + Vite + Electron
-- **后端**：FastAPI (Python) + ComfyUI (图片生成) + IndexTTS-2.0 (语音合成)
-- **数据库**：本地 JSON 文件存储
+- **后端**：FastAPI (Python) + ComfyUI（图片/视频生成）+ IndexTTS-2.0（语音合成）
+- **数据存储**：本地 JSON 文件 + 项目目录文件系统
+
+## 核心功能
+
+### 📝 文案创建
+- 创建和编辑项目文案
+- 支持 Markdown 格式
+- 自动保存进度
+
+### 🎞 分镜设计
+- 从文案自动生成分镜提纲
+- 编辑分镜描述、起始帧提示词、结束帧提示词
+- 添加 / 删除 / 重排分镜
+- 支持台词管理（角色 + 台词 + 情感）
+- 可滚动分镜列表，支持大量分镜
+
+### 🖼 图片生成
+- 集成 ComfyUI 工作流
+- Master-detail 分割布局
+- 支持多工作流选择，自动保存工作流选择
+- 批量生成（跳过已有图片）、单个分镜生成、单帧操作
+- 图片预览和管理，WebSocket 流式进度更新
+- 生成图片自动持久化保存/加载
+
+### 🎙 音频生成
+- 集成 **IndexTTS-2.0**（Gradio API，本地运行）
+- 分镜分组展示，每段音频独立配置音色参考、情感控制与情感权重
+- 每段音频支持多版本生成（V1/V2/V3…），可单独试听、切换版本
+- 可调整每段前/后静音时长（ms）
+- **场景音频合并**：一键拼接场景内所有片段（含静音）为单个 WAV，供视频工作流使用
+- 合并结果页内预览，持久化保存
+- 支持 GPT-SoVITS 和手动导入模式
+
+### 🎬 视频生成
+- 集成 **LTX-2.3** ComfyUI 工作流（首帧→末帧→音频驱动生成）
+- LiteGraph UI 格式工作流自动转换为 ComfyUI API 格式（`_litegraph_to_api`）
+  - 处理 SetNode/GetNode 传送对、Bypass 节点、虚拟节点过滤、UI-only 输入过滤等边缘情况
+- 多分辨率支持（720p/576p/544p，竖屏/横屏），可选帧率（24/25/30fps）
+- 每个分镜卡片展示就绪状态（首帧 / 末帧 / 合并音频）、生成进度条、视频预览
+- 视频完成后自动用用户原始音频替换 AI 生成音频（通过 ffmpeg）
+- 生成视频持久化保存，重新进入页面自动恢复预览
+- **分镜合并**：所有分镜生成完毕后，一键 ffmpeg concat 合并为完整 MP4，保存到项目目录，支持直接打开或在文件夹中显示
+- 视频提示词根据场景台词自动生成（角色开口对白描述）
+
+## 安装与运行
+
+### 前端设置
+```sh
+cd renderer
+npm install
+npm run dev      # 开发模式（Vite + HMR）
+npm run build    # 生产构建
+npx electron .   # 运行 Electron 应用
+```
+
+### 后端设置
+```sh
+cd backend
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+python main.py   # 启动 FastAPI 服务 (http://localhost:18520)
+```
+
+### 外部依赖
+- **ComfyUI**：负责图片和视频生成，需单独安装并运行
+- **IndexTTS-2.0**：负责语音合成，通过 Gradio API 调用
+- **ffmpeg**：用于音频替换和视频合并（可从 ComfyUI `.ext/Library/bin/` 自动检测）
+
+## 项目结构
+
+```
+LumiCreate-Pro/
+├── renderer/                   # Vue 3 + Electron 前端
+│   ├── src/
+│   │   ├── views/              # 页面（HomeView, ProjectView, SettingsView）
+│   │   ├── components/
+│   │   │   └── tabs/           # 功能标签页（AudioTab, VideoTab, ImageTab…）
+│   │   ├── assets/             # 样式/资源
+│   │   ├── router/             # Vue Router
+│   │   └── main.js
+│   ├── index.html
+│   └── vite.config.js
+├── backend/                    # FastAPI 后端
+│   ├── routers/
+│   │   ├── projects.py         # 项目 CRUD（场景/图片/音频/视频 存取）
+│   │   ├── image_engine.py     # 图片生成 SSE 流
+│   │   ├── audio_engine.py     # 音频生成 SSE 流（IndexTTS / GPT-SoVITS）
+│   │   ├── text_engine.py      # 文案/分镜 LLM 生成
+│   │   ├── video_engine.py     # 视频生成 SSE 流 + 分镜合并
+│   │   └── settings.py         # 全局设置读写
+│   ├── services/
+│   │   ├── comfyui.py          # ComfyUI API 封装 + LiteGraph→API 转换器
+│   │   ├── ltx2video.py        # LTX-2.3 视频生成（上传/补丁工作流/拉取结果/音频替换）
+│   │   ├── indextts.py         # IndexTTS-2.0 Gradio API
+│   │   ├── gptsovits.py        # GPT-SoVITS API
+│   │   ├── llm.py              # LLM 推理（Ollama / OpenAI 兼容）
+│   │   └── prompts.py          # Prompt 模板
+│   ├── config.py               # 设置模型与加载
+│   ├── main.py                 # FastAPI 应用入口
+│   └── requirements.txt
+├── electron/
+│   ├── main.js                 # Electron 主进程（窗口 / IPC / shell 操作）
+│   └── preload.js              # contextBridge API 暴露
+├── .gitignore
+└── README.md
+```
+
+## 配置
+
+全局设置存储在：`%APPDATA%/LumiCreate-Local/settings.json`
+
+支持的引擎配置：
+
+| 引擎 | 配置项 |
+|------|--------|
+| **文本引擎** | Ollama / LM Studio / Deepseek / 任意 OpenAI 兼容端点 |
+| **图片引擎** | ComfyUI URL + 工作流目录 |
+| **音频引擎** | IndexTTS-2.0 Gradio URL、音色/情感参考目录、默认音色/权重 |
+| **视频引擎** | ComfyUI URL + 工作流目录 + ComfyUI input/ 目录 + 默认分辨率/帧率 |
+
+## 更新日志
+
+### v0.3（当前）
+- ✅ LTX-2.3 视频生成完整流程（首帧 + 末帧 + 音频 → MP4）
+- ✅ LiteGraph→API 转换器：修复 6 类边缘情况（SetNode/GetNode / Bypass / 虚拟节点 / UI-only 输入 / dict widgets_values / wv_idx 偏移）
+- ✅ VAELoaderKJ → VAELoader 自动替换（规避 KJNodes 版本 Bug）
+- ✅ 音频上传改为直接写入 ComfyUI input/ 目录（兼容旧版 ComfyUI）
+- ✅ 视频完成后用用户原始音频替换 AI 解码音频（ffmpeg 后处理）
+- ✅ 视频提示词自动注入角色开口对白（跳过旁白）
+- ✅ 生成视频持久化保存 + 重新进入页面自动恢复预览
+- ✅ 分镜合并：ffmpeg concat → 项目目录 `final_video.mp4`，结果弹窗支持打开/定位
+- ✅ 设置页新增 ComfyUI input/ 目录配置及分辨率标签
+
+### v0.2
+- ✅ 音频引擎切换至 IndexTTS-2.0（Gradio API）
+- ✅ 音频页按场景分组，音色/情感参考配置
+- ✅ 每段音频前/后静音可调，多版本生成与选用
+- ✅ 场景音频一键合并（WAV 拼接）+ 持久化保存
+- ✅ ImageTab master-detail 分割布局 + 图片持久化
+- ✅ 工作流选择自动记忆
+- ✅ 项目保存状态（dirty/saved）正确联动
+
+## 后续规划
+
+- [ ] 视频生成页：生成前暴露可编辑的视频提示词
+- [ ] 文案生成页：用户预设更多项目配置（角色、世界观、风格等）
+- [ ] 图片生成：人物一致性控制（IP-Adapter / 角色参考图）
+- [ ] 整体软件窗口布局优化
+
+## 开发指南
+
+### 热重载
+- 前端：Vite HMR 自动刷新
+- 后端：修改代码后手动重启 `python main.py`
+
+### 文件编码（Windows GBK 环境）
+不要用 PowerShell `Get-Content`/`Set-Content` 编辑 UTF-8 文件，使用 Python 脚本或 VS Code 编辑器处理中文字符。
+
+### 项目数据存储
+```
+~\LumiCreate-Projects\
+└── {project_id}\
+    ├── project.json        # 元数据与进度
+    ├── manuscript.md       # 文案
+    ├── scenes.json         # 分镜列表（含台词）
+    ├── images.json         # 图片槽位元数据
+    ├── images\             # PNG 文件
+    ├── audio.json          # 音频数据（含合并结果）
+    ├── videos.json         # 分镜视频元数据
+    ├── video\              # MP4 文件（各分镜 + final_video.mp4）
+    └── cache\              # 临时缓存
+```
+
+## 许可证
+
+MIT
+
 
 ## 核心功能
 
