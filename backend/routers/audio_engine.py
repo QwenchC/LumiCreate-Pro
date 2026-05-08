@@ -279,3 +279,26 @@ async def stitch_scene(req: StitchRequest):
     with wave.open(io.BytesIO(wav_bytes)) as wf:
         duration_ms = int(wf.getnframes() / wf.getframerate() * 1000)
     return {"data": base64.b64encode(wav_bytes).decode(), "duration_ms": duration_ms}
+
+
+# ── Microsoft Edge TTS ─────────────────────────────────────────────────────────
+
+class MsTtsRequest(BaseModel):
+    text:  str
+    voice: str = "zh-CN-XiaoxiaoNeural"
+    rate:  str = "+0%"   # e.g. "-25%", "+0%", "+50%"
+
+
+@router.post("/ms-tts")
+async def ms_tts(req: MsTtsRequest):
+    """Generate a single TTS clip with Microsoft Edge neural voices. Returns base64 MP3."""
+    try:
+        from services.msedge_tts import synthesise_mp3
+        mp3_bytes = await synthesise_mp3(req.text.strip(), req.voice, req.rate)
+        b64 = base64.b64encode(mp3_bytes).decode()
+        # Rough estimate: Chinese neural TTS ~3.5 chars/sec
+        duration_ms = max(1000, int(len(req.text) / 3.5 * 1000))
+        return {"data": b64, "duration_ms": duration_ms, "format": "mp3"}
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))

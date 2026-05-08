@@ -331,3 +331,22 @@ async def save_videos(project_id: str, data: list[VideoSlot]):
     progress["video"] = 100 if data else 0
     return await update_project(project_id, {"progress": progress})
 
+
+# ── Video prompts ───────────────────────────────────────────────────────────────
+
+@router.get("/{project_id}/video-prompts")
+async def load_video_prompts(project_id: str):
+    path = _project_dir(project_id) / "video_prompts.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@router.put("/{project_id}/video-prompts")
+async def save_video_prompts(project_id: str, data: dict):
+    _read_meta(project_id)
+    (_project_dir(project_id) / "video_prompts.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return {"ok": True}
+

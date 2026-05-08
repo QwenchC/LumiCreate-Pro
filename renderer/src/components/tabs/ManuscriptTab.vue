@@ -45,13 +45,78 @@
         </div>
 
         <div class="form-group">
+          <label>故事基调</label>
+          <select v-model="config.tone" class="input select">
+            <option value="">请选择</option>
+            <option>轻松</option>
+            <option>深沉</option>
+            <option>热血</option>
+            <option>温暖</option>
+            <option>黑暗</option>
+            <option>幽默</option>
+            <option>浪漫</option>
+            <option>史诗</option>
+          </select>
+        </div>
+
+        <div class="form-group">
           <label>主题 / 核心灵感</label>
           <textarea
             v-model="config.theme"
             class="input textarea"
             placeholder="描述故事的核心主题、关键人物或灵感来源..."
-            rows="4"
+            rows="3"
           />
+        </div>
+
+        <div class="form-group">
+          <label>世界观设定</label>
+          <textarea
+            v-model="config.worldview"
+            class="input textarea"
+            placeholder="例：近未来都市、东方仙侠、赛博朋克..."
+            rows="2"
+          />
+        </div>
+
+        <div class="form-group">
+          <div class="char-header">
+            <label style="margin-bottom:0">主要角色</label>
+            <button class="btn-icon" @click="addCharacter" title="添加角色">＋</button>
+          </div>
+          <div class="character-list">
+            <div v-for="(char, i) in config.characters" :key="i" class="character-item">
+              <div class="char-row">
+                <input v-model="char.name" class="input char-name" placeholder="姓名" />
+                <input v-model="char.role" class="input char-role" placeholder="定位" />
+                <button class="btn-icon btn-remove" @click="removeCharacter(i)" title="移除">×</button>
+              </div>
+              <input v-model="char.traits" class="input char-traits" placeholder="性格 / 外貌特征（可选）" />
+            </div>
+            <button v-if="!config.characters.length" class="btn btn-secondary btn-sm char-add-btn" @click="addCharacter">+ 添加角色</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>对白模式</label>
+          <div class="radio-group">
+            <label class="radio-item">
+              <input type="radio" value="narration" v-model="config.dialogue_mode" />
+              纯旁白
+            </label>
+            <label class="radio-item">
+              <input type="radio" value="dialogue" v-model="config.dialogue_mode" />
+              纯对话
+            </label>
+            <label class="radio-item">
+              <input type="radio" value="mixed" v-model="config.dialogue_mode" />
+              旁白＋对话（混合）
+            </label>
+            <label class="radio-item">
+              <input type="radio" value="reading" v-model="config.dialogue_mode" />
+              纯朗读（直读文案）
+            </label>
+          </div>
         </div>
 
         <div class="config-actions">
@@ -147,11 +212,22 @@ const statusType = ref('') // 'ok' | 'err'
 const editorRef  = ref(null)
 
 const config = ref({
-  length: 'medium',
-  audience: '',
-  style: '',
-  theme: '',
+  length:        'medium',
+  audience:      '',
+  style:         '',
+  tone:          '',
+  theme:         '',
+  worldview:     '',
+  characters:    [],
+  dialogue_mode: 'mixed',
 })
+
+function addCharacter() {
+  config.value.characters.push({ name: '', role: '', traits: '' })
+}
+function removeCharacter(i) {
+  config.value.characters.splice(i, 1)
+}
 
 let abortController = null
 
@@ -305,7 +381,7 @@ function onGlobalSave() {
 .tab-inner  { display: flex; gap: 16px; height: 100%; }
 
 /* ── Config panel ── */
-.config-panel { width: 268px; flex-shrink: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0; }
+.config-panel { width: 290px; flex-shrink: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0; }
 .config-title { font-size: 14px; font-weight: 700; margin-bottom: 16px; }
 .form-group   { margin-bottom: 14px; }
 .form-group label { display: block; font-size: 12px; color: var(--color-text-muted); margin-bottom: 5px; }
@@ -351,5 +427,19 @@ function onGlobalSave() {
 }
 .editor-textarea:focus { border-color: var(--color-accent); }
 .editor-textarea[readonly] { opacity: 0.85; }
+
+/* characters */
+.char-header   { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.character-list{ display: flex; flex-direction: column; gap: 8px; }
+.character-item{ display: flex; flex-direction: column; gap: 4px; background: var(--color-surface-2); border-radius: var(--radius); padding: 7px 8px; }
+.char-row      { display: flex; gap: 5px; align-items: center; }
+.char-name     { flex: 1.1; min-width: 0; }
+.char-role     { flex: 1.4; min-width: 0; }
+.char-traits   { font-size: 11px; }
+.char-add-btn  { width: 100%; justify-content: center; margin-top: 2px; }
+.btn-icon      { background: none; border: 1px solid var(--color-border); border-radius: 50%; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 14px; color: var(--color-text-muted); flex-shrink: 0; transition: color var(--transition), border-color var(--transition); }
+.btn-icon:hover{ color: var(--color-accent); border-color: var(--color-accent); }
+.btn-remove    { font-size: 16px; }
+.btn-remove:hover { color: var(--color-error); border-color: var(--color-error); }
 </style>
 

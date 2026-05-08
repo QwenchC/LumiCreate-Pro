@@ -11,9 +11,21 @@
         <button class="btn btn-secondary btn-sm" :disabled="!manuscript || generating" @click="generateScenes">
           {{ generating ? '生成中...' : '✨ 从文案生成分镜' }}
         </button>
-        <button class="btn btn-secondary btn-sm" @click="addScene">
-          + 添加分镜
+        <button
+          class="btn btn-secondary btn-sm"
+          :disabled="!scenes.length || generatingPrompts"
+          @click="generateAllPrompts"
+          :title="'为所有分镜生成首帧/尾帧提示词'"
+        >
+          {{ generatingPrompts ? `提示词 ${promptProgress}/${scenes.length}...` : '🖼 生成全部提示词' }}
         </button>
+        <button class="btn btn-secondary btn-sm" @click="addScene">+ 添加分镜</button>
+        <button
+          class="btn btn-ghost btn-sm"
+          :disabled="!scenes.length"
+          @click="clearAllScenes"
+          title="清空所有分镜"
+        >🗑 清空</button>
         <button class="btn btn-primary btn-sm" :disabled="!isDirty || saving" @click="save">
           {{ saving ? '保存中...' : '💾 保存分镜' }}
         </button>
@@ -98,6 +110,12 @@
                   <label>
                     首帧提示词
                     <span class="label-hint">（英文，给 ComfyUI）</span>
+                    <button
+                      class="btn-gen-prompt"
+                      :disabled="generatingPromptIdx === idx"
+                      @click.stop="generateScenePrompt(scene, idx)"
+                      title="用 LLM 生成该分镜的图片提示词"
+                    >{{ generatingPromptIdx === idx ? '生成中...' : '✦ 生成提示词' }}</button>
                   </label>
                   <textarea
                     v-model="scene.start_frame_prompt"
@@ -183,20 +201,33 @@ const API = 'http://127.0.0.1:18520/api'
 const EMOTIONS = ['平静', '喜悦', '愤怒', '悲伤', '惊讶', '恐惧', '害羞', '紧张']
 
 // ── State ──────────────────────────────────────────────────────────────────────
-const scenes      = ref([])
-const manuscript  = ref('')
-const isDirty     = ref(false)
-const saving      = ref(false)
-const generating  = ref(false)
-const genError    = ref('')
-const expandedIdx = ref(null)
+const scenes           = ref([])
+const manuscript       = ref('')
+const manuscriptConfig = ref({ dialogue_mode: 'mixed', characters: [] })
+const isDirty          = ref(false)
+const saving           = ref(false)
+const generating         = ref(false)
+const genError           = ref('')
+const expandedIdx        = ref(null)
+const generatingPrompts  = ref(false)
+const generatingPromptIdx = ref(null)  // idx of single scene being generated
+const promptProgress     = ref(0)
 
 // ── Load ───────────────────────────────────────────────────────────────────────
 onMounted(async () => {
   // Load manuscript (needed for generation)
   try {
     const r = await fetch(`${API}/projects/${props.projectId}/manuscript`)
-    if (r.ok) { const d = await r.json(); manuscript.value = d.content || '' }
+    if (r.ok) {
+      const d = await r.json()
+      manuscript.value = d.content || ''
+      if (d.config) {
+        manuscriptConfig.value = {
+          dialogue_mode: d.config.dialogue_mode || 'mixed',
+          characters:    d.config.characters    || [],
+        }
+      }
+    }
   } catch {}
   // Load saved scenes
   try {
@@ -217,7 +248,11 @@ async function generateScenes() {
     const res = await fetch(`${API}/text-engine/generate-scenes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ manuscript: manuscript.value }),
+      body: JSON.stringify({
+        manuscript:    manuscript.value,
+        dialogue_mode: manuscriptConfig.value.dialogue_mode,
+        characters:    manuscriptConfig.value.characters,
+      }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }))
@@ -235,6 +270,59 @@ async function generateScenes() {
   } finally {
     generating.value = false
   }
+}
+
+// ── Frame prompt generation ───────────────────────────────────────────────────
+async function _fetchFramePrompts(scene) {
+  const res = await fetch(`${API}/text-engine/generate-frame-prompts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      description: scene.description,
+      dialogues:   scene.dialogues,
+      characters:  manuscriptConfig.value.characters,
+    }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+async function generateScenePrompt(scene, idx) {
+  generatingPromptIdx.value = idx
+  try {
+    const data = await _fetchFramePrompts(scene)
+    scene.start_frame_prompt = data.start_frame_prompt || scene.start_frame_prompt
+    scene.end_frame_prompt   = data.end_frame_prompt   || scene.end_frame_prompt
+    markDirty()
+  } catch (e) {
+    alert(`提示词生成失败：${e.message}`)
+  } finally {
+    generatingPromptIdx.value = null
+  }
+}
+
+async function generateAllPrompts() {
+  generatingPrompts.value = true
+  promptProgress.value = 0
+  for (let i = 0; i < scenes.value.length; i++) {
+    generatingPromptIdx.value = i
+    try {
+      const data = await _fetchFramePrompts(scenes.value[i])
+      scenes.value[i].start_frame_prompt = data.start_frame_prompt || scenes.value[i].start_frame_prompt
+      scenes.value[i].end_frame_prompt   = data.end_frame_prompt   || scenes.value[i].end_frame_prompt
+      markDirty()
+    } catch { /* skip failed scene */ }
+    promptProgress.value = i + 1
+  }
+  generatingPromptIdx.value = null
+  generatingPrompts.value = false
+}
+
+function clearAllScenes() {
+  if (!confirm(`确定清空全部 ${scenes.value.length} 个分镜？此操作不可撤销。`)) return
+  scenes.value = []
+  expandedIdx.value = null
+  markDirty()
 }
 
 // ── CRUD helpers ──────────────────────────────────────────────────────────────
@@ -392,6 +480,21 @@ function onGlobalSave() { if (isDirty.value) save() }
 .no-dialogue   { font-size: 12px; padding: 8px 0; }
 
 .add-bottom { width: 100%; justify-content: center; }
+
+/* prompt generate button inside label */
+.btn-gen-prompt {
+  margin-left: 8px;
+  padding: 1px 8px;
+  font-size: 11px;
+  background: none;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius);
+  color: var(--color-accent);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.btn-gen-prompt:hover:not(:disabled) { background: var(--color-accent); color: #fff; }
+.btn-gen-prompt:disabled { opacity: 0.45; cursor: default; }
 
 /* ── Expand transition ── */
 .expand-enter-active, .expand-leave-active { transition: max-height 0.25s ease, opacity 0.2s; overflow: hidden; }

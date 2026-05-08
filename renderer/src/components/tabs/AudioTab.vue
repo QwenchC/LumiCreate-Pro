@@ -5,18 +5,21 @@
     <div class="audio-toolbar">
       <div class="toolbar-left">
         <h3 class="toolbar-title">音频生成</h3>
-        <span class="text-muted" style="font-size:13px" v-if="allClips.length">
+        <span class="text-muted" style="font-size:13px" v-if="isReadingMode">
+          📖 朗读模式 · 微软神经语音 · {{ readingScenes.length }} 段
+        </span>
+        <span class="text-muted" style="font-size:13px" v-else-if="allClips.length">
           {{ allClips.length }} 个音频片段 · 每段 {{ genCount }} 个版本
         </span>
       </div>
       <div class="toolbar-right">
-        <div class="gen-count-group">
+        <div class="gen-count-group" v-if="!isReadingMode">
           <label class="text-muted" style="font-size:12px;white-space:nowrap">版本数</label>
           <input class="input input-num" type="number" min="1" max="10" v-model.number="genCount" :disabled="running" />
         </div>
         <button class="btn btn-danger btn-sm" v-if="running" @click="stopBatch">⏹ 停止</button>
-        <button class="btn btn-primary btn-sm" v-else :disabled="!allClips.length" @click="runBatch">
-          ▶ 批量生成
+        <button class="btn btn-primary btn-sm" v-else :disabled="!canBatch" @click="runBatch">
+          ▶ {{ isReadingMode ? '全部生成语音' : '批量生成' }}
         </button>
       </div>
     </div>
@@ -29,13 +32,17 @@
     <div v-else-if="loadingScenes" class="empty-state">
       <div class="spinner" /><p class="text-muted">加载分镜中…</p>
     </div>
-    <div v-else-if="!allClips.length" class="empty-state">
-      <div class="empty-icon">🎙</div>
+    <div v-else-if="!allClips.length && !isReadingMode" class="empty-state">
+      <div class="empty-icon">🎤</div>
       <p>请先在「分镜设计」添加台词并保存</p>
+    </div>
+    <div v-else-if="isReadingMode && !readingScenes.length" class="empty-state">
+      <div class="empty-icon">📖</div>
+      <p>朗读模式：请先在「分镜设计」完成分镜并保存</p>
     </div>
 
     <!-- ── Batch progress ── -->
-    <div v-if="(running || batchDone) && allClips.length" class="batch-progress-bar-wrap">
+    <div v-if="(running || batchDone) && (allClips.length || readingScenes.length)" class="batch-progress-bar-wrap">
       <div class="batch-progress-label">
         <span>批量生成进度</span>
         <span>{{ completedCount }} / {{ totalCount }}</span>
@@ -45,8 +52,56 @@
       </div>
     </div>
 
-    <!-- ── Scene groups ── -->
-    <div class="scenes-audio-list" v-if="allClips.length">
+    <!-- ── Reading mode: voice controls ── -->
+    <div v-if="isReadingMode && readingScenes.length" class="reading-controls">
+      <div class="reading-ctrl-group">
+        <label class="dlg-label">微软语音</label>
+        <select v-model="msVoice" class="input select-compact ms-voice-select" :disabled="running">
+          <option v-for="v in MS_VOICES" :key="v.value" :value="v.value">{{ v.label }}</option>
+        </select>
+      </div>
+      <div class="reading-ctrl-group">
+        <label class="dlg-label">语速</label>
+        <select v-model="msRate" class="input select-compact" :disabled="running">
+          <option value="-50%">很慢</option>
+          <option value="-25%">慢</option>
+          <option value="+0%">正常</option>
+          <option value="+25%">快</option>
+          <option value="+50%">很快</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- ── Reading mode: scene audio list ── -->
+    <div class="scenes-audio-list" v-if="isReadingMode && readingScenes.length">
+      <div v-for="scene in readingScenes" :key="scene.sceneId" class="scene-audio-group card">
+        <div class="scene-group-header">
+          <span class="scene-num">{{ String(scene.sceneIndex).padStart(2,'0') }}</span>
+          <span class="scene-group-title">{{ scene.description || `场景 ${scene.sceneIndex}` }}</span>
+          <span class="text-muted" style="font-size:11px;margin-left:auto">
+            {{ scene.duration_ms ? (scene.duration_ms / 1000).toFixed(1) + 's' : (scene.generating ? '生成中…' : '') }}
+          </span>
+          <button class="btn btn-ghost btn-xs regen-btn" :disabled="running" @click="generateMsTts(scene)">
+            {{ scene.generating ? '生成中…' : '↺ 生成' }}
+          </button>
+        </div>
+        <div class="reading-text">{{ scene.text.slice(0, 150) }}{{ scene.text.length > 150 ? '…' : '' }}</div>
+        <div v-if="scene.generating" class="reading-generating text-muted">
+          <span class="spinner" style="width:16px;height:16px;border-width:2px" /> 语音生成中…
+        </div>
+        <audio
+          v-else-if="scene.data"
+          :key="scene._rev"
+          :src="'data:audio/mpeg;base64,' + scene.data"
+          controls
+          class="reading-player"
+          @loadedmetadata="e => onReadingAudioLoaded(scene, e)"
+        />
+      </div>
+    </div>
+
+    <!-- ── Normal mode: scene groups ── -->
+    <div class="scenes-audio-list" v-if="allClips.length && !isReadingMode">
       <div v-for="scene in scenesWithClips" :key="scene.sceneId" class="scene-audio-group card">
 
         <!-- Scene header -->
@@ -163,6 +218,19 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 const props = defineProps({ projectId: String })
 const emit  = defineEmits(['dirty', 'saved'])
 // ── state ──────────────────────────────────────────────────────────────────
+const MS_VOICES = [
+  { value: 'zh-CN-XiaoxiaoNeural', label: '晓晓（女·亲切温柔）' },
+  { value: 'zh-CN-XiaoyiNeural',   label: '晓伊（女·活泼下馆）' },
+  { value: 'zh-CN-XiaohanNeural',  label: '晓涵（女·沉稳大气）' },
+  { value: 'zh-CN-XiaomoNeural',   label: '晓墨（女·多情感）' },
+  { value: 'zh-CN-XiaoruiNeural',  label: '晓瑞（女·温和柔和）' },
+  { value: 'zh-CN-XiaoyanNeural',  label: '晓颜（女·专业主播）' },
+  { value: 'zh-CN-YunxiNeural',    label: '云希（男·活泼）' },
+  { value: 'zh-CN-YunyangNeural',  label: '云扬（男·新闻播报）' },
+  { value: 'zh-CN-YunyeNeural',    label: '云野（男·悠闲）' },
+  { value: 'zh-CN-YunjianNeural',  label: '云健（男·劲岁运动）' },
+]
+
 const loadingScenes = ref(false)
 const loadError     = ref('')
 const scenesWithClips = ref([])  // [{ sceneId, sceneIndex, description, clips: [...] }]
@@ -176,8 +244,18 @@ const totalCount     = ref(0)
 const abortController = ref(null)
 const audioRefs       = {}  // { "clipId:slotIndex": HTMLAudioElement }
 
+// ── Reading mode state ───────────────────────────────────────────────────────────
+const isReadingMode  = ref(false)
+const readingScenes  = ref([])   // [{ sceneId, sceneIndex, description, text, generating, data, duration_ms }]
+const msVoice        = ref('zh-CN-XiaoxiaoNeural')
+const msRate         = ref('+0%')
+let   _stopReading   = false
+
 // ── derived ─────────────────────────────────────────────────────────────────
 const allClips = computed(() => scenesWithClips.value.flatMap(s => s.clips))
+const canBatch = computed(() =>
+  isReadingMode.value ? readingScenes.value.length > 0 : allClips.value.length > 0
+)
 const progressPct = computed(() =>
   totalCount.value > 0 ? Math.round((completedCount.value / totalCount.value) * 100) : 0
 )
@@ -197,6 +275,15 @@ async function loadData() {
   loadingScenes.value = true
   loadError.value = ''
   try {
+    // Detect reading mode from manuscript config
+    try {
+      const cr = await fetch(`http://localhost:18520/api/projects/${props.projectId}/manuscript`)
+      if (cr.ok) {
+        const cd = await cr.json()
+        isReadingMode.value = (cd.config?.dialogue_mode === 'reading')
+      }
+    } catch { /* ignore */ }
+
     // Load scenes
     const r = await fetch(`http://localhost:18520/api/projects/${props.projectId}/scenes`)
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
@@ -231,44 +318,84 @@ async function loadData() {
 
     // Build scenesWithClips
     const result = []
-    for (const scene of scenes) {
-      const rawClips = scene.audio_clips || scene_dialogues_to_clips(scene)
-      if (!rawClips.length) continue
-      const clips = rawClips.map((ac, idx) => {
-        const clipId = `${scene.id || scene.index}:${idx}`
-        const saved  = savedAudio[clipId] || {}
-        return {
-          id:             clipId,
-          sceneId:        scene.id || scene.index,
-          character:      ac.character || '',
-          emotion:        ac.emotion   || '',
-          text:           ac.text      || '',
-          pre_silence_ms:  ac.pre_silence_ms  ?? 500,
-          post_silence_ms: ac.post_silence_ms ?? 1000,
-          _voiceRef:  saved.voiceRef  || '',
-          _emoRef:    saved.emoRef    || '',
-          _emoMethod: saved.emoMethod || '与音色参考音频相同',
-          _emoWeight: saved.emoWeight ?? 0.8,
-          selectedSlot: saved.selectedSlot ?? 0,
-          slots: Array.from({ length: genCount.value }, (_, i) => ({
-            index:      i,
-            data:       saved.slots?.[i]?.data || null,
-            duration:   saved.slots?.[i]?.duration || '',
-            generating: false,
-          })),
+    if (isReadingMode.value) {
+      // ── Reading mode: one MS TTS clip per scene ───────────────────────────
+      readingScenes.value = scenes
+        .filter(s => (s.dialogues || [])[0]?.text)
+        .map(s => {
+          const key   = `__ms_reading__${s.id || s.index}`
+          const saved = savedAudio[key] || {}
+          return {
+            sceneId:     s.id || s.index,
+            sceneIndex:  s.index,
+            description: s.description,
+            text:        s.dialogues[0].text,
+            generating:  false,
+            data:        saved.data        || null,
+            duration_ms: saved.duration_ms || 0,
+            _rev:        0,   // bump on each (re)generate to force <audio> re-render
+          }
+        })
+    } else {
+      // ── Normal mode: IndexTTS / GPT-SoVITS ───────────────────────────────
+      // Load settings for defaults
+      try {
+        const sr = await fetch('http://localhost:18520/api/settings')
+        if (sr.ok) {
+          const s = await sr.json()
+          genCount.value = s.audio_engine?.default_gen_count ?? 3
         }
-      })
-      result.push({
-        sceneId: scene.id || scene.index,
-        sceneIndex: scene.index,
-        description: scene.description,
-        clips,
-        stitching: false,
-        stitchedData: savedAudio[`__stitched__${scene.id || scene.index}`]?.data || null,
-        stitchedDurationMs: savedAudio[`__stitched__${scene.id || scene.index}`]?.duration_ms || 0,
-      })
+      } catch { /* ignore */ }
+
+      // Load ref file lists
+      try {
+        const [vr, er] = await Promise.all([
+          fetch('http://localhost:18520/api/audio-engine/voice-refs').then(r => r.ok ? r.json() : []),
+          fetch('http://localhost:18520/api/audio-engine/emotion-refs').then(r => r.ok ? r.json() : []),
+        ])
+        voiceRefs.value = vr
+        emoRefs.value = er
+      } catch { /* ignore */ }
+
+      for (const scene of scenes) {
+        const rawClips = scene.audio_clips || scene_dialogues_to_clips(scene)
+        if (!rawClips.length) continue
+        const clips = rawClips.map((ac, idx) => {
+          const clipId = `${scene.id || scene.index}:${idx}`
+          const saved  = savedAudio[clipId] || {}
+          return {
+            id:             clipId,
+            sceneId:        scene.id || scene.index,
+            character:      ac.character || '',
+            emotion:        ac.emotion   || '',
+            text:           ac.text      || '',
+            pre_silence_ms:  ac.pre_silence_ms  ?? 500,
+            post_silence_ms: ac.post_silence_ms ?? 1000,
+            _voiceRef:  saved.voiceRef  || '',
+            _emoRef:    saved.emoRef    || '',
+            _emoMethod: saved.emoMethod || '与音色参考音频相同',
+            _emoWeight: saved.emoWeight ?? 0.8,
+            selectedSlot: saved.selectedSlot ?? 0,
+            slots: Array.from({ length: genCount.value }, (_, i) => ({
+              index:      i,
+              data:       saved.slots?.[i]?.data || null,
+              duration:   saved.slots?.[i]?.duration || '',
+              generating: false,
+            })),
+          }
+        })
+        result.push({
+          sceneId: scene.id || scene.index,
+          sceneIndex: scene.index,
+          description: scene.description,
+          clips,
+          stitching: false,
+          stitchedData: savedAudio[`__stitched__${scene.id || scene.index}`]?.data || null,
+          stitchedDurationMs: savedAudio[`__stitched__${scene.id || scene.index}`]?.duration_ms || 0,
+        })
+      }
+      scenesWithClips.value = result
     }
-    scenesWithClips.value = result
   } catch (e) {
     loadError.value = e.message
   } finally {
@@ -290,22 +417,32 @@ function scene_dialogues_to_clips(scene) {
 async function saveAudio() {
   if (!props.projectId) return
   const payload = {}
-  for (const clip of allClips.value) {
-    payload[clip.id] = {
-      voiceRef:     clip._voiceRef,
-      emoRef:       clip._emoRef,
-      emoMethod:    clip._emoMethod,
-      emoWeight:    clip._emoWeight,
-      selectedSlot: clip.selectedSlot,
-      slots: clip.slots.map(s => ({ data: s.data, duration: s.duration })),
+  if (isReadingMode.value) {
+    for (const scene of readingScenes.value) {
+      if (scene.data) {
+        payload[`__ms_reading__${scene.sceneId}`] = {
+          data:        scene.data,
+          duration_ms: scene.duration_ms,
+        }
+      }
     }
-  }
-  // Save stitched audio per scene
-  for (const scene of scenesWithClips.value) {
-    if (scene.stitchedData) {
-      payload[`__stitched__${scene.sceneId}`] = {
-        data: scene.stitchedData,
-        duration_ms: scene.stitchedDurationMs,
+  } else {
+    for (const clip of allClips.value) {
+      payload[clip.id] = {
+        voiceRef:     clip._voiceRef,
+        emoRef:       clip._emoRef,
+        emoMethod:    clip._emoMethod,
+        emoWeight:    clip._emoWeight,
+        selectedSlot: clip.selectedSlot,
+        slots: clip.slots.map(s => ({ data: s.data, duration: s.duration })),
+      }
+    }
+    for (const scene of scenesWithClips.value) {
+      if (scene.stitchedData) {
+        payload[`__stitched__${scene.sceneId}`] = {
+          data: scene.stitchedData,
+          duration_ms: scene.stitchedDurationMs,
+        }
       }
     }
   }
@@ -318,7 +455,8 @@ async function saveAudio() {
 
 // ── generate ─────────────────────────────────────────────────────────────────
 async function runBatch() {
-  if (running.value || !allClips.value.length) return
+  if (running.value || !canBatch.value) return
+  if (isReadingMode.value) { await generateAllMsTts(); return }
   running.value  = true
   batchDone.value = false
   completedCount.value = 0
@@ -441,8 +579,56 @@ async function regenClip(clip) {
 }
 
 function stopBatch() {
+  _stopReading = true
   abortController.value?.abort()
   running.value = false
+}
+
+// ── Microsoft Edge TTS ───────────────────────────────────────────────────────────
+async function generateMsTts(scene) {
+  scene.generating = true
+  scene.data = null      // clear old audio so the player disappears immediately
+  scene._rev = (scene._rev || 0) + 1
+  try {
+    const res = await fetch('http://localhost:18520/api/audio-engine/ms-tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: scene.text, voice: msVoice.value, rate: msRate.value }),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`)
+    const result = await res.json()
+    scene.data        = result.data
+    scene._rev        = (scene._rev || 0) + 1   // bump again so :key changes
+    scene.duration_ms = result.duration_ms       // will be updated from metadata below
+    emit('dirty')
+    await saveAudio()
+  } catch (e) {
+    console.error('MS TTS failed:', e)
+  } finally {
+    scene.generating = false
+  }
+}
+
+function onReadingAudioLoaded(scene, e) {
+  const dur = e.target.duration
+  if (dur && isFinite(dur)) {
+    scene.duration_ms = Math.round(dur * 1000)
+  }
+}
+
+async function generateAllMsTts() {
+  running.value        = true
+  batchDone.value      = false
+  completedCount.value = 0
+  totalCount.value     = readingScenes.value.length
+  _stopReading         = false
+  for (const scene of readingScenes.value) {
+    if (_stopReading) break
+    await generateMsTts(scene)
+    completedCount.value++
+  }
+  running.value   = false
+  batchDone.value = true
 }
 
 // ── stitch ───────────────────────────────────────────────────────────────────
@@ -504,6 +690,22 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* ── Reading mode ── */
+.reading-controls {
+  display:flex; flex-wrap:wrap; align-items:center; gap:14px;
+  padding:8px 16px; flex-shrink:0;
+  border-bottom:1px solid var(--border-color);
+  background:var(--bg-secondary);
+}
+.reading-ctrl-group { display:flex; align-items:center; gap:6px; }
+.ms-voice-select    { min-width:180px; }
+.reading-text {
+  font-size:13px; color:var(--text-secondary); line-height:1.6;
+  padding:6px 2px; border-top:1px dashed var(--border-color); margin-top:2px;
+}
+.reading-player    { height:36px; width:100%; margin-top:6px; }
+.reading-generating { display:flex; align-items:center; gap:8px; padding:6px 2px; font-size:12px; }
+
 .audio-tab { display:flex; flex-direction:column; height:100%; overflow:hidden; }
 .audio-toolbar {
   display:flex; align-items:center; justify-content:space-between;

@@ -19,6 +19,12 @@
             @click="mergeVideos"
           >{{ merging ? '合并中…' : '🎬 合并视频' }}</button>
           <button
+            class="btn btn-secondary btn-sm"
+            :disabled="!scenes.length"
+            title="为所有分镜自动生成视频提示词"
+            @click="generateAllPrompts"
+          >✦ 全部生成提示词</button>
+          <button
             class="btn btn-primary btn-sm"
             :disabled="!selectedWorkflow || !readyCount"
             @click="startGeneration"
@@ -111,6 +117,35 @@
           </span>
         </div>
 
+        <!-- Prompt section -->
+        <div class="prompt-section">
+          <div class="prompt-header">
+            <span class="prompt-label">
+              视频提示词
+              <span v-if="scenePrompts[scene.id]" class="prompt-set-badge">已设置</span>
+            </span>
+            <div class="prompt-actions">
+              <button class="btn btn-ghost btn-xs" @click="generatePrompt(scene)" title="根据分镜信息自动生成提示词">
+                ✦ 生成
+              </button>
+              <button
+                v-if="scenePrompts[scene.id]"
+                class="btn btn-ghost btn-xs"
+                @click="togglePrompt(scene.id)"
+              >{{ promptVisible[scene.id] ? '收起' : '展开' }}</button>
+            </div>
+          </div>
+          <div v-if="promptVisible[scene.id]" class="prompt-editor-wrap">
+            <textarea
+              class="prompt-textarea"
+              :value="scenePrompts[scene.id]"
+              @input="onPromptInput(scene.id, $event.target.value)"
+              placeholder="输入视频生成提示词，或点击「生成」自动填写…"
+              rows="3"
+            />
+          </div>
+        </div>
+
         <!-- Per-scene progress bar -->
         <div class="scene-mini-bar-wrap" v-if="sceneState[scene.id] === 'active'">
           <div class="scene-mini-bar">
@@ -181,6 +216,9 @@ const sceneProgress   = ref({})   // id → {value, max}
 const sceneVideos     = ref({})   // id → base64 mp4
 const mergeResult     = ref(null) // { output_path, output_dir } once merged
 const merging         = ref(false)
+const scenePrompts    = ref({})   // scene_id → prompt string
+const promptVisible   = ref({})   // scene_id → bool (expanded)
+let _promptSaveTimer  = null
 
 // ── derived ────────────────────────────────────────────────────────────────────
 const scenesWithData = computed(() =>
@@ -239,13 +277,14 @@ async function loadData() {
   if (!props.projectId) return
   loadingScenes.value = true
   try {
-    const [scenesRes, imgRes, audRes, settingsRes, wfRes, vidRes] = await Promise.all([
+    const [scenesRes, imgRes, audRes, settingsRes, wfRes, vidRes, promptsRes] = await Promise.all([
       axios.get(`${API}/projects/${props.projectId}/scenes`),
       axios.get(`${API}/projects/${props.projectId}/images`).catch(() => ({ data: { slots: [], selected: {} } })),
       axios.get(`${API}/projects/${props.projectId}/audio`).catch(() => ({ data: {} })),
       axios.get(`${API}/settings`).catch(() => ({ data: {} })),
       axios.get(`${API}/video-engine/workflows`).catch(() => ({ data: [] })),
       axios.get(`${API}/projects/${props.projectId}/videos`).catch(() => ({ data: {} })),
+      axios.get(`${API}/projects/${props.projectId}/video-prompts`).catch(() => ({ data: {} })),
     ])
 
     scenes.value = scenesRes.data?.scenes || []
@@ -260,10 +299,20 @@ async function loadData() {
     imagesSelected.value = imgRes.data?.selected || {}
 
     // Audio stitched data
+    // Also map reading-mode MS TTS clips (__ms_reading__{id}) into the same
+    // __stitched__{id} key so scenesWithData picks them up transparently.
     const aud = audRes.data || {}
     const stitched = {}
     for (const [k, v] of Object.entries(aud)) {
-      if (k.startsWith('__stitched__')) stitched[k] = v
+      if (k.startsWith('__stitched__')) {
+        stitched[k] = v
+      } else if (k.startsWith('__ms_reading__')) {
+        const sceneId = k.slice('__ms_reading__'.length)
+        // Only apply if no stitched entry already exists for this scene
+        if (!stitched[`__stitched__${sceneId}`]) {
+          stitched[`__stitched__${sceneId}`] = v
+        }
+      }
     }
     audioData.value = stitched
 
@@ -276,6 +325,9 @@ async function loadData() {
 
     // Saved videos
     sceneVideos.value = vidRes.data || {}
+
+    // Saved video prompts
+    scenePrompts.value = promptsRes.data || {}
 
   } catch (e) {
     genError.value = e?.response?.data?.detail || e.message || '加载失败'
@@ -323,6 +375,48 @@ function _buildPrompt(scene) {
   return base ? `${base}. ${dlgParts.join(', ')}.` : dlgParts.join(', ') + '.'
 }
 
+function generatePrompt(scene) {
+  const p = _buildPrompt(scene)
+  scenePrompts.value = { ...scenePrompts.value, [scene.id]: p }
+  promptVisible.value = { ...promptVisible.value, [scene.id]: true }
+  _scheduleSavePrompts()
+}
+
+function generateAllPrompts() {
+  const updated = { ...scenePrompts.value }
+  const vis = { ...promptVisible.value }
+  for (const s of scenesWithData.value) {
+    updated[s.id] = _buildPrompt(s)
+    vis[s.id] = true
+  }
+  scenePrompts.value  = updated
+  promptVisible.value = vis
+  _scheduleSavePrompts()
+}
+
+function togglePrompt(sceneId) {
+  promptVisible.value = { ...promptVisible.value, [sceneId]: !promptVisible.value[sceneId] }
+}
+
+function onPromptInput(sceneId, value) {
+  scenePrompts.value = { ...scenePrompts.value, [sceneId]: value }
+  _scheduleSavePrompts()
+}
+
+function _scheduleSavePrompts() {
+  clearTimeout(_promptSaveTimer)
+  _promptSaveTimer = setTimeout(_savePrompts, 800)
+}
+
+async function _savePrompts() {
+  if (!props.projectId) return
+  try {
+    await axios.put(`${API}/projects/${props.projectId}/video-prompts`, scenePrompts.value)
+  } catch (e) {
+    console.warn('提示词保存失败:', e)
+  }
+}
+
 async function _runGeneration(sceneList) {
   const payload = {
     workflow_name: selectedWorkflow.value,
@@ -335,7 +429,7 @@ async function _runGeneration(sceneList) {
       end_image_b64:   s.endImageB64,
       audio_b64:       s.audioB64,
       duration_ms:     s.audioDurationMs || 4000,
-      positive_prompt: _buildPrompt(s),
+      positive_prompt: scenePrompts.value[s.id] ?? _buildPrompt(s),
     }))
   }
 
@@ -514,4 +608,53 @@ async function showMergedInFolder() {
   background:var(--bg-tertiary); padding:6px 10px; border-radius:4px;
 }
 .merge-dialog-actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
+
+/* ── Prompt section ── */
+.prompt-section {
+  border-top: 1px dashed var(--border-color);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.prompt-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.prompt-set-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.prompt-actions { display: flex; gap: 4px; }
+.prompt-editor-wrap { display: flex; flex-direction: column; gap: 4px; }
+.prompt-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-family: inherit;
+  min-height: 64px;
+}
+.prompt-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 </style>
