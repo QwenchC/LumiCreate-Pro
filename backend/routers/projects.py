@@ -285,3 +285,49 @@ async def save_audio(project_id: str, data: dict):
     progress = meta.progress.model_dump()
     progress["audio"] = 100 if done else 0
     return await update_project(project_id, {"progress": progress})
+
+
+# ── Videos ─────────────────────────────────────────────────────────────────────
+
+class VideoSlot(BaseModel):
+    scene_id: str
+    data: str  # base64 mp4
+
+
+@router.get("/{project_id}/videos")
+async def load_videos(project_id: str):
+    proj_dir = _project_dir(project_id)
+    vid_dir = proj_dir / "video"
+    meta_path = proj_dir / "videos.json"
+    if not meta_path.exists():
+        return {}
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    result = {}
+    for scene_id, filename in metadata.items():
+        vid_path = vid_dir / filename
+        if vid_path.exists():
+            result[scene_id] = base64.b64encode(vid_path.read_bytes()).decode("ascii")
+    return result
+
+
+@router.put("/{project_id}/videos")
+async def save_videos(project_id: str, data: list[VideoSlot]):
+    proj_dir = _project_dir(project_id)
+    vid_dir = proj_dir / "video"
+    vid_dir.mkdir(exist_ok=True)
+
+    metadata = {}
+    for slot in data:
+        filename = f"{slot.scene_id}.mp4"
+        (vid_dir / filename).write_bytes(base64.b64decode(slot.data))
+        metadata[slot.scene_id] = filename
+
+    (proj_dir / "videos.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    meta = _read_meta(project_id)
+    progress = meta.progress.model_dump()
+    progress["video"] = 100 if data else 0
+    return await update_project(project_id, {"progress": progress})
+

@@ -26,5 +26,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ensureDir: (dirPath) => ipcRenderer.invoke('fs:ensure-dir', dirPath),
 
   // Remove listeners (cleanup)
-  removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel)
+  removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
+
+  // Shell
+  openPath: (filePath) => ipcRenderer.invoke('shell:open-path', filePath),
+  showItemInFolder: (filePath) => ipcRenderer.invoke('shell:show-item-in-folder', filePath),
 })

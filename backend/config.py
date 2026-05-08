@@ -40,9 +40,11 @@ class AudioEngineConfig(BaseModel):
 
 class VideoEngineConfig(BaseModel):
     comfyui_url: str = "http://localhost:8188"
-    default_workflow: str = ""
-    resolution: str = "1920x1080"
-    fps: int = Field(default=30, ge=12, le=60)
+    workflow_dir: str = ""          # local path to ComfyUI workflows folder (same as image_engine.workflow_dir usually)
+    comfyui_input_dir: str = ""     # local path to ComfyUI input/ directory (for audio upload workaround)
+    default_workflow: str = "flfa2i-lumicreate"
+    resolution: str = "720x1280"
+    fps: int = Field(default=25, ge=12, le=60)
 
 
 class AppSettings(BaseModel):

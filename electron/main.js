@@ -200,6 +200,15 @@ ipcMain.on('window:maximize', () => {
 })
 ipcMain.on('window:close', () => mainWindow.webContents.send('app:before-close'))
 
+ipcMain.handle('shell:open-path', async (_, filePath) => {
+  return shell.openPath(filePath)
+})
+
+ipcMain.handle('shell:show-item-in-folder', async (_, filePath) => {
+  shell.showItemInFolder(filePath)
+  return true
+})
+
 // ────────────────────────────────────────────────
 // Lifecycle
 // ────────────────────────────────────────────────

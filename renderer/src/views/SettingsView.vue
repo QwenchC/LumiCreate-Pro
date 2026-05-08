@@ -191,25 +191,49 @@
 
       <!-- Video engine -->
       <section v-if="activeTab === 'video'" class="settings-section">
-        <h3 class="section-title">视频生成引擎（ComfyUI）</h3>
+        <h3 class="section-title">视频生成引擎（ComfyUI + LTX-2.3）</h3>
         <div class="form-group">
           <label>ComfyUI 地址</label>
           <input v-model="settings.video_engine.comfyui_url" class="input" placeholder="http://localhost:8188" />
         </div>
         <div class="form-group">
+          <label>工作流文件夹</label>
+          <div class="input-with-btn">
+            <input v-model="settings.video_engine.workflow_dir" class="input" placeholder="留空则使用图片引擎工作流文件夹" />
+            <button class="btn btn-secondary btn-sm" @click="browseVideoWfDir">浏览…</button>
+          </div>
+          <p class="hint">填写 ComfyUI workflows 目录路径，留空时自动使用图片引擎的工作流目录</p>
+        </div>
+        <div class="form-group">
+          <label>ComfyUI input 目录</label>
+          <div class="input-with-btn">
+            <input v-model="settings.video_engine.comfyui_input_dir" class="input" placeholder="留空则自动从工作流文件夹推断" />
+            <button class="btn btn-secondary btn-sm" @click="browseVideoInputDir">浏览…</button>
+          </div>
+          <p class="hint">ComfyUI 的 input/ 目录路径，用于直接写入音频文件（绕过不支持 /upload/audio 的旧版本）</p>
+        </div>
+        <div class="form-group">
+          <label>默认工作流</label>
+          <input v-model="settings.video_engine.default_workflow" class="input" placeholder="flfa2i-lumicreate" />
+        </div>
+        <div class="form-group">
           <label>默认分辨率</label>
           <select v-model="settings.video_engine.resolution" class="input select">
-            <option>1920x1080</option>
-            <option>1280x720</option>
-            <option>3840x2160</option>
+            <option value="720x1280">720×1280（竖屏 HD）</option>
+            <option value="1280x720">1280×720（横屏 HD）</option>
+            <option value="576x1024">576×1024（竖屏 中）</option>
+            <option value="1024x576">1024×576（横屏 中）</option>
+            <option value="544x960">544×960（竖屏 小）</option>
+            <option value="960x544">960×544（横屏 小）</option>
           </select>
+          <p class="hint">⚠ 由于本地算力有限，每边最大 1280px；后端会自动对齐至 32 的倍数</p>
         </div>
         <div class="form-group">
           <label>帧率</label>
           <select v-model.number="settings.video_engine.fps" class="input select">
             <option :value="24">24 fps</option>
+            <option :value="25">25 fps</option>
             <option :value="30">30 fps</option>
-            <option :value="60">60 fps</option>
           </select>
         </div>
       </section>
@@ -306,6 +330,16 @@ async function save() {
 async function browseFolder(field) {
   const folder = await window.electronAPI?.selectFolder()
   if (folder) settings.value.audio_engine[field] = folder
+}
+
+async function browseVideoWfDir() {
+  const folder = await window.electronAPI?.selectFolder()
+  if (folder) settings.value.video_engine.workflow_dir = folder
+}
+
+async function browseVideoInputDir() {
+  const folder = await window.electronAPI?.selectFolder()
+  if (folder) settings.value.video_engine.comfyui_input_dir = folder
 }
 
 async function testConnection() {

@@ -207,6 +207,9 @@ def _litegraph_to_api(workflow: dict) -> dict:
     Handles the KSampler seed_control_mode extra widget by type-checking:
     if a widgets_values entry doesn't match the expected type of the current
     widget input, it is treated as a hidden control widget and skipped.
+
+    Also resolves SetNode/GetNode teleport pairs (used in complex workflows
+    to avoid long-distance wires) and bypassed nodes (mode==4).
     """
     nodes      = workflow.get("nodes", [])
     links_list = workflow.get("links", [])
@@ -218,10 +221,8 @@ def _litegraph_to_api(workflow: dict) -> dict:
         link_map[link_id] = [str(src_node), src_slot]
 
     # ── Handle bypassed nodes (LiteGraph mode == 4) ────────────────────────
+    # Must run BEFORE SetNode/GetNode resolution so set_map sees resolved links.
     # A bypassed node passes its Nth output through its Nth input.
-    # Re-route every downstream link that came from a bypassed node's output
-    # to instead come from that node's corresponding input.
-    # Multiple passes handles chains of bypassed nodes.
     for _ in range(len(nodes)):
         changed = False
         for node in nodes:
@@ -241,6 +242,35 @@ def _litegraph_to_api(workflow: dict) -> dict:
         if not changed:
             break
 
+    # ── Resolve SetNode/GetNode teleport pairs ──────────────────────────────
+    set_map: dict = {}  # name -> [src_node_id_str, src_slot]
+    for node in nodes:
+        if node.get("type") == "SetNode":
+            name = (node.get("widgets_values") or [None])[0]
+            inputs = node.get("inputs") or []
+            if name and inputs:
+                in_link_id = inputs[0].get("link")
+                if in_link_id is not None and in_link_id in link_map:
+                    set_map[name] = link_map[in_link_id]
+
+    for node in nodes:
+        if node.get("type") == "GetNode":
+            name = (node.get("widgets_values") or [None])[0]
+            source = set_map.get(name) if name else None
+            if source is None:
+                continue
+            for out in node.get("outputs") or []:
+                for out_link_id in (out.get("links") or []):
+                    if out_link_id is not None:
+                        link_map[out_link_id] = source
+
+    # Nodes that exist only as LiteGraph helpers — skip them in API output
+    _VIRTUAL_TYPES = {"SetNode", "GetNode", "Note", "Reroute", "MarkdownNote",
+                      "Fast Groups Bypasser (rgthree)"}
+
+    # Input types that are purely UI widgets — never sent to ComfyUI API
+    _UI_ONLY_TYPES = {"IMAGEUPLOAD", "AUDIOUPLOAD", "AUDIO_UI", "VIDEO_UI", "MASK_UI"}
+
     # Type checkers for widget → API value matching
     _type_ok = {
         "INT":     lambda v: isinstance(v, int) and not isinstance(v, bool),
@@ -252,11 +282,14 @@ def _litegraph_to_api(workflow: dict) -> dict:
 
     api: dict = {}
     for node in nodes:
-        # Skip bypassed nodes — they are transparently re-routed above
+        # Skip bypassed and virtual helper nodes
         if node.get("mode") == 4:
             continue
+        class_type = node.get("type", "")
+        if class_type in _VIRTUAL_TYPES:
+            continue
+
         node_id        = str(node["id"])
-        class_type     = node.get("type", "")
         inp_list       = node.get("inputs", [])
         widgets_values = node.get("widgets_values", [])
         title          = node.get("title", class_type)
@@ -270,19 +303,37 @@ def _litegraph_to_api(workflow: dict) -> dict:
             link_id  = inp.get("link")
             has_widget = "widget" in inp
 
+            # Skip UI-only widget types — these are never real computational inputs
+            if isinstance(inp_type, str) and inp_type in _UI_ONLY_TYPES:
+                wv_idx += 1  # still need to advance past their widgets_values slot
+                continue
+
             if link_id is not None:
                 if link_id in link_map:
                     api_inputs[inp_name] = link_map[link_id]
-            elif has_widget:
-                checker = _type_ok.get(inp_type)
-                # Skip widgets_values entries that don't match expected type
-                # (e.g. KSampler's seed_control_mode "randomize" between seed and steps)
-                while wv_idx < len(widgets_values):
-                    val = widgets_values[wv_idx]
+                # If this input has both a link AND a widget slot, still advance wv_idx
+                # so that subsequent pure-widget inputs read the correct slot.
+                if has_widget and not isinstance(widgets_values, dict):
                     wv_idx += 1
-                    if checker is None or checker(val):
+            elif has_widget:
+                if isinstance(widgets_values, dict):
+                    # Dict-style widgets_values (e.g. VHS_VideoCombine): key is input name
+                    val = widgets_values.get(inp_name)
+                    if val is not None:
                         api_inputs[inp_name] = val
-                        break
+                else:
+                    checker = _type_ok.get(inp_type)
+                    # Skip widgets_values entries that don't match expected type
+                    # (e.g. KSampler's seed_control_mode "randomize" between seed and steps)
+                    while wv_idx < len(widgets_values):
+                        val = widgets_values[wv_idx]
+                        wv_idx += 1
+                        if val is None:
+                            # None means a UI-only placeholder (e.g. audioUI, upload button)
+                            break
+                        if checker is None or checker(val):
+                            api_inputs[inp_name] = val
+                            break
 
         api[node_id] = {
             "class_type": class_type,
