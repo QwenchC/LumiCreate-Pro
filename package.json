@@ -1,6 +1,6 @@
 {
   "name": "lumicreate-local",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "LumiCreate Local - Comic drama generation tool",
   "main": "electron/main.js",
   "scripts": {
@@ -21,7 +21,6 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico",
       "sign": null,
       "signingHashAlgorithms": null,
       "certificateSubjectName": null,
@@ -30,9 +29,6 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     },
