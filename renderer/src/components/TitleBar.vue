@@ -2,9 +2,12 @@
   <div class="titlebar">
     <div class="titlebar-drag">
       <img src="/icon.png" class="titlebar-icon" alt="" />
-      <span class="titlebar-title">LumiCreate-Local</span>
+      <span class="titlebar-title">LumiCreate-Pro</span>
     </div>
     <div class="titlebar-controls">
+      <button class="ctrl-btn theme-btn" @click="toggleTheme" :title="isDark ? '切换到浅色模式' : '切换到深色模式'">
+        {{ isDark ? '☀' : '🌙' }}
+      </button>
       <button class="ctrl-btn" @click="minimize" title="最小化">─</button>
       <button class="ctrl-btn" @click="maximize" title="最大化/还原">□</button>
       <button class="ctrl-btn close-btn" @click="close" title="关闭">✕</button>
@@ -13,6 +16,25 @@
 </template>
 
 <script setup>
+import { ref, onMounted } from 'vue'
+
+const isDark = ref(true)
+
+function applyTheme(dark) {
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
+  isDark.value = dark
+  localStorage.setItem('lumi-theme', dark ? 'dark' : 'light')
+}
+
+function toggleTheme() {
+  applyTheme(!isDark.value)
+}
+
+onMounted(() => {
+  const saved = localStorage.getItem('lumi-theme')
+  applyTheme(saved !== 'light')
+})
+
 function minimize() { window.electronAPI?.windowMinimize() }
 function maximize() { window.electronAPI?.windowMaximize() }
 function close()    { window.electronAPI?.windowClose() }
@@ -46,4 +68,5 @@ function close()    { window.electronAPI?.windowClose() }
 }
 .ctrl-btn:hover { background: var(--color-border); color: var(--color-text); }
 .close-btn:hover { background: var(--color-error) !important; color: #fff; }
+.theme-btn { font-size: 15px; }
 </style>

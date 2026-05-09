@@ -18,8 +18,8 @@ export const useProjectStore = defineStore('projects', () => {
     }
   }
 
-  async function createProject(name, description = '') {
-    const { data } = await api.post('/projects', { name, description })
+  async function createProject(name, description = '', folder_id = 'default') {
+    const { data } = await api.post('/projects', { name, description, folder_id })
     projects.value.unshift(data)
     return data
   }
@@ -29,5 +29,17 @@ export const useProjectStore = defineStore('projects', () => {
     projects.value = projects.value.filter(p => p.id !== id)
   }
 
-  return { projects, loading, fetchProjects, createProject, deleteProject }
+  async function renameProject(id, name) {
+    const { data } = await api.put(`/projects/${id}`, { name })
+    const idx = projects.value.findIndex(p => p.id === id)
+    if (idx !== -1) projects.value[idx] = { ...projects.value[idx], name: data.name }
+  }
+
+  async function moveProject(id, folder_id) {
+    const { data } = await api.put(`/projects/${id}`, { folder_id })
+    const idx = projects.value.findIndex(p => p.id === id)
+    if (idx !== -1) projects.value[idx] = { ...projects.value[idx], folder_id: data.folder_id }
+  }
+
+  return { projects, loading, fetchProjects, createProject, deleteProject, renameProject, moveProject }
 })

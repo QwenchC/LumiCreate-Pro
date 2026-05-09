@@ -299,6 +299,9 @@ async function generate(useExisting = false) {
             scrollToBottom()
           }
         } catch (e) {
+          // If the error originated from obj.error (backend sent an error event),
+          // re-throw it so the outer catch can display it to the user.
+          if (raw && raw.includes('"error"')) throw e
           if (e.message !== 'undefined') console.warn('SSE parse error', e)
         }
       }

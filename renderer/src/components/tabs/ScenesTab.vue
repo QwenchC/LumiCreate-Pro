@@ -229,6 +229,14 @@ onMounted(async () => {
       }
     }
   } catch {}
+  // Load enriched characters (includes appearance from CharactersTab)
+  try {
+    const r = await fetch(`${API}/projects/${props.projectId}/characters`)
+    if (r.ok) {
+      const d = await r.json()
+      if (d.characters?.length) manuscriptConfig.value.characters = d.characters
+    }
+  } catch {}
   // Load saved scenes
   try {
     const r = await fetch(`${API}/projects/${props.projectId}/scenes`)

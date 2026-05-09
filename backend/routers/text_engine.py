@@ -78,8 +78,10 @@ async def test_connection():
                 return ConnectionTestResult(success=True, message="LM Studio 连接成功", models=models)
         else:
             headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
+            base = cfg.base_url.rstrip("/")
+            models_url = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(f"{cfg.base_url}/v1/models", headers=headers)
+                r = await client.get(models_url, headers=headers)
                 r.raise_for_status()
                 models = [m["id"] for m in r.json().get("data", [])]
                 return ConnectionTestResult(success=True, message="API 连接成功", models=models)
@@ -94,6 +96,8 @@ async def test_connection():
 @router.post("/generate-manuscript")
 async def generate_manuscript(req: GenerateManuscriptRequest):
     cfg = load_settings().text_engine
+    import sys
+    print(f"[generate-manuscript] engine={cfg.engine_type} base_url={cfg.base_url} model={cfg.model}", flush=True, file=sys.stderr)
     length_desc = LENGTH_DESC.get(req.config.length, LENGTH_DESC["medium"])
     dialogue_mode_desc = DIALOGUE_MODE_DESC.get(req.config.dialogue_mode, DIALOGUE_MODE_DESC["mixed"])
 
@@ -272,11 +276,17 @@ def _extract_json_array(text: str) -> Optional[list]:
 # ── Frame prompt generation ────────────────────────────────────────────────────
 
 _FRAME_PROMPT_SYSTEM = (
-    "You are an expert AI image prompt engineer for anime/manga style video generation. "
+    "You are an expert AI image prompt engineer for video generation. "
     "Given a scene description and optional dialogue, write two concise English prompts: "
     "one for the START frame and one for the END frame of a short video clip. "
     "Each prompt should be vivid, specific, and suitable for a text-to-image model "
-    "(Stable Diffusion / ComfyUI). Output ONLY a JSON object with keys "
+    "(Stable Diffusion / ComfyUI). "
+    "CRITICAL: Do NOT include any art style, painting style, or rendering style tags "
+    "(e.g. do NOT write 'anime style', 'watercolor', '3D render', 'photorealistic', "
+    "'oil painting', 'sketch', 'cartoon', 'manga', 'illustration', etc.). "
+    "Art style will be applied separately by the user. "
+    "Focus only on scene content, character appearance, composition, lighting, and mood. "
+    "Output ONLY a JSON object with keys "
     "\"start_frame_prompt\" and \"end_frame_prompt\". No extra text."
 )
 
@@ -286,20 +296,43 @@ async def generate_frame_prompts(req: GenerateFramePromptsRequest):
         f"  [{d.get('character','?')}]: {d.get('text','')}"
         for d in (req.dialogues or [])
     )
+
+    # Build per-character appearance tags for consistency
+    char_appearances = []
     char_styles = ""
     if req.characters:
-        parts = [
-            f"{c.get('name','')}（{c.get('role','')}）" if c.get('role') else c.get('name','')
-            for c in req.characters if c.get('name')
-        ]
+        parts = []
+        for c in req.characters:
+            name = c.get("name", "").strip()
+            if not name:
+                continue
+            role = c.get("role", "").strip()
+            appearance = c.get("appearance", "").strip()
+            traits = c.get("traits", "").strip()
+            # Collect for the prompt header
+            desc_parts = [name]
+            if role:        desc_parts.append(f"({role})")
+            if appearance:  char_appearances.append(f"{name}: {appearance}")
+            elif traits:    char_appearances.append(f"{name}: {traits}")
+            parts.append(" ".join(desc_parts))
         if parts:
-            char_styles = "Characters present in this series: " + ", ".join(parts) + ". "
+            char_styles = "Characters in this series: " + ", ".join(parts) + ". "
+
+    appearance_block = ""
+    if char_appearances:
+        appearance_block = (
+            "Character visual descriptions (MUST be included in every frame prompt for consistency):\n"
+            + "\n".join(f"  - {a}" for a in char_appearances)
+            + "\n"
+        )
 
     user_msg = (
         f"{char_styles}"
+        f"{appearance_block}"
         f"Scene description (Chinese): {req.description}\n"
         + (f"Dialogues:\n{dialogue_lines}\n" if dialogue_lines.strip() else "")
-        + "\nReturn JSON only."
+        + "\nIMPORTANT: Each prompt MUST include the character appearance tags above verbatim so the characters look consistent across all frames.\n"
+        + "Return JSON only."
     )
 
     cfg = load_settings().text_engine

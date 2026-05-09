@@ -6,11 +6,11 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SETTINGS_PATH = Path(os.environ.get("APPDATA", Path.home())) / "LumiCreate-Local" / "settings.json"
+SETTINGS_PATH = Path(os.environ.get("APPDATA", Path.home())) / "LumiCreate-Pro" / "settings.json"
 
 
 class TextEngineConfig(BaseModel):
-    engine_type: Literal["ollama", "lmstudio", "deepseek", "openai_compat"] = "ollama"
+    engine_type: Literal["ollama", "lmstudio", "deepseek", "bailian", "openai_compat"] = "ollama"
     base_url: str = "http://localhost:11434"
     api_key: Optional[str] = None
     model: str = ""

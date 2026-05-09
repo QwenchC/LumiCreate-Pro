@@ -6,7 +6,7 @@ from routers import settings, projects, text_engine, image_engine, audio_engine,
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="LumiCreate-Local API",
+        title="LumiCreate-Pro API",
         version="0.1.0",
         docs_url="/docs",
     )

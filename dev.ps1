@@ -1,8 +1,8 @@
 #!/usr/bin/env pwsh
-# LumiCreate-Local 开发启动脚本
+# LumiCreate-Pro 开发启动脚本
 
 Write-Host "╔══════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║   LumiCreate-Local Dev Mode  ║" -ForegroundColor Cyan
+Write-Host "║   LumiCreate-Pro Dev Mode  ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════╝" -ForegroundColor Cyan
 
 $root = $PSScriptRoot

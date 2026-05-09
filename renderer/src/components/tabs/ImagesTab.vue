@@ -13,6 +13,14 @@
           <option value="">— 选择工作流 —</option>
           <option v-for="wf in workflows" :key="wf" :value="wf">{{ wf }}</option>
         </select>
+        <div class="style-select-group">
+          <label class="text-muted" style="font-size:12px;white-space:nowrap">画风</label>
+          <select class="input select-compact" v-model="stylePreset" :disabled="running" style="min-width:110px;max-width:160px">
+            <option v-for="p in STYLE_PRESETS" :key="p.value" :value="p.value">{{ p.label }}</option>
+          </select>
+          <input v-if="stylePreset === '__custom__'" class="input style-custom-input"
+            placeholder="输入英文画风提示词…" v-model="customStyleText" :disabled="running" />
+        </div>
         <div class="gen-count-group">
           <label class="text-muted" style="font-size:12px;white-space:nowrap">每帧张数</label>
           <input class="input input-num" type="number" min="1" max="10" step="1"
@@ -196,6 +204,21 @@
               @click="addOneMore(activeScene,'end')" :title="'再生成一张'">＋</button>
           </div>
         </div>
+
+        <!-- Character reference panel -->
+        <div v-if="characters.length" class="char-ref-panel">
+          <div class="char-ref-title" @click="charRefOpen = !charRefOpen">
+            🎭 角色外观参考
+            <span class="char-ref-toggle">{{ charRefOpen ? '▲' : '▼' }}</span>
+          </div>
+          <div v-if="charRefOpen" class="char-ref-list">
+            <div v-for="c in characters" :key="c.name" class="char-ref-item">
+              <span class="char-ref-name">{{ c.name }}</span>
+              <code class="char-ref-appearance" @click="copyAppearance(c.appearance)">{{ c.appearance }}</code>
+              <span class="char-ref-copy-hint">点击复制</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Right panel: no scene selected -->
@@ -235,6 +258,30 @@ const selectedWorkflow = ref('')
 const genCount        = ref(3)
 const imgWidth        = ref(1920)
 const imgHeight       = ref(1080)
+
+const characters      = ref([])   // from /characters endpoint
+const charRefOpen     = ref(true)
+
+// ── Style consistency ────────────────────────────────────────────────────────
+const STYLE_PRESETS = [
+  { label: '— 无画风 —', value: '' },
+  { label: '二次元动漫', value: 'anime style, 2d animation, vibrant colors, clean linework' },
+  { label: '写实风格',   value: 'photorealistic, realistic, high detail, cinematic lighting' },
+  { label: '水彩插画',   value: 'watercolor illustration, soft colors, painted texture, artistic' },
+  { label: '赛博朋克',   value: 'cyberpunk style, neon lights, futuristic city, dark atmosphere' },
+  { label: '国风水墨',   value: 'Chinese ink painting, traditional brush strokes, elegant, minimalist' },
+  { label: '像素风格',   value: 'pixel art, retro 16-bit style' },
+  { label: '自定义',    value: '__custom__' },
+]
+const stylePreset     = ref('')
+const customStyleText = ref('')
+const effectiveStyle  = computed(() =>
+  stylePreset.value === '__custom__' ? customStyleText.value.trim() : stylePreset.value
+)
+
+function copyAppearance(text) {
+  navigator.clipboard?.writeText(text).catch(() => {})
+}
 
 const activeSceneId = ref(null)
 const activeScene   = computed(() => scenes.value.find(s => s.id === activeSceneId.value) ?? null)
@@ -321,11 +368,12 @@ async function loadData() {
   loadError.value = ''
   loadingScenes.value = true
   try {
-    const [scenesRes, settingsRes, workflowsRes, imagesRes] = await Promise.all([
+    const [scenesRes, settingsRes, workflowsRes, imagesRes, charsRes] = await Promise.all([
       axios.get(API + '/projects/' + props.projectId + '/scenes'),
       axios.get(API + '/settings'),
       axios.get(API + '/image-engine/workflows').catch(() => ({ data: [] })),
-      axios.get(API + '/projects/' + props.projectId + '/images').catch(() => ({ data: { slots: [], counts: {}, selected: {} } }))
+      axios.get(API + '/projects/' + props.projectId + '/images').catch(() => ({ data: { slots: [], counts: {}, selected: {} } })),
+      axios.get(API + '/projects/' + props.projectId + '/characters').catch(() => ({ data: { characters: [] } })),
     ])
     scenes.value = ((scenesRes.data?.scenes) || []).map(s => ({
       ...s,
@@ -338,6 +386,7 @@ async function loadData() {
     imgHeight.value = imgCfg.image_height ?? 1080
     if (imgCfg.default_workflow) selectedWorkflow.value = imgCfg.default_workflow
     workflows.value = workflowsRes.data || []
+    characters.value = (charsRes.data?.characters || []).filter(c => c.appearance)
     const imgState = imagesRes.data
     const newSlotImages = {}
     for (const slot of imgState.slots || []) {
@@ -419,10 +468,12 @@ function handleSlotEvent(evt) {
 
 async function generateSceneSlots(scene, { skipExisting = false } = {}) {
   let frames = []
+  const _style = effectiveStyle.value
+  const _withStyle = (p) => _style ? _style + ', ' + p : p
   if (scene.start_frame_prompt)
-    frames.push({ scene_id: scene.id, frame_type: 'start', prompt: scene.start_frame_prompt })
+    frames.push({ scene_id: scene.id, frame_type: 'start', prompt: _withStyle(scene.start_frame_prompt) })
   if (scene.end_frame_prompt)
-    frames.push({ scene_id: scene.id, frame_type: 'end',   prompt: scene.end_frame_prompt })
+    frames.push({ scene_id: scene.id, frame_type: 'end',   prompt: _withStyle(scene.end_frame_prompt) })
   if (!frames.length) return
 
   if (skipExisting) {
@@ -568,8 +619,9 @@ async function generateOneScene(scene) {
 }
 
 async function regenFrame(scene, frameType) {
-  const prompt = frameType === 'start' ? scene.start_frame_prompt : scene.end_frame_prompt
-  if (!prompt || !selectedWorkflow.value) return
+  const rawPrompt = frameType === 'start' ? scene.start_frame_prompt : scene.end_frame_prompt
+  if (!rawPrompt || !selectedWorkflow.value) return
+  const prompt = effectiveStyle.value ? effectiveStyle.value + ', ' + rawPrompt : rawPrompt
   setFrameSlotCount(scene.id, frameType, genCount.value)
   for (let s = 0; s < genCount.value; s++) {
     const key = slotKey(scene.id, frameType, s)
@@ -643,6 +695,11 @@ function lightboxNav(dir) {
 
 function deleteSlot(scene, frameType, slotIndex) {
   const count = getFrameSlotCount(scene.id, frameType)
+  // Guard: if any slot for this frame is still loading, deleting would shift
+  // the slot indices and cause the in-flight SSE response to write to the wrong key.
+  for (let s = 0; s < count; s++) {
+    if (isLoading(scene.id, frameType, s)) return
+  }
   for (let i = slotIndex; i < count - 1; i++) {
     const from = slotKey(scene.id, frameType, i + 1)
     const to   = slotKey(scene.id, frameType, i)
@@ -664,8 +721,9 @@ function deleteSlot(scene, frameType, slotIndex) {
 }
 
 async function addOneMore(scene, frameType) {
-  const prompt = frameType === 'start' ? scene.start_frame_prompt : scene.end_frame_prompt
-  if (!prompt || !selectedWorkflow.value) return
+  const rawPrompt = frameType === 'start' ? scene.start_frame_prompt : scene.end_frame_prompt
+  if (!rawPrompt || !selectedWorkflow.value) return
+  const prompt = effectiveStyle.value ? effectiveStyle.value + ', ' + rawPrompt : rawPrompt
   const newSlot = getFrameSlotCount(scene.id, frameType)
   setFrameSlotCount(scene.id, frameType, newSlot + 1)
   const key = slotKey(scene.id, frameType, newSlot)
@@ -700,6 +758,8 @@ async function addOneMore(scene, frameType) {
 .select-compact { height: 32px; padding: 0 8px; min-width: 180px; max-width: 240px; font-size: 13px; }
 .gen-count-group { display: flex; align-items: center; gap: 6px; }
 .input-num { height: 32px; width: 56px; text-align: center; padding: 0 6px; font-size: 13px; }
+.style-select-group { display: flex; align-items: center; gap: 6px; }
+.style-custom-input { height: 32px; min-width: 160px; padding: 0 8px; font-size: 13px; }
 .batch-progress-bar-wrap {
   padding: 8px 16px;
   background: var(--bg-panel);
@@ -787,6 +847,28 @@ async function addOneMore(scene, frameType) {
 .scene-detail-panel.empty-detail {
   align-items: center; justify-content: center; color: var(--text-muted);
 }
+
+/* ── Character reference panel ── */
+.char-ref-panel {
+  border: 1px solid var(--color-border); border-radius: var(--radius);
+  overflow: hidden; flex-shrink: 0;
+}
+.char-ref-title {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; background: var(--color-surface-2);
+  font-size: 12px; font-weight: 600; cursor: pointer; user-select: none;
+}
+.char-ref-toggle { font-size: 10px; color: var(--color-text-muted); }
+.char-ref-list { padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
+.char-ref-item { display: flex; flex-direction: column; gap: 3px; }
+.char-ref-name { font-size: 12px; font-weight: 600; color: var(--color-accent); }
+.char-ref-appearance {
+  font-size: 11px; background: var(--color-surface-2); padding: 4px 8px;
+  border-radius: 4px; line-height: 1.5; cursor: pointer; word-break: break-all;
+  border: 1px solid transparent; transition: border-color .15s;
+}
+.char-ref-appearance:hover { border-color: var(--color-accent); }
+.char-ref-copy-hint { font-size: 10px; color: var(--color-text-muted); }
 .detail-header {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px; background: var(--bg-input);

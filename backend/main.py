@@ -1,4 +1,4 @@
-"""LumiCreate-Local Backend Entry Point"""
+"""LumiCreate-Pro Backend Entry Point"""
 import uvicorn
 from app import create_app
 

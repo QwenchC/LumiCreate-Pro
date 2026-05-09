@@ -50,6 +50,9 @@
         <div class="form-group">
           <label>API 地址</label>
           <input v-model="settings.text_engine.base_url" class="input" placeholder="http://localhost:11434" />
+          <p v-if="settings.text_engine.engine_type === 'bailian'" class="hint">
+            百炼固定地址：<code>https://dashscope.aliyuncs.com/compatible-mode/v1</code>
+          </p>
         </div>
         <div class="form-group" v-if="settings.text_engine.engine_type !== 'ollama' && settings.text_engine.engine_type !== 'lmstudio'">
           <label>API Key</label>
@@ -265,7 +268,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { useSettingsStore } from '../stores/settings'
 import axios from 'axios'
 
@@ -292,6 +295,7 @@ const TEXT_ENGINES = {
   ollama:       'Ollama（本地）',
   lmstudio:     'LM Studio（本地）',
   deepseek:     'DeepSeek API',
+  bailian:      '阿里云百炼（通义千问）',
   openai_compat:'其他 OpenAI 兼容'
 }
 
@@ -312,6 +316,24 @@ function applyPreset(p) {
   settings.value.image_engine.image_width  = p.w
   settings.value.image_engine.image_height = p.h
 }
+
+// Auto-fill base_url when switching engine type
+const ENGINE_URLS = {
+  ollama:       'http://localhost:11434',
+  lmstudio:     'http://localhost:1234',
+  deepseek:     'https://api.deepseek.com',
+  bailian:      'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  openai_compat: '',
+}
+watch(
+  () => settings.value?.text_engine?.engine_type,
+  (type, oldType) => {
+    // oldType is undefined on the initial load transition (null→value); skip it
+    if (!oldType || !type || !settings.value) return
+    const preset = ENGINE_URLS[type]
+    if (preset !== undefined) settings.value.text_engine.base_url = preset
+  }
+)
 
 onMounted(async () => {
   await store.fetchSettings()
@@ -360,6 +382,8 @@ async function testConnection() {
 }
 
 async function fetchModels() {
+  // Save current UI state first so backend uses the updated engine config
+  await store.saveSettings(settings.value)
   await testConnection()
 }
 

@@ -47,20 +47,22 @@ const saving = ref(false)
 const activeTab = ref('manuscript')
 
 const TABS = [
-  { key: 'manuscript', label: '文案创建', icon: '📝' },
-  { key: 'scenes',     label: '分镜设计', icon: '🎞' },
-  { key: 'images',     label: '图片生成', icon: '🖼' },
-  { key: 'audio',      label: '音频生成', icon: '🎙' },
-  { key: 'video',      label: '视频生成', icon: '🎬' },
+  { key: 'manuscript',  label: '文案创建', icon: '📝' },
+  { key: 'characters',  label: '角色管理', icon: '🎭' },
+  { key: 'scenes',      label: '分镜设计', icon: '🎞' },
+  { key: 'images',      label: '图片生成', icon: '🖼' },
+  { key: 'audio',       label: '音频生成', icon: '🎙' },
+  { key: 'video',       label: '视频生成', icon: '🎬' },
 ]
 
 // Load tab components lazily
 const TAB_COMPONENTS = {
-  manuscript: defineAsyncComponent(() => import('../components/tabs/ManuscriptTab.vue')),
-  scenes:     defineAsyncComponent(() => import('../components/tabs/ScenesTab.vue')),
-  images:     defineAsyncComponent(() => import('../components/tabs/ImagesTab.vue')),
-  audio:      defineAsyncComponent(() => import('../components/tabs/AudioTab.vue')),
-  video:      defineAsyncComponent(() => import('../components/tabs/VideoTab.vue')),
+  manuscript:  defineAsyncComponent(() => import('../components/tabs/ManuscriptTab.vue')),
+  characters:  defineAsyncComponent(() => import('../components/tabs/CharactersTab.vue')),
+  scenes:      defineAsyncComponent(() => import('../components/tabs/ScenesTab.vue')),
+  images:      defineAsyncComponent(() => import('../components/tabs/ImagesTab.vue')),
+  audio:       defineAsyncComponent(() => import('../components/tabs/AudioTab.vue')),
+  video:       defineAsyncComponent(() => import('../components/tabs/VideoTab.vue')),
 }
 
 const currentTabComponent = computed(() => TAB_COMPONENTS[activeTab.value])

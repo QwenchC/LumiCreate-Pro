@@ -14,7 +14,7 @@ async def stream_chat(
 ) -> AsyncGenerator[str, None]:
     """
     Yield text chunks from the configured LLM engine.
-    Handles: Ollama, LM Studio (OpenAI-compat), DeepSeek / other OpenAI-compat.
+    Handles: Ollama, LM Studio / DeepSeek / Bailian / other OpenAI-compat.
     """
     if cfg.engine_type == "ollama":
         async for chunk in _stream_ollama(cfg, system_prompt, user_message):
@@ -72,11 +72,17 @@ async def _stream_openai_compat(cfg: TextEngineConfig, system: str, user: str) -
         "top_p": cfg.top_p,
     }
 
-    # DeepSeek uses its own base URL; LM Studio uses the configured one
-    base = cfg.base_url.rstrip("/")
-    url = f"{base}/v1/chat/completions"
+    # Qwen3 / Bailian thinking models default to deep-thinking mode which emits
+    # reasoning_content tokens (not content) and can silently stall for minutes.
+    # Disable it so the model returns text immediately.
+    if cfg.engine_type == "bailian":
+        payload["enable_thinking"] = False
 
-    async with httpx.AsyncClient(timeout=120) as client:
+    # base_url may or may not already end with /v1 (e.g. Bailian includes /v1)
+    base = cfg.base_url.rstrip("/")
+    url = f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
+
+    async with httpx.AsyncClient(timeout=300) as client:
         async with client.stream("POST", url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():

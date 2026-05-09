@@ -32,11 +32,14 @@ class ProjectMeta(BaseModel):
     created_at: str
     updated_at: str
     progress: ProjectProgress = ProjectProgress()
+    has_final_video: bool = False
+    folder_id: str = "default"
 
 
 class CreateProjectRequest(BaseModel):
     name: str
     description: str = ""
+    folder_id: str = "default"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -75,7 +78,9 @@ async def list_projects():
             meta_file = entry / "project.json"
             if meta_file.exists():
                 try:
-                    projects.append(ProjectMeta(**json.loads(meta_file.read_text(encoding="utf-8"))))
+                    meta = ProjectMeta(**json.loads(meta_file.read_text(encoding="utf-8")))
+                    meta.has_final_video = (entry / "video" / "final_video.mp4").exists()
+                    projects.append(meta)
                 except Exception:
                     pass
     projects.sort(key=lambda p: p.updated_at, reverse=True)
@@ -87,7 +92,7 @@ async def create_project(req: CreateProjectRequest):
     now = datetime.now(timezone.utc).isoformat()
     project_id = f"proj_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
     meta = ProjectMeta(id=project_id, name=req.name, description=req.description,
-                       created_at=now, updated_at=now)
+                       created_at=now, updated_at=now, folder_id=req.folder_id)
     _write_meta(meta)
     # Create subdirectories
     for sub in ("images", "audio", "video", "cache"):
@@ -277,10 +282,12 @@ async def save_audio(project_id: str, data: dict):
     (proj_dir / "audio.json").write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    # Count clips that have at least one completed slot
+    # Count clips that have at least one completed slot.
+    # MS-TTS reading mode stores {data, duration_ms} directly (no slots list),
+    # so check both v.get("data") and the slots array.
     done = sum(
         1 for v in data.values()
-        if any(s.get("data") for s in (v.get("slots") or []))
+        if v.get("data") or any(s.get("data") for s in (v.get("slots") or []))
     )
     progress = meta.progress.model_dump()
     progress["audio"] = 100 if done else 0
@@ -349,4 +356,40 @@ async def save_video_prompts(project_id: str, data: dict):
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return {"ok": True}
+
+
+# ── Characters ─────────────────────────────────────────────────────────────────
+# Stored separately from manuscript_config so the user can enrich character
+# visual descriptions independently of the generation config.
+
+class CharactersData(BaseModel):
+    characters: list  # [{name, role, traits, appearance, ...}]
+
+
+@router.get("/{project_id}/characters")
+async def get_characters(project_id: str):
+    _read_meta(project_id)
+    path = _project_dir(project_id) / "characters.json"
+    if not path.exists():
+        # Fall back to characters stored in manuscript_config
+        cfg_path = _project_dir(project_id) / "manuscript_config.json"
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            chars = cfg.get("characters", [])
+            # Migrate: add empty appearance field if missing
+            for c in chars:
+                c.setdefault("appearance", "")
+            return {"characters": chars}
+        return {"characters": []}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@router.put("/{project_id}/characters")
+async def save_characters(project_id: str, data: CharactersData):
+    _read_meta(project_id)
+    (_project_dir(project_id) / "characters.json").write_text(
+        json.dumps({"characters": data.characters}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return {"ok": True, "count": len(data.characters)}
 

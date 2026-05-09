@@ -65,8 +65,8 @@ function createWindow() {
     height: 800,
     minWidth: 960,
     minHeight: 600,
-    title: 'LumiCreate-Local',
-    icon: path.join(__dirname, '..', 'assets', 'icon.png'),
+    title: 'LumiCreate-Pro',
+    
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

@@ -235,7 +235,9 @@ async def merge_project_video(req: MergeVideoRequest):
         raise HTTPException(status_code=400, detail="没有可合并的视频")
 
     # Build ffmpeg concat list
-    out_path = proj_dir / "final_video.mp4"
+    video_dir = proj_dir / "video"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    out_path = video_dir / "final_video.mp4"
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
         for p in ordered_files:
             f.write(f"file '{str(p).replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'\n")
