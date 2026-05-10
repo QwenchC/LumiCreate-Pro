@@ -205,19 +205,36 @@
           </div>
         </div>
 
-        <!-- Character reference panel -->
-        <div v-if="characters.length" class="char-ref-panel">
-          <div class="char-ref-title" @click="charRefOpen = !charRefOpen">
-            🎭 角色外观参考
-            <span class="char-ref-toggle">{{ charRefOpen ? '▲' : '▼' }}</span>
+        <!-- Character selector panel -->
+        <div v-if="characters.length" class="char-select-panel">
+          <div class="char-select-header">
+            <span class="char-select-title">🎭 出镜角色</span>
+            <span class="char-select-hint text-muted">选择在此分镜画面中出现的角色</span>
+            <button
+              class="btn btn-secondary btn-xs"
+              :disabled="suggestingChars"
+              @click="suggestChars(activeScene)"
+              title="用AI分析分镜描述和台词，自动推荐出镜角色"
+            >{{ suggestingChars ? '分析中…' : '✦ AI 自动选' }}</button>
           </div>
-          <div v-if="charRefOpen" class="char-ref-list">
-            <div v-for="c in characters" :key="c.name" class="char-ref-item">
-              <span class="char-ref-name">{{ c.name }}</span>
-              <code class="char-ref-appearance" @click="copyAppearance(c.appearance)">{{ c.appearance }}</code>
-              <span class="char-ref-copy-hint">点击复制</span>
-            </div>
+          <div class="char-chips">
+            <label
+              v-for="c in characters" :key="c.name"
+              class="char-chip"
+              :class="{ selected: (activeScene._scene_characters || []).includes(c.name) }"
+            >
+              <input
+                type="checkbox"
+                :value="c.name"
+                :checked="(activeScene._scene_characters || []).includes(c.name)"
+                @change="toggleSceneChar(activeScene, c.name)"
+              />
+              {{ c.name }}
+            </label>
           </div>
+          <p v-if="!(activeScene._scene_characters || []).length" class="char-select-fallback text-muted">
+            未选择角色时，生成提示词将不包含角色外观描述
+          </p>
         </div>
       </div>
 
@@ -260,7 +277,33 @@ const imgWidth        = ref(1920)
 const imgHeight       = ref(1080)
 
 const characters      = ref([])   // from /characters endpoint
-const charRefOpen     = ref(true)
+const suggestingChars = ref(false)
+
+function toggleSceneChar(scene, charName) {
+  const current = scene._scene_characters || []
+  scene._scene_characters = current.includes(charName)
+    ? current.filter(n => n !== charName)
+    : [...current, charName]
+  emit('dirty')
+}
+
+async function suggestChars(scene) {
+  if (!scene || suggestingChars.value) return
+  suggestingChars.value = true
+  try {
+    const res = await axios.post(API + '/text-engine/suggest-scene-characters', {
+      description: scene.description,
+      dialogues:   scene.dialogues || [],
+      all_names:   characters.value.map(c => c.name),
+    })
+    scene._scene_characters = res.data.characters || []
+    emit('dirty')
+  } catch (e) {
+    console.error('suggestChars failed', e)
+  } finally {
+    suggestingChars.value = false
+  }
+}
 
 // ── Style consistency ────────────────────────────────────────────────────────
 const STYLE_PRESETS = [
@@ -278,10 +321,6 @@ const customStyleText = ref('')
 const effectiveStyle  = computed(() =>
   stylePreset.value === '__custom__' ? customStyleText.value.trim() : stylePreset.value
 )
-
-function copyAppearance(text) {
-  navigator.clipboard?.writeText(text).catch(() => {})
-}
 
 const activeSceneId = ref(null)
 const activeScene   = computed(() => scenes.value.find(s => s.id === activeSceneId.value) ?? null)
@@ -386,7 +425,7 @@ async function loadData() {
     imgHeight.value = imgCfg.image_height ?? 1080
     if (imgCfg.default_workflow) selectedWorkflow.value = imgCfg.default_workflow
     workflows.value = workflowsRes.data || []
-    characters.value = (charsRes.data?.characters || []).filter(c => c.appearance)
+    characters.value = charsRes.data?.characters || []
     const imgState = imagesRes.data
     const newSlotImages = {}
     for (const slot of imgState.slots || []) {
@@ -469,11 +508,29 @@ function handleSlotEvent(evt) {
 async function generateSceneSlots(scene, { skipExisting = false } = {}) {
   let frames = []
   const _style = effectiveStyle.value
-  const _withStyle = (p) => _style ? _style + ', ' + p : p
+
+  // Build character appearance prefix for this scene's selected characters
+  const selectedNames = scene._scene_characters || []
+  const sceneChars = characters.value.filter(c =>
+    selectedNames.length === 0 ? false : selectedNames.includes(c.name)
+  )
+  const charPrefix = sceneChars
+    .filter(c => c.appearance)
+    .map(c => c.appearance.trim())
+    .join(', ')
+
+  const _buildPrompt = (rawPrompt) => {
+    const parts = []
+    if (_style) parts.push(_style)
+    if (charPrefix) parts.push(charPrefix)
+    if (rawPrompt) parts.push(rawPrompt)
+    return parts.join(', ')
+  }
+
   if (scene.start_frame_prompt)
-    frames.push({ scene_id: scene.id, frame_type: 'start', prompt: _withStyle(scene.start_frame_prompt) })
+    frames.push({ scene_id: scene.id, frame_type: 'start', prompt: _buildPrompt(scene.start_frame_prompt) })
   if (scene.end_frame_prompt)
-    frames.push({ scene_id: scene.id, frame_type: 'end',   prompt: _withStyle(scene.end_frame_prompt) })
+    frames.push({ scene_id: scene.id, frame_type: 'end',   prompt: _buildPrompt(scene.end_frame_prompt) })
   if (!frames.length) return
 
   if (skipExisting) {
@@ -621,7 +678,12 @@ async function generateOneScene(scene) {
 async function regenFrame(scene, frameType) {
   const rawPrompt = frameType === 'start' ? scene.start_frame_prompt : scene.end_frame_prompt
   if (!rawPrompt || !selectedWorkflow.value) return
-  const prompt = effectiveStyle.value ? effectiveStyle.value + ', ' + rawPrompt : rawPrompt
+  const selectedNames = scene._scene_characters || []
+  const charPrefix = characters.value
+    .filter(c => selectedNames.includes(c.name) && c.appearance)
+    .map(c => c.appearance.trim()).join(', ')
+  const parts = [effectiveStyle.value, charPrefix, rawPrompt].filter(Boolean)
+  const prompt = parts.join(', ')
   setFrameSlotCount(scene.id, frameType, genCount.value)
   for (let s = 0; s < genCount.value; s++) {
     const key = slotKey(scene.id, frameType, s)
@@ -723,7 +785,12 @@ function deleteSlot(scene, frameType, slotIndex) {
 async function addOneMore(scene, frameType) {
   const rawPrompt = frameType === 'start' ? scene.start_frame_prompt : scene.end_frame_prompt
   if (!rawPrompt || !selectedWorkflow.value) return
-  const prompt = effectiveStyle.value ? effectiveStyle.value + ', ' + rawPrompt : rawPrompt
+  const selectedNames = scene._scene_characters || []
+  const charPrefix = characters.value
+    .filter(c => selectedNames.includes(c.name) && c.appearance)
+    .map(c => c.appearance.trim()).join(', ')
+  const parts = [effectiveStyle.value, charPrefix, rawPrompt].filter(Boolean)
+  const prompt = parts.join(', ')
   const newSlot = getFrameSlotCount(scene.id, frameType)
   setFrameSlotCount(scene.id, frameType, newSlot + 1)
   const key = slotKey(scene.id, frameType, newSlot)
@@ -848,27 +915,32 @@ async function addOneMore(scene, frameType) {
   align-items: center; justify-content: center; color: var(--text-muted);
 }
 
-/* ── Character reference panel ── */
-.char-ref-panel {
-  border: 1px solid var(--color-border); border-radius: var(--radius);
-  overflow: hidden; flex-shrink: 0;
+/* ── Character selector panel ── */
+.char-select-panel {
+  border: 1px solid var(--color-border, var(--border)); border-radius: var(--radius, 8px);
+  padding: 10px 14px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px;
 }
-.char-ref-title {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px; background: var(--color-surface-2);
-  font-size: 12px; font-weight: 600; cursor: pointer; user-select: none;
+.char-select-header {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
 }
-.char-ref-toggle { font-size: 10px; color: var(--color-text-muted); }
-.char-ref-list { padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
-.char-ref-item { display: flex; flex-direction: column; gap: 3px; }
-.char-ref-name { font-size: 12px; font-weight: 600; color: var(--color-accent); }
-.char-ref-appearance {
-  font-size: 11px; background: var(--color-surface-2); padding: 4px 8px;
-  border-radius: 4px; line-height: 1.5; cursor: pointer; word-break: break-all;
-  border: 1px solid transparent; transition: border-color .15s;
+.char-select-title { font-size: 13px; font-weight: 600; }
+.char-select-hint  { font-size: 11px; flex: 1; }
+.char-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.char-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 99px; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--color-border, var(--border));
+  background: var(--color-surface, var(--bg-input));
+  transition: border-color .15s, background .15s; user-select: none;
 }
-.char-ref-appearance:hover { border-color: var(--color-accent); }
-.char-ref-copy-hint { font-size: 10px; color: var(--color-text-muted); }
+.char-chip input { display: none; }
+.char-chip:hover { border-color: var(--color-accent, var(--accent)); }
+.char-chip.selected {
+  border-color: var(--color-accent, var(--accent));
+  background: rgba(99,179,237,.15);
+  color: var(--color-accent, var(--accent)); font-weight: 600;
+}
+.char-select-fallback { font-size: 11px; margin: 0; }
 .detail-header {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px; background: var(--bg-input);

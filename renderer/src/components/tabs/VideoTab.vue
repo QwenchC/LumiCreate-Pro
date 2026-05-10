@@ -20,6 +20,12 @@
           >{{ merging ? '合并中…' : '🎬 合并视频' }}</button>
           <button
             class="btn btn-secondary btn-sm"
+            :disabled="!selectedWorkflow || !readyCount"
+            @click="resumeGeneration"
+            :title="!readyCount ? '需要首帧图片、末帧图片和合并音频' : '仅生成尚未完成的视频分镜'"
+          >⏯ 继续生成</button>
+          <button
+            class="btn btn-secondary btn-sm"
             :disabled="!scenes.length"
             title="为所有分镜自动生成视频提示词"
             @click="generateAllPrompts"
@@ -125,6 +131,11 @@
               <span v-if="scenePrompts[scene.id]" class="prompt-set-badge">已设置</span>
             </span>
             <div class="prompt-actions">
+              <button
+                class="btn btn-ghost btn-xs"
+                @click="editPrompt(scene)"
+                title="手动编辑视频提示词"
+              >✎ 编辑</button>
               <button class="btn btn-ghost btn-xs" @click="generatePrompt(scene)" title="根据分镜信息自动生成提示词">
                 ✦ 生成
               </button>
@@ -343,6 +354,16 @@ let currentReader = null
 
 async function startGeneration() {
   if (!selectedWorkflow.value) return
+
+  const existingCount = scenes.value.filter(s => !!sceneVideos.value[s.id]).length
+  if (existingCount > 0) {
+    const ok = confirm(
+      `检测到已有 ${existingCount} 个分镜视频。\n` +
+      `点击“确定”将覆盖重生成；点击“取消”后请使用“继续生成”仅补生成未完成分镜。`
+    )
+    if (!ok) return
+  }
+
   running.value     = true
   genFinished.value = false
   stopFlag.value    = false
@@ -354,6 +375,32 @@ async function startGeneration() {
   sceneProgress.value = {}
 
   const readyScenes = scenesWithData.value.filter(sceneReady)
+  await _runGeneration(readyScenes)
+}
+
+async function resumeGeneration() {
+  if (!selectedWorkflow.value) return
+  running.value     = true
+  genFinished.value = false
+  stopFlag.value    = false
+  genError.value    = ''
+
+  const states = { ...sceneState.value }
+  for (const s of scenes.value) {
+    if (sceneVideos.value[s.id]) {
+      states[s.id] = 'done'
+    } else if (!states[s.id]) {
+      states[s.id] = 'pending'
+    }
+  }
+  sceneState.value = states
+
+  const readyScenes = scenesWithData.value.filter(s => sceneReady(s) && !sceneVideos.value[s.id])
+  if (!readyScenes.length) {
+    running.value = false
+    genFinished.value = true
+    return
+  }
   await _runGeneration(readyScenes)
 }
 
@@ -380,6 +427,16 @@ function generatePrompt(scene) {
   scenePrompts.value = { ...scenePrompts.value, [scene.id]: p }
   promptVisible.value = { ...promptVisible.value, [scene.id]: true }
   _scheduleSavePrompts()
+}
+
+function editPrompt(scene) {
+  // If no prompt exists yet, prefill with an auto-built draft as editable baseline.
+  if (!scenePrompts.value[scene.id]) {
+    const draft = _buildPrompt(scene)
+    scenePrompts.value = { ...scenePrompts.value, [scene.id]: draft }
+    _scheduleSavePrompts()
+  }
+  promptVisible.value = { ...promptVisible.value, [scene.id]: true }
 }
 
 function generateAllPrompts() {

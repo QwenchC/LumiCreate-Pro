@@ -7,8 +7,8 @@
         <span class="text-muted" style="font-size:12px">角色外观描述将自动注入图片提示词，保持角色一致性</span>
       </div>
       <div class="toolbar-right">
-        <button class="btn btn-secondary btn-sm" @click="syncFromManuscript" :disabled="syncing">
-          {{ syncing ? '同步中...' : '↓ 从文案配置同步' }}
+        <button class="btn btn-secondary btn-sm" @click="importFromManuscript" :disabled="syncing">
+          {{ syncing ? '导入中...' : '↓ 从文案导入角色' }}
         </button>
         <button class="btn btn-secondary btn-sm" @click="addCharacter">＋ 添加角色</button>
         <button class="btn btn-primary btn-sm" :disabled="!isDirty || saving" @click="save">
@@ -21,7 +21,7 @@
     <div v-if="!characters.length" class="char-empty">
       <div class="empty-icon">🎭</div>
       <p>暂无角色</p>
-      <p class="text-muted" style="font-size:12px">点击「从文案配置同步」可从文案配置中导入角色，<br/>或手动点击「添加角色」创建。</p>
+      <p class="text-muted" style="font-size:12px">点击「从文案导入角色」可从文案配置中导入角色（仅新增，不覆盖已有角色），<br/>或手动点击「添加角色」创建。</p>
     </div>
 
     <!-- Character cards -->
@@ -43,6 +43,20 @@
               @input="markDirty"
             />
           </div>
+          <div class="char-actions-inline">
+            <button
+              class="btn btn-ghost btn-xs"
+              :disabled="!!char._finding"
+              @click="lookupFromManuscript(i)"
+              title="从文案配置/文案内容检索该角色"
+            >{{ char._finding ? '检索中…' : '🔎 检索' }}</button>
+            <button
+              class="btn btn-ghost btn-xs"
+              :disabled="!!char._profiling"
+              @click="generateProfileFromManuscript(i)"
+              title="基于文本引擎从文案生成角色描述"
+            >{{ char._profiling ? '生成中…' : '✦ 生成描述' }}</button>
+          </div>
           <button class="btn btn-ghost btn-sm icon-btn danger" @click="removeCharacter(i)" title="删除角色">✕</button>
         </div>
 
@@ -57,7 +71,18 @@
             />
           </div>
           <div class="form-group">
-            <label class="label-em">✨ 外观描述（英文，注入图片提示词）</label>
+            <div class="label-row">
+              <label class="label-em">✨ 外观描述（英文，注入图片提示词）</label>
+              <button
+                class="btn btn-secondary btn-xs gen-appearance-btn"
+                :disabled="!!char._generating"
+                @click="generateAppearance(i)"
+                title="使用AI根据角色信息生成外观描述"
+              >
+                <span v-if="char._generating">⏳ 生成中…</span>
+                <span v-else>✨ AI 生成</span>
+              </button>
+            </div>
             <textarea
               v-model="char.appearance"
               class="input textarea appearance-input"
@@ -103,7 +128,10 @@ const statusMsg  = ref('')
 const statusType = ref('')
 
 function emptyChar() {
-  return { name: '', role: '', traits: '', appearance: '', negative: '' }
+  return {
+    name: '', role: '', traits: '', appearance: '', negative: '',
+    _generating: false, _finding: false, _profiling: false
+  }
 }
 
 function addCharacter() {
@@ -135,6 +163,9 @@ onMounted(async () => {
         traits: c.traits || '',
         appearance: c.appearance || '',
         negative: c.negative || '',
+        _generating: false,
+        _finding: false,
+        _profiling: false,
       }))
     }
   } catch {}
@@ -142,8 +173,178 @@ onMounted(async () => {
 })
 onUnmounted(() => window.removeEventListener('lumi:save-project', onGlobalSave))
 
-// ── Sync from manuscript config ───────────────────────────────────────────────
-async function syncFromManuscript() {
+// ── AI generate appearance ─────────────────────────────────────────────────────
+async function generateAppearance(i) {
+  const char = characters.value[i]
+  if (!char.name.trim() && !char.traits.trim()) {
+    showStatus('请先填写角色姓名或性格特征', 'warn')
+    return
+  }
+  char._generating = true
+  char.appearance = ''
+  try {
+    const res = await fetch(`${API}/text-engine/generate-character-appearance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name:     char.name,
+        role:     char.role,
+        traits:   char.traits,
+        existing: char.appearance,
+      }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      showStatus(`生成失败: ${err.detail || res.status}`, 'err')
+      return
+    }
+    const reader  = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') break
+        try {
+          const obj = JSON.parse(raw)
+          if (obj.error) { showStatus(`生成失败: ${obj.error}`, 'err'); break }
+          if (obj.text)  { char.appearance += obj.text }
+        } catch {}
+      }
+    }
+    char.appearance = char.appearance.trim()
+    markDirty()
+    showStatus('✓ 外观描述已生成', 'ok')
+  } catch (e) {
+    showStatus(`生成失败: ${e.message}`, 'err')
+  } finally {
+    char._generating = false
+  }
+}
+
+async function lookupFromManuscript(i) {
+  const char = characters.value[i]
+  const name = String(char.name || '').trim()
+  if (!name) {
+    showStatus('请先输入角色名称', 'warn')
+    return
+  }
+  char._finding = true
+  try {
+    const res = await fetch(`${API}/projects/${props.projectId}/manuscript`)
+    if (!res.ok) throw new Error('读取文案失败')
+    const d = await res.json()
+
+    // 1) Prefer exact hit from manuscript config characters.
+    const cfgChars = d.config?.characters || []
+    const hit = cfgChars.find(c => String(c.name || '').trim().toLowerCase() === name.toLowerCase())
+    if (hit) {
+      if (!char.role)   char.role = hit.role || ''
+      if (!char.traits) char.traits = hit.traits || ''
+      markDirty()
+      showStatus('✓ 已从文案配置检索到角色信息', 'ok')
+      return
+    }
+
+    // 2) Fallback: local manuscript text lookup (no LLM dependency).
+    const manuscript = String(d.content || '')
+    const excerpt = extractCharacterExcerpt(manuscript, name)
+    if (excerpt) {
+      if (!char.traits) char.traits = excerpt
+      markDirty()
+      showStatus('✓ 已从文案正文检索到角色线索', 'ok')
+    } else {
+      showStatus('未在文案中检索到该角色', 'warn')
+    }
+  } catch (e) {
+    showStatus(`检索失败: ${e.message}`, 'err')
+  } finally {
+    char._finding = false
+  }
+}
+
+function extractCharacterExcerpt(manuscript, name) {
+  if (!manuscript || !name) return ''
+  const idx = manuscript.indexOf(name)
+  if (idx < 0) return ''
+
+  const start = Math.max(0, idx - 40)
+  const end = Math.min(manuscript.length, idx + name.length + 80)
+  let snippet = manuscript.slice(start, end)
+    .replace(/\s+/g, ' ')
+    .replace(/[\r\n]/g, ' ')
+    .trim()
+
+  // keep concise to avoid stuffing too much raw manuscript into traits
+  if (snippet.length > 80) snippet = snippet.slice(0, 80) + '…'
+  return snippet
+}
+
+async function generateProfileFromManuscript(i, manuscriptHint = null) {
+  const char = characters.value[i]
+  const name = String(char.name || '').trim()
+  if (!name) {
+    showStatus('请先输入角色名称', 'warn')
+    return
+  }
+
+  if ((char.role || '').trim() || (char.traits || '').trim()) {
+    const ok = confirm('当前角色已存在描述信息，继续生成可能覆盖现有内容。是否继续？')
+    if (!ok) return
+  }
+
+  char._profiling = true
+  try {
+    let manuscript = manuscriptHint
+    if (manuscript === null) {
+      const res = await fetch(`${API}/projects/${props.projectId}/manuscript`)
+      if (!res.ok) throw new Error('读取文案失败')
+      const d = await res.json()
+      manuscript = d.content || ''
+    }
+    if (!String(manuscript || '').trim()) {
+      showStatus('文案为空，无法生成角色描述', 'warn')
+      return
+    }
+
+    const res = await fetch(`${API}/text-engine/generate-character-profile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        manuscript,
+        existing_role: char.role || '',
+        existing_traits: char.traits || '',
+      }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.detail || `${res.status}`)
+    }
+    const data = await res.json()
+    if (data.role) char.role = data.role
+    if (data.traits) char.traits = data.traits
+    markDirty()
+    showStatus('✓ 已生成角色描述', 'ok')
+  } catch (e) {
+    showStatus(`生成失败: ${e.message}`, 'err')
+  } finally {
+    char._profiling = false
+  }
+}
+
+// ── Import from manuscript config (add only, no overwrite) ───────────────────
+function normalizeName(name) {
+  return String(name || '').trim().toLowerCase()
+}
+
+async function importFromManuscript() {
   syncing.value = true
   try {
     const res = await fetch(`${API}/projects/${props.projectId}/manuscript`)
@@ -154,17 +355,33 @@ async function syncFromManuscript() {
       showStatus('文案配置中没有角色', 'warn')
       return
     }
-    // Merge: keep existing appearance/negative fields, update name/role/traits
-    const existing = Object.fromEntries(characters.value.map(c => [c.name, c]))
-    characters.value = configChars.map(c => ({
-      name:       c.name       || '',
-      role:       c.role       || '',
-      traits:     c.traits     || '',
-      appearance: existing[c.name]?.appearance || '',
-      negative:   existing[c.name]?.negative   || '',
-    }))
+
+    // Only add new characters; never overwrite existing ones.
+    const existingSet = new Set(characters.value.map(c => normalizeName(c.name)).filter(Boolean))
+    const toAdd = []
+    for (const c of configChars) {
+      const name = String(c.name || '').trim()
+      const key = normalizeName(name)
+      if (!key || existingSet.has(key)) continue
+      existingSet.add(key)
+      toAdd.push({
+        name,
+        role: c.role || '',
+        traits: c.traits || '',
+        appearance: c.appearance || '',
+        negative: c.negative || '',
+        _generating: false,
+      })
+    }
+
+    if (!toAdd.length) {
+      showStatus('没有可导入的新角色（已自动跳过重复角色）', 'warn')
+      return
+    }
+
+    characters.value.push(...toAdd)
     markDirty()
-    showStatus(`已同步 ${characters.value.length} 个角色`, 'ok')
+    showStatus(`已导入 ${toAdd.length} 个新角色（跳过重复角色）`, 'ok')
   } catch (e) {
     showStatus(e.message, 'err')
   } finally {
@@ -176,10 +393,11 @@ async function syncFromManuscript() {
 async function save() {
   saving.value = true
   try {
+    const payload = characters.value.map(({ _generating, _finding, _profiling, ...c }) => c)
     const res = await fetch(`${API}/projects/${props.projectId}/characters`, {
       method:  'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ characters: characters.value }),
+      body:    JSON.stringify({ characters: payload }),
     })
     if (!res.ok) throw new Error(await res.text())
     isDirty.value = false
@@ -240,10 +458,15 @@ function showStatus(msg, type = '') {
 .char-basic { flex: 1; display: flex; gap: 8px; min-width: 0; }
 .char-name-input { flex: 1; min-width: 0; font-weight: 600; }
 .char-role-input { flex: 1.4; min-width: 0; }
+.char-actions-inline { display: flex; gap: 6px; flex-shrink: 0; }
 
 .char-card-body { display: flex; flex-direction: column; gap: 10px; }
 .form-group { display: flex; flex-direction: column; gap: 4px; }
 .form-group label { font-size: 12px; color: var(--color-text-muted); }
+.label-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.gen-appearance-btn { font-size: 11px; padding: 2px 8px; height: 22px; white-space: nowrap; flex-shrink: 0; }
 .label-em { color: var(--color-accent) !important; font-weight: 600; }
 .appearance-input { font-family: monospace; font-size: 12px; line-height: 1.6; }
 .field-hint { font-size: 11px; color: var(--color-warning); margin: 0; }

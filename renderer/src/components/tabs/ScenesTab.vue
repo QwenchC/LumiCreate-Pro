@@ -13,12 +13,24 @@
         </button>
         <button
           class="btn btn-secondary btn-sm"
-          :disabled="!scenes.length || generatingPrompts"
+          :disabled="!scenes.length || generatingPrompts || generatingPromptIdx !== null"
           @click="generateAllPrompts"
           :title="'为所有分镜生成首帧/尾帧提示词'"
         >
           {{ generatingPrompts ? `提示词 ${promptProgress}/${scenes.length}...` : '🖼 生成全部提示词' }}
         </button>
+        <button
+          v-if="generatingPrompts || generatingPromptIdx !== null"
+          class="btn btn-danger btn-sm"
+          @click="stopPromptGeneration"
+          title="中断当前提示词生成"
+        >⏹ 中断提示词生成</button>
+        <button
+          class="btn btn-secondary btn-sm"
+          :disabled="!scenes.length || !manuscriptConfig.characters.length"
+          @click="autoDetectSceneCharacters"
+          title="根据分镜文案自动检测出镜角色"
+        >🔍 自动检测角色</button>
         <button class="btn btn-secondary btn-sm" @click="addScene">+ 添加分镜</button>
         <button
           class="btn btn-ghost btn-sm"
@@ -106,13 +118,36 @@
 
               <!-- Right column: prompts -->
               <div class="scene-col">
+                <!-- Character selector for this scene -->
+                <div class="form-group" v-if="manuscriptConfig.characters.length">
+                  <label class="label-char-select">
+                    出镜角色
+                    <span class="label-hint">（决定提示词包含哪些角色外观）</span>
+                  </label>
+                  <div class="char-chips">
+                    <label
+                      v-for="c in manuscriptConfig.characters" :key="c.name"
+                      class="char-chip"
+                      :class="{ selected: (scene._scene_characters || []).includes(c.name) }"
+                    >
+                      <input
+                        type="checkbox"
+                        :value="c.name"
+                        :checked="(scene._scene_characters || []).includes(c.name)"
+                        @change="toggleSceneChar(scene, c.name)"
+                      />
+                      {{ c.name }}
+                    </label>
+                    <span v-if="!manuscriptConfig.characters.length" class="text-muted" style="font-size:11px">（角色管理中无角色）</span>
+                  </div>
+                </div>
                 <div class="form-group">
                   <label>
                     首帧提示词
                     <span class="label-hint">（英文，给 ComfyUI）</span>
                     <button
                       class="btn-gen-prompt"
-                      :disabled="generatingPromptIdx === idx"
+                      :disabled="generatingPromptIdx !== null"
                       @click.stop="generateScenePrompt(scene, idx)"
                       title="用 LLM 生成该分镜的图片提示词"
                     >{{ generatingPromptIdx === idx ? '生成中...' : '✦ 生成提示词' }}</button>
@@ -212,6 +247,7 @@ const expandedIdx        = ref(null)
 const generatingPrompts  = ref(false)
 const generatingPromptIdx = ref(null)  // idx of single scene being generated
 const promptProgress     = ref(0)
+let promptAbortController = null
 
 // ── Load ───────────────────────────────────────────────────────────────────────
 onMounted(async () => {
@@ -240,7 +276,13 @@ onMounted(async () => {
   // Load saved scenes
   try {
     const r = await fetch(`${API}/projects/${props.projectId}/scenes`)
-    if (r.ok) { const d = await r.json(); scenes.value = d.scenes || [] }
+    if (r.ok) {
+      const d = await r.json()
+      scenes.value = (d.scenes || []).map(s => ({
+        ...s,
+        _scene_characters: Array.isArray(s._scene_characters) ? s._scene_characters : [],
+      }))
+    }
   } catch {}
 
   window.addEventListener('lumi:save-project', onGlobalSave)
@@ -267,7 +309,7 @@ async function generateScenes() {
       throw new Error(err.detail || res.statusText)
     }
     const data = await res.json()
-    scenes.value = data.scenes || []
+    scenes.value = (data.scenes || []).map(s => ({ ...s, _scene_characters: [] }))
     if (scenes.value.length) {
       expandedIdx.value = 0
       isDirty.value = true
@@ -280,15 +322,32 @@ async function generateScenes() {
   }
 }
 
+// ── Character selection per scene ─────────────────────────────────────────────
+function toggleSceneChar(scene, charName) {
+  const current = scene._scene_characters || []
+  if (current.includes(charName)) {
+    scene._scene_characters = current.filter(n => n !== charName)
+  } else {
+    scene._scene_characters = [...current, charName]
+  }
+  markDirty()
+}
+
 // ── Frame prompt generation ───────────────────────────────────────────────────
 async function _fetchFramePrompts(scene) {
+  // Use only the characters selected for this scene.
+  // If none selected, pass an empty list so no role appearance is injected.
+  const selected = scene._scene_characters || []
+  const allChars = manuscriptConfig.value.characters || []
+  const chars = allChars.filter(c => selected.includes(c.name))
   const res = await fetch(`${API}/text-engine/generate-frame-prompts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: promptAbortController?.signal,
     body: JSON.stringify({
       description: scene.description,
       dialogues:   scene.dialogues,
-      characters:  manuscriptConfig.value.characters,
+      characters:  chars,
     }),
   })
   if (!res.ok) throw new Error(await res.text())
@@ -296,6 +355,7 @@ async function _fetchFramePrompts(scene) {
 }
 
 async function generateScenePrompt(scene, idx) {
+  promptAbortController = new AbortController()
   generatingPromptIdx.value = idx
   try {
     const data = await _fetchFramePrompts(scene)
@@ -303,27 +363,87 @@ async function generateScenePrompt(scene, idx) {
     scene.end_frame_prompt   = data.end_frame_prompt   || scene.end_frame_prompt
     markDirty()
   } catch (e) {
-    alert(`提示词生成失败：${e.message}`)
+    if (e.name !== 'AbortError') alert(`提示词生成失败：${e.message}`)
   } finally {
     generatingPromptIdx.value = null
+    promptAbortController = null
   }
 }
 
 async function generateAllPrompts() {
+  promptAbortController = new AbortController()
   generatingPrompts.value = true
   promptProgress.value = 0
   for (let i = 0; i < scenes.value.length; i++) {
+    if (!promptAbortController) break
     generatingPromptIdx.value = i
     try {
       const data = await _fetchFramePrompts(scenes.value[i])
       scenes.value[i].start_frame_prompt = data.start_frame_prompt || scenes.value[i].start_frame_prompt
       scenes.value[i].end_frame_prompt   = data.end_frame_prompt   || scenes.value[i].end_frame_prompt
       markDirty()
-    } catch { /* skip failed scene */ }
+    } catch (e) {
+      if (e.name === 'AbortError') break
+      /* skip failed scene */
+    }
     promptProgress.value = i + 1
   }
   generatingPromptIdx.value = null
   generatingPrompts.value = false
+  promptAbortController = null
+}
+
+function stopPromptGeneration() {
+  if (promptAbortController) {
+    promptAbortController.abort()
+    promptAbortController = null
+  }
+  generatingPromptIdx.value = null
+  generatingPrompts.value = false
+}
+
+// ── Auto-detect scene characters ──────────────────────────────────────────────
+function autoDetectSceneCharacters() {
+  const allCharNames = (manuscriptConfig.value.characters || []).map(c => c.name)
+  if (!allCharNames.length) return
+  
+  let changed = false
+  for (const scene of scenes.value) {
+    const detected = new Set()
+    
+    // Check description
+    const desc = (scene.description || '').toLowerCase()
+    for (const name of allCharNames) {
+      if (desc.includes(name.toLowerCase())) {
+        detected.add(name)
+      }
+    }
+    
+    // Check dialogues: both character names and text content
+    for (const dlg of (scene.dialogues || [])) {
+      for (const name of allCharNames) {
+        const nameLower = name.toLowerCase()
+        const charLower = (dlg.character || '').toLowerCase()
+        const textLower = (dlg.text || '').toLowerCase()
+        
+        if (charLower === nameLower || textLower.includes(nameLower)) {
+          detected.add(name)
+        }
+      }
+    }
+    
+    // Update scene characters if different
+    const current = scene._scene_characters || []
+    const detected_arr = Array.from(detected)
+    if (JSON.stringify(current.sort()) !== JSON.stringify(detected_arr.sort())) {
+      scene._scene_characters = detected_arr
+      changed = true
+    }
+  }
+  
+  if (changed) {
+    markDirty()
+  }
 }
 
 function clearAllScenes() {
@@ -343,6 +463,7 @@ function addScene() {
     duration_estimate: 8.0,
     start_frame_prompt: '',
     end_frame_prompt: '',
+    _scene_characters: [],
     dialogues: [],
   })
   expandedIdx.value = scenes.value.length - 1
@@ -474,6 +595,23 @@ function onGlobalSave() { if (isDirty.value) save() }
 .half       { flex: 1; }
 .textarea.sm { min-height: 60px; resize: vertical; font-family: inherit; }
 .prompt-input { font-family: 'Consolas', monospace; font-size: 12px; }
+
+/* ── Character chips ── */
+.label-char-select { color: var(--color-text-muted); }
+.char-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.char-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 99px; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--color-border); background: var(--color-surface);
+  transition: border-color .15s, background .15s; user-select: none;
+}
+.char-chip input { display: none; }
+.char-chip:hover { border-color: var(--color-accent); }
+.char-chip.selected {
+  border-color: var(--color-accent);
+  background: rgba(99,179,237,.15);
+  color: var(--color-accent); font-weight: 600;
+}
 
 /* ── Dialogues ── */
 .dialogues-section { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--color-border); }

@@ -17,6 +17,12 @@ from services.prompts import (
     MANUSCRIPT_USER_TEMPLATE,
     SCENES_SYSTEM,
     SCENES_USER_TEMPLATE,
+    CHARACTER_APPEARANCE_SYSTEM,
+    CHARACTER_APPEARANCE_USER_TEMPLATE,
+    SUGGEST_CHARS_SYSTEM,
+    SUGGEST_CHARS_USER_TEMPLATE,
+    CHARACTER_PROFILE_SYSTEM,
+    CHARACTER_PROFILE_USER_TEMPLATE,
 )
 
 router = APIRouter()
@@ -359,3 +365,138 @@ async def generate_frame_prompts(req: GenerateFramePromptsRequest):
         "end_frame_prompt":   obj.get("end_frame_prompt",   ""),
     }
 
+
+# ── Character appearance prompt generation (streaming) ─────────────────────────
+
+class GenerateCharacterAppearanceRequest(BaseModel):
+    name:     str = ""
+    role:     str = ""
+    traits:   str = ""
+    existing: str = ""   # existing appearance text the user may have written
+
+
+class GenerateCharacterProfileRequest(BaseModel):
+    name: str = ""
+    manuscript: str = ""
+    existing_role: str = ""
+    existing_traits: str = ""
+
+
+@router.post("/generate-character-appearance")
+async def generate_character_appearance(req: GenerateCharacterAppearanceRequest):
+    if not req.name.strip() and not req.traits.strip():
+        raise HTTPException(status_code=400, detail="至少提供角色姓名或性格特征")
+
+    existing_hint = ""
+    if req.existing.strip():
+        existing_hint = f"\n【现有描述（可参考并改进）】{req.existing.strip()}\n"
+
+    user_msg = CHARACTER_APPEARANCE_USER_TEMPLATE.format(
+        name=req.name or "（未命名）",
+        role=req.role or "（未指定）",
+        traits=req.traits or "（未指定）",
+        existing_hint=existing_hint,
+    )
+
+    cfg = load_settings().text_engine
+
+    async def sse_stream():
+        try:
+            async for chunk in stream_chat(cfg, CHARACTER_APPEARANCE_SYSTEM, user_msg):
+                yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        sse_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/generate-character-profile")
+async def generate_character_profile(req: GenerateCharacterProfileRequest):
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="角色名不能为空")
+    if not req.manuscript.strip():
+        raise HTTPException(status_code=400, detail="文案内容不能为空")
+
+    user_msg = CHARACTER_PROFILE_USER_TEMPLATE.format(
+        name=req.name.strip(),
+        manuscript=req.manuscript.strip(),
+        existing_role=req.existing_role.strip() or "（无）",
+        existing_traits=req.existing_traits.strip() or "（无）",
+    )
+
+    cfg = load_settings().text_engine
+    full_text = ""
+    async for chunk in stream_chat(cfg, CHARACTER_PROFILE_SYSTEM, user_msg):
+        full_text += chunk
+
+    cleaned = re.sub(r"```(?:json)?\n?", "", full_text).strip()
+    obj = {}
+    try:
+        obj = json.loads(cleaned)
+    except json.JSONDecodeError:
+        m = re.search(r"\{[\s\S]*\}", cleaned)
+        if m:
+            try:
+                obj = json.loads(m.group())
+            except json.JSONDecodeError:
+                obj = {}
+
+    return {
+        "role": str(obj.get("role", "")).strip(),
+        "traits": str(obj.get("traits", "")).strip(),
+    }
+
+
+
+# ── Suggest characters for a scene ────────────────────────────────────────────
+
+class SuggestSceneCharactersRequest(BaseModel):
+    description: str = ""
+    dialogues:   list = []
+    all_names:   list = []
+
+
+@router.post("/suggest-scene-characters")
+async def suggest_scene_characters(req: SuggestSceneCharactersRequest):
+    if not req.all_names:
+        return {"characters": []}
+
+    dialogue_lines = "\n".join(
+        f"  [{d.get('character','?')}]: {d.get('text','')}"
+        for d in (req.dialogues or [])
+    ) or "（无台词）"
+
+    user_msg = SUGGEST_CHARS_USER_TEMPLATE.format(
+        description=req.description or "（无描述）",
+        dialogues=dialogue_lines,
+        all_names="、".join(req.all_names),
+    )
+
+    cfg = load_settings().text_engine
+    full_text = ""
+    async for chunk in stream_chat(cfg, SUGGEST_CHARS_SYSTEM, user_msg):
+        full_text += chunk
+
+    cleaned = re.sub(r"```(?:json)?\n?", "", full_text).strip()
+    valid = set(req.all_names)
+    try:
+        names = json.loads(cleaned)
+        if isinstance(names, list):
+            return {"characters": [n for n in names if n in valid]}
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"\[\s\S]*?\]", cleaned)
+    if m:
+        try:
+            names = json.loads(m.group())
+            if isinstance(names, list):
+                return {"characters": [n for n in names if n in valid]}
+        except json.JSONDecodeError:
+            pass
+    return {"characters": []}
