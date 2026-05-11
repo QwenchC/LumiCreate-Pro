@@ -27,10 +27,17 @@
         >⏹ 中断提示词生成</button>
         <button
           class="btn btn-secondary btn-sm"
-          :disabled="!scenes.length || !manuscriptConfig.characters.length"
+          :disabled="!scenes.length || !manuscriptConfig.characters.length || detectingChars"
           @click="autoDetectSceneCharacters"
-          title="根据分镜文案自动检测出镜角色"
-        >🔍 自动检测角色</button>
+          title="用 LLM 结合完整文案自动检测出镜角色（可识别人称代词）"
+        >
+          {{ detectingChars ? `🔍 检测中 ${detectProgress}/${scenes.length}…` : '🔍 自动检测角色' }}
+        </button>
+        <button
+          v-if="detectingChars"
+          class="btn btn-danger btn-sm"
+          @click="stopDetectCharacters"
+        >⏹ 中断检测</button>
         <button class="btn btn-secondary btn-sm" @click="addScene">+ 添加分镜</button>
         <button
           class="btn btn-ghost btn-sm"
@@ -248,6 +255,9 @@ const generatingPrompts  = ref(false)
 const generatingPromptIdx = ref(null)  // idx of single scene being generated
 const promptProgress     = ref(0)
 let promptAbortController = null
+const detectingChars     = ref(false)
+const detectProgress     = ref(0)
+let detectAbortController = null
 
 // ── Load ───────────────────────────────────────────────────────────────────────
 onMounted(async () => {
@@ -345,9 +355,12 @@ async function _fetchFramePrompts(scene) {
     headers: { 'Content-Type': 'application/json' },
     signal: promptAbortController?.signal,
     body: JSON.stringify({
-      description: scene.description,
-      dialogues:   scene.dialogues,
-      characters:  chars,
+      description:  scene.description,
+      dialogues:    scene.dialogues,
+      characters:   chars,
+      manuscript:   manuscript.value,
+      scene_index:  scene.index,
+      total_scenes: scenes.value.length,
     }),
   })
   if (!res.ok) throw new Error(await res.text())
@@ -402,48 +415,55 @@ function stopPromptGeneration() {
   generatingPrompts.value = false
 }
 
-// ── Auto-detect scene characters ──────────────────────────────────────────────
-function autoDetectSceneCharacters() {
+// ── Auto-detect scene characters (LLM-based, pronoun-aware) ──────────────────
+function stopDetectCharacters() {
+  detectAbortController?.abort()
+  detectAbortController = null
+  detectingChars.value = false
+}
+
+async function autoDetectSceneCharacters() {
   const allCharNames = (manuscriptConfig.value.characters || []).map(c => c.name)
-  if (!allCharNames.length) return
-  
+  if (!allCharNames.length || detectingChars.value) return
+
+  detectingChars.value = true
+  detectProgress.value = 0
+  detectAbortController = new AbortController()
+
   let changed = false
-  for (const scene of scenes.value) {
-    const detected = new Set()
-    
-    // Check description
-    const desc = (scene.description || '').toLowerCase()
-    for (const name of allCharNames) {
-      if (desc.includes(name.toLowerCase())) {
-        detected.add(name)
-      }
-    }
-    
-    // Check dialogues: both character names and text content
-    for (const dlg of (scene.dialogues || [])) {
-      for (const name of allCharNames) {
-        const nameLower = name.toLowerCase()
-        const charLower = (dlg.character || '').toLowerCase()
-        const textLower = (dlg.text || '').toLowerCase()
-        
-        if (charLower === nameLower || textLower.includes(nameLower)) {
-          detected.add(name)
+  for (let i = 0; i < scenes.value.length; i++) {
+    if (detectAbortController?.signal.aborted) break
+    const scene = scenes.value[i]
+    try {
+      const res = await fetch(`${API}/text-engine/suggest-scene-characters`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: detectAbortController.signal,
+        body: JSON.stringify({
+          description: scene.description,
+          dialogues:   scene.dialogues || [],
+          all_names:   allCharNames,
+          manuscript:  manuscript.value,
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const detected = (data.characters || []).sort()
+        const current  = [...(scene._scene_characters || [])].sort()
+        if (JSON.stringify(current) !== JSON.stringify(detected)) {
+          scene._scene_characters = data.characters || []
+          changed = true
         }
       }
+    } catch (e) {
+      if (e.name === 'AbortError') break
     }
-    
-    // Update scene characters if different
-    const current = scene._scene_characters || []
-    const detected_arr = Array.from(detected)
-    if (JSON.stringify(current.sort()) !== JSON.stringify(detected_arr.sort())) {
-      scene._scene_characters = detected_arr
-      changed = true
-    }
+    detectProgress.value = i + 1
   }
-  
-  if (changed) {
-    markDirty()
-  }
+
+  if (changed) markDirty()
+  detectingChars.value = false
+  detectAbortController = null
 }
 
 function clearAllScenes() {

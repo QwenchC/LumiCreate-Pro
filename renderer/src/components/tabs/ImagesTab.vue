@@ -97,7 +97,7 @@
           </div>
           <div class="scene-list-info">
             <div class="scene-list-num">{{ String(scene.index).padStart(2,'0') }}</div>
-            <div class="scene-list-desc truncate">{{ scene.description || '(无描述)' }}</div>
+            <div class="scene-list-desc truncate" :title="scene.description">{{ scene.description || '(无描述)' }}</div>
             <div class="scene-list-status">
               <span v-if="sceneGenerating[scene.id]" class="status-dot dot-active">⏳</span>
               <span v-else-if="hasAnyImage(scene)" class="status-dot dot-done">✓</span>
@@ -116,12 +116,12 @@
       <div class="scene-detail-panel" v-if="activeScene">
         <div class="detail-header">
           <span class="detail-num">{{ String(activeScene.index).padStart(2,'0') }}</span>
-          <span class="detail-desc truncate">{{ activeScene.description || '(无描述)' }}</span>
+          <span class="detail-desc" :title="activeScene.description">{{ activeScene.description || '(无描述)' }}</span>
           <button class="btn btn-secondary btn-sm"
             :disabled="running || !!sceneGenerating[activeScene.id] || !selectedWorkflow"
             @click="generateOneScene(activeScene)">
             <span v-if="sceneGenerating[activeScene.id]">⏳ 生成中…</span>
-            <span v-else>▶ 生成此分镜</span>
+            <span v-else>▶ 重新生成此分镜</span>
           </button>
         </div>
 
@@ -277,6 +277,7 @@ const imgWidth        = ref(1920)
 const imgHeight       = ref(1080)
 
 const characters      = ref([])   // from /characters endpoint
+const manuscript      = ref('')   // for pronoun-aware LLM suggestions
 const suggestingChars = ref(false)
 
 function toggleSceneChar(scene, charName) {
@@ -295,6 +296,7 @@ async function suggestChars(scene) {
       description: scene.description,
       dialogues:   scene.dialogues || [],
       all_names:   characters.value.map(c => c.name),
+      manuscript:  manuscript.value,
     })
     scene._scene_characters = res.data.characters || []
     emit('dirty')
@@ -334,6 +336,23 @@ watch(selectedWorkflow, async (val) => {
     const res = await axios.get(API + '/settings')
     const s = res.data
     s.image_engine = { ...(s.image_engine || {}), default_workflow: val }
+    await axios.post(API + '/settings', s)
+  } catch {}
+})
+
+// Persist genCount, stylePreset, customStyleText
+let _imgCfgWatchInitialized = false
+watch([genCount, stylePreset, customStyleText], async ([count, preset, custom]) => {
+  if (!_imgCfgWatchInitialized) { _imgCfgWatchInitialized = true; return }
+  try {
+    const res = await axios.get(API + '/settings')
+    const s = res.data
+    s.image_engine = {
+      ...(s.image_engine || {}),
+      default_gen_count: count,
+      style_preset: preset,
+      custom_style_text: custom,
+    }
     await axios.post(API + '/settings', s)
   } catch {}
 })
@@ -424,8 +443,15 @@ async function loadData() {
     imgWidth.value  = imgCfg.image_width  ?? 1920
     imgHeight.value = imgCfg.image_height ?? 1080
     if (imgCfg.default_workflow) selectedWorkflow.value = imgCfg.default_workflow
+    if (imgCfg.style_preset !== undefined) stylePreset.value = imgCfg.style_preset
+    if (imgCfg.custom_style_text !== undefined) customStyleText.value = imgCfg.custom_style_text
     workflows.value = workflowsRes.data || []
     characters.value = charsRes.data?.characters || []
+    // load manuscript for pronoun-aware character suggestions
+    try {
+      const msRes = await axios.get(API + '/projects/' + props.projectId + '/manuscript')
+      manuscript.value = msRes.data?.content || ''
+    } catch {}
     const imgState = imagesRes.data
     const newSlotImages = {}
     for (const slot of imgState.slots || []) {
@@ -942,12 +968,16 @@ async function addOneMore(scene, frameType) {
 }
 .char-select-fallback { font-size: 11px; margin: 0; }
 .detail-header {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: flex-start; gap: 10px;
   padding: 10px 14px; background: var(--bg-input);
   border-radius: 8px; flex-shrink: 0;
 }
-.detail-num  { font-size: 22px; font-weight: 800; color: var(--accent); min-width: 32px; }
-.detail-desc { font-size: 14px; flex: 1; min-width: 0; }
+.detail-num  { font-size: 22px; font-weight: 800; color: var(--accent); min-width: 32px; flex-shrink: 0; }
+.detail-desc {
+  font-size: 14px; flex: 1; min-width: 0;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  cursor: default;
+}
 .detail-frame-section {
   border: 1px solid var(--border); border-radius: 8px;
   overflow: hidden; flex-shrink: 0;

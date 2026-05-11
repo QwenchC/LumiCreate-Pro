@@ -23,6 +23,10 @@ from services.prompts import (
     SUGGEST_CHARS_USER_TEMPLATE,
     CHARACTER_PROFILE_SYSTEM,
     CHARACTER_PROFILE_USER_TEMPLATE,
+    FRAME_PROMPT_SYSTEM,
+    FRAME_PROMPT_USER_TEMPLATE,
+    VIDEO_PROMPT_SYSTEM,
+    VIDEO_PROMPT_USER_TEMPLATE,
 )
 
 router = APIRouter()
@@ -62,6 +66,20 @@ class GenerateFramePromptsRequest(BaseModel):
     description: str
     dialogues:   list = []   # [{character, text}]
     characters:  list = []   # project characters for style consistency
+    manuscript:  str  = ""   # full manuscript text for narrative context
+    scene_index: int  = 0
+    total_scenes: int = 0
+
+
+class GenerateVideoPromptRequest(BaseModel):
+    description:        str  = ""
+    dialogues:          list = []   # [{character, text, emotion}]
+    characters:         list = []   # [{name, role, appearance, traits}]
+    start_frame_prompt: str  = ""
+    end_frame_prompt:   str  = ""
+    manuscript:         str  = ""
+    scene_index:        int  = 0
+    total_scenes:       int  = 0
 
 
 # ── Connection test ────────────────────────────────────────────────────────────
@@ -281,69 +299,58 @@ def _extract_json_array(text: str) -> Optional[list]:
 
 # ── Frame prompt generation ────────────────────────────────────────────────────
 
-_FRAME_PROMPT_SYSTEM = (
-    "You are an expert AI image prompt engineer for video generation. "
-    "Given a scene description and optional dialogue, write two concise English prompts: "
-    "one for the START frame and one for the END frame of a short video clip. "
-    "Each prompt should be vivid, specific, and suitable for a text-to-image model "
-    "(Stable Diffusion / ComfyUI). "
-    "CRITICAL: Do NOT include any art style, painting style, or rendering style tags "
-    "(e.g. do NOT write 'anime style', 'watercolor', '3D render', 'photorealistic', "
-    "'oil painting', 'sketch', 'cartoon', 'manga', 'illustration', etc.). "
-    "Art style will be applied separately by the user. "
-    "Focus only on scene content, character appearance, composition, lighting, and mood. "
-    "Output ONLY a JSON object with keys "
-    "\"start_frame_prompt\" and \"end_frame_prompt\". No extra text."
-)
-
 @router.post("/generate-frame-prompts")
 async def generate_frame_prompts(req: GenerateFramePromptsRequest):
-    dialogue_lines = "\n".join(
-        f"  [{d.get('character','?')}]: {d.get('text','')}"
-        for d in (req.dialogues or [])
-    )
+    dialogue_lines = ""
+    if req.dialogues:
+        lines = "\n".join(
+            f"  [{d.get('character','?')}]: {d.get('text','')}"
+            for d in req.dialogues
+        )
+        dialogue_lines = f"Dialogues:\n{lines}\n"
 
-    # Build per-character appearance tags for consistency
-    char_appearances = []
-    char_styles = ""
+    # Build per-character appearance block — STRICT: each appearance stays with its owner
+    char_parts = []
     if req.characters:
-        parts = []
         for c in req.characters:
             name = c.get("name", "").strip()
             if not name:
                 continue
-            role = c.get("role", "").strip()
+            role       = c.get("role",       "").strip()
             appearance = c.get("appearance", "").strip()
-            traits = c.get("traits", "").strip()
-            # Collect for the prompt header
-            desc_parts = [name]
-            if role:        desc_parts.append(f"({role})")
-            if appearance:  char_appearances.append(f"{name}: {appearance}")
-            elif traits:    char_appearances.append(f"{name}: {traits}")
-            parts.append(" ".join(desc_parts))
-        if parts:
-            char_styles = "Characters in this series: " + ", ".join(parts) + ". "
+            traits     = c.get("traits",     "").strip()
+            visual = appearance or traits or ""
+            line = f"  - {name}"
+            if role:   line += f" ({role})"
+            if visual: line += f": {visual}"
+            char_parts.append(line)
 
-    appearance_block = ""
-    if char_appearances:
-        appearance_block = (
-            "Character visual descriptions (MUST be included in every frame prompt for consistency):\n"
-            + "\n".join(f"  - {a}" for a in char_appearances)
-            + "\n"
+    char_block = ""
+    if char_parts:
+        char_block = (
+            "Characters appearing in this scene — use ONLY these appearance tags for their respective owner:\n"
+            + "\n".join(char_parts)
+            + "\n\n"
         )
 
-    user_msg = (
-        f"{char_styles}"
-        f"{appearance_block}"
-        f"Scene description (Chinese): {req.description}\n"
-        + (f"Dialogues:\n{dialogue_lines}\n" if dialogue_lines.strip() else "")
-        + "\nIMPORTANT: Each prompt MUST include the character appearance tags above verbatim so the characters look consistent across all frames.\n"
-        + "Return JSON only."
+    # Optionally include manuscript context (truncated to keep context window manageable)
+    manuscript_section = ""
+    if req.manuscript.strip():
+        ms = req.manuscript.strip()
+        if len(ms) > 2500:
+            ms = ms[:2500] + "... (truncated)"
+        manuscript_section = f"Full story manuscript (for character identity context):\n{ms}\n\n"
+
+    user_msg = FRAME_PROMPT_USER_TEMPLATE.format(
+        manuscript_section=manuscript_section,
+        char_block=char_block,
+        description=req.description,
+        dialogue_lines=dialogue_lines,
     )
 
     cfg = load_settings().text_engine
     full_text = ""
-    async for chunk in stream_chat(cfg, _FRAME_PROMPT_SYSTEM, user_msg):
+    async for chunk in stream_chat(cfg, FRAME_PROMPT_SYSTEM, user_msg):
         full_text += chunk
 
     # parse JSON from response
@@ -460,6 +467,7 @@ class SuggestSceneCharactersRequest(BaseModel):
     description: str = ""
     dialogues:   list = []
     all_names:   list = []
+    manuscript:  str  = ""   # full manuscript for pronoun resolution
 
 
 @router.post("/suggest-scene-characters")
@@ -472,7 +480,15 @@ async def suggest_scene_characters(req: SuggestSceneCharactersRequest):
         for d in (req.dialogues or [])
     ) or "（无台词）"
 
+    # Truncate manuscript to keep context manageable
+    ms = (req.manuscript or "").strip()
+    if len(ms) > 2000:
+        ms = ms[:2000] + "... (截断)"
+    if not ms:
+        ms = "（未提供文案）"
+
     user_msg = SUGGEST_CHARS_USER_TEMPLATE.format(
+        manuscript=ms,
         description=req.description or "（无描述）",
         dialogues=dialogue_lines,
         all_names="、".join(req.all_names),
@@ -500,3 +516,74 @@ async def suggest_scene_characters(req: SuggestSceneCharactersRequest):
         except json.JSONDecodeError:
             pass
     return {"characters": []}
+
+
+# ── Video prompt generation (streaming SSE) ────────────────────────────────────
+
+@router.post("/generate-video-prompt")
+async def generate_video_prompt(req: GenerateVideoPromptRequest):
+    # Characters block
+    char_lines = []
+    if req.characters:
+        for c in req.characters:
+            name = c.get("name", "").strip()
+            if not name:
+                continue
+            role       = c.get("role",       "").strip()
+            appearance = c.get("appearance", "").strip()
+            traits     = c.get("traits",     "").strip()
+            visual = appearance or traits or ""
+            line = f"  - {name}"
+            if role:   line += f" ({role})"
+            if visual: line += f": {visual}"
+            char_lines.append(line)
+    characters_block = (
+        "Characters in this scene:\n" + "\n".join(char_lines) + "\n\n"
+        if char_lines else ""
+    )
+
+    # Dialogues block
+    dlg_lines = [
+        f"  [{d.get('character','?')} / {d.get('emotion','平静')}]: {d.get('text','')}"
+        for d in (req.dialogues or [])
+        if d.get("text")
+    ]
+    dialogues_block = (
+        "Dialogues (with emotion):\n" + "\n".join(dlg_lines) + "\n\n"
+        if dlg_lines else ""
+    )
+
+    # Truncate manuscript if needed
+    ms = (req.manuscript or "").strip()
+    if len(ms) > 3000:
+        ms = ms[:3000] + "... (truncated)"
+    if not ms:
+        ms = "（未提供文案）"
+
+    user_msg = VIDEO_PROMPT_USER_TEMPLATE.format(
+        manuscript=ms,
+        scene_index=req.scene_index or 1,
+        total_scenes=req.total_scenes or 1,
+        description=req.description or "（无描述）",
+        characters_block=characters_block,
+        dialogues_block=dialogues_block,
+        start_frame_prompt=req.start_frame_prompt or "（未提供）",
+        end_frame_prompt=req.end_frame_prompt or "（未提供）",
+    )
+
+    cfg = load_settings().text_engine
+
+    async def sse_stream():
+        try:
+            async for chunk in stream_chat(cfg, VIDEO_PROMPT_SYSTEM, user_msg):
+                yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        sse_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

@@ -195,7 +195,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 
 const props = defineProps({ projectId: String })
 const emit = defineEmits(['dirty', 'saved'])
@@ -228,6 +228,26 @@ function addCharacter() {
 function removeCharacter(i) {
   config.value.characters.splice(i, 1)
 }
+
+// ── Auto-save config on change ─────────────────────────────────────────────────
+let _configSaveTimer = null
+watch(
+  config,
+  () => {
+    clearTimeout(_configSaveTimer)
+    _configSaveTimer = setTimeout(async () => {
+      if (!props.projectId) return
+      try {
+        await fetch(`${API}/projects/${props.projectId}/manuscript`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: content.value, config: config.value }),
+        })
+      } catch { /* silent */ }
+    }, 1000)
+  },
+  { deep: true },
+)
 
 let abortController = null
 

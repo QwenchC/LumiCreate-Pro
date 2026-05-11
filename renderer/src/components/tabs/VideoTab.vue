@@ -26,10 +26,19 @@
           >⏯ 继续生成</button>
           <button
             class="btn btn-secondary btn-sm"
-            :disabled="!scenes.length"
-            title="为所有分镜自动生成视频提示词"
+            :disabled="!scenes.length || generatingAllVideoPrompts"
+            title="为所有分镜用 LLM 自动生成视频提示词"
             @click="generateAllPrompts"
-          >✦ 全部生成提示词</button>
+          >
+            {{ generatingAllVideoPrompts
+              ? `提示词 ${videoPromptProgress}/${scenes.length}…`
+              : '✦ 全部生成提示词' }}
+          </button>
+          <button
+            v-if="generatingAllVideoPrompts"
+            class="btn btn-danger btn-sm"
+            @click="_videoPromptAbort?.abort(); generatingAllVideoPrompts = false; generatingVideoPromptId = null"
+          >⏹ 中断提示词</button>
           <button
             class="btn btn-primary btn-sm"
             :disabled="!selectedWorkflow || !readyCount"
@@ -96,7 +105,7 @@
         <!-- Header -->
         <div class="svcard-header">
           <span class="scene-num">{{ String(scene.index).padStart(2,'0') }}</span>
-          <span class="svcard-desc">{{ scene.description || '（无描述）' }}</span>
+          <span class="svcard-desc" :title="scene.description">{{ scene.description || '（无描述）' }}</span>
           <span class="svcard-status" :class="sceneStatusClass(scene.id)">
             {{ sceneStatusLabel(scene.id) }}
           </span>
@@ -136,8 +145,12 @@
                 @click="editPrompt(scene)"
                 title="手动编辑视频提示词"
               >✎ 编辑</button>
-              <button class="btn btn-ghost btn-xs" @click="generatePrompt(scene)" title="根据分镜信息自动生成提示词">
-                ✦ 生成
+              <button class="btn btn-ghost btn-xs"
+                :disabled="!!generatingVideoPromptId"
+                @click="generatePrompt(scene)"
+                :title="generatingVideoPromptId === scene.id ? 'LLM 生成中…' : '用 LLM 生成视频提示词'"
+              >
+                {{ generatingVideoPromptId === scene.id ? '⏳ 生成中…' : '✦ 生成' }}
               </button>
               <button
                 v-if="scenePrompts[scene.id]"
@@ -230,6 +243,13 @@ const merging         = ref(false)
 const scenePrompts    = ref({})   // scene_id → prompt string
 const promptVisible   = ref({})   // scene_id → bool (expanded)
 let _promptSaveTimer  = null
+// manuscript + characters for LLM video prompt
+const manuscript             = ref('')
+const allCharacters          = ref([])   // [{name, role, appearance, traits}]
+// per-scene LLM generating state
+const generatingVideoPromptId   = ref(null)   // scene.id being generated
+const generatingAllVideoPrompts = ref(false)
+const videoPromptProgress       = ref(0)
 
 // ── derived ────────────────────────────────────────────────────────────────────
 const scenesWithData = computed(() =>
@@ -340,6 +360,16 @@ async function loadData() {
     // Saved video prompts
     scenePrompts.value = promptsRes.data || {}
 
+    // Load manuscript + characters for LLM prompt generation
+    try {
+      const msRes = await axios.get(`${API}/projects/${props.projectId}/manuscript`)
+      manuscript.value = msRes.data?.content || ''
+    } catch {}
+    try {
+      const chRes = await axios.get(`${API}/projects/${props.projectId}/characters`)
+      allCharacters.value = chRes.data?.characters || []
+    } catch {}
+
   } catch (e) {
     genError.value = e?.response?.data?.detail || e.message || '加载失败'
   } finally {
@@ -412,43 +442,125 @@ async function generateOne(scene) {
   await _runGeneration([scene])
 }
 
-function _buildPrompt(scene) {
-  // Start with visual description
+function _buildPromptFallback(scene) {
+  // Mechanical fallback used only when LLM is unavailable
   const base = scene.start_frame_prompt || scene.description || ''
-  // Add dialogue lines: only named characters, not narration
   const dialogues = (scene.dialogues || []).filter(d => d.character && d.character !== '旁白' && d.text)
   if (!dialogues.length) return base
-  const dlgParts = dialogues.map(d => `${d.character} opens mouth saying: "${d.text}"`)
+  const dlgParts = dialogues.map(d => `${d.character} says: "${d.text}"`)
   return base ? `${base}. ${dlgParts.join(', ')}.` : dlgParts.join(', ') + '.'
 }
 
-function generatePrompt(scene) {
-  const p = _buildPrompt(scene)
-  scenePrompts.value = { ...scenePrompts.value, [scene.id]: p }
-  promptVisible.value = { ...promptVisible.value, [scene.id]: true }
-  _scheduleSavePrompts()
+// Call LLM to generate a video prompt for one scene (streaming SSE), returns final text
+async function _fetchVideoPromptLLM(scene, abortSignal) {
+  const sceneChars = (scene._scene_characters || [])
+  const chars = sceneChars.length
+    ? allCharacters.value.filter(c => sceneChars.includes(c.name))
+    : allCharacters.value
+
+  const res = await fetch(`${API}/text-engine/generate-video-prompt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal: abortSignal,
+    body: JSON.stringify({
+      description:        scene.description,
+      dialogues:          scene.dialogues || [],
+      characters:         chars,
+      start_frame_prompt: scene.start_frame_prompt || '',
+      end_frame_prompt:   scene.end_frame_prompt   || '',
+      manuscript:         manuscript.value,
+      scene_index:        scene.index,
+      total_scenes:       scenes.value.length,
+    }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+
+  const reader  = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop()
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const raw = line.slice(6).trim()
+      if (raw === '[DONE]') break
+      try {
+        const obj = JSON.parse(raw)
+        if (obj.error) throw new Error(obj.error)
+        if (obj.text) result += obj.text
+      } catch (e) {
+        if (raw.includes('"error"')) throw e
+      }
+    }
+  }
+  return result.trim()
+}
+
+async function generatePrompt(scene) {
+  if (generatingVideoPromptId.value) return
+  generatingVideoPromptId.value = scene.id
+  try {
+    const text = await _fetchVideoPromptLLM(scene, null)
+    scenePrompts.value  = { ...scenePrompts.value,  [scene.id]: text || _buildPromptFallback(scene) }
+    promptVisible.value = { ...promptVisible.value, [scene.id]: true }
+    _scheduleSavePrompts()
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      // Fallback to mechanical prompt on error
+      scenePrompts.value  = { ...scenePrompts.value,  [scene.id]: _buildPromptFallback(scene) }
+      promptVisible.value = { ...promptVisible.value, [scene.id]: true }
+      _scheduleSavePrompts()
+    }
+  } finally {
+    generatingVideoPromptId.value = null
+  }
 }
 
 function editPrompt(scene) {
-  // If no prompt exists yet, prefill with an auto-built draft as editable baseline.
+  // If no prompt exists yet, prefill with a mechanical draft as editable baseline.
   if (!scenePrompts.value[scene.id]) {
-    const draft = _buildPrompt(scene)
+    const draft = _buildPromptFallback(scene)
     scenePrompts.value = { ...scenePrompts.value, [scene.id]: draft }
     _scheduleSavePrompts()
   }
   promptVisible.value = { ...promptVisible.value, [scene.id]: true }
 }
 
-function generateAllPrompts() {
-  const updated = { ...scenePrompts.value }
-  const vis = { ...promptVisible.value }
-  for (const s of scenesWithData.value) {
-    updated[s.id] = _buildPrompt(s)
-    vis[s.id] = true
+let _videoPromptAbort = null
+
+async function generateAllPrompts() {
+  if (generatingAllVideoPrompts.value) return
+  generatingAllVideoPrompts.value = true
+  videoPromptProgress.value = 0
+  _videoPromptAbort = new AbortController()
+
+  for (let i = 0; i < scenesWithData.value.length; i++) {
+    if (_videoPromptAbort?.signal.aborted) break
+    const s = scenesWithData.value[i]
+    generatingVideoPromptId.value = s.id
+    try {
+      const text = await _fetchVideoPromptLLM(s, _videoPromptAbort.signal)
+      scenePrompts.value  = { ...scenePrompts.value,  [s.id]: text || _buildPromptFallback(s) }
+      promptVisible.value = { ...promptVisible.value, [s.id]: true }
+      _scheduleSavePrompts()
+    } catch (e) {
+      if (e.name === 'AbortError') break
+      scenePrompts.value  = { ...scenePrompts.value,  [s.id]: _buildPromptFallback(s) }
+      promptVisible.value = { ...promptVisible.value, [s.id]: true }
+      _scheduleSavePrompts()
+    }
+    videoPromptProgress.value = i + 1
   }
-  scenePrompts.value  = updated
-  promptVisible.value = vis
-  _scheduleSavePrompts()
+
+  generatingVideoPromptId.value   = null
+  generatingAllVideoPrompts.value = false
+  _videoPromptAbort = null
 }
 
 function togglePrompt(sceneId) {
@@ -486,7 +598,7 @@ async function _runGeneration(sceneList) {
       end_image_b64:   s.endImageB64,
       audio_b64:       s.audioB64,
       duration_ms:     s.audioDurationMs || 4000,
-      positive_prompt: scenePrompts.value[s.id] ?? _buildPrompt(s),
+      positive_prompt: scenePrompts.value[s.id] ?? _buildPromptFallback(s),
     }))
   }
 
@@ -617,8 +729,11 @@ async function showMergedInFolder() {
 }
 .scene-video-card { padding:12px; display:flex; flex-direction:column; gap:8px; }
 
-.svcard-header { display:flex; align-items:center; gap:8px; }
-.svcard-desc   { flex:1; font-size:13px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.svcard-header { display:flex; align-items:flex-start; gap:8px; }
+.svcard-desc {
+  flex:1; min-width:0; font-size:13px; font-weight:500;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:default;
+}
 .svcard-status { font-size:12px; font-weight:600; }
 .svcard-status.active { color:var(--accent); }
 .svcard-status.done   { color:var(--color-success,#4caf50); }

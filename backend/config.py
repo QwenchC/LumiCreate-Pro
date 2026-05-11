@@ -25,6 +25,8 @@ class ImageEngineConfig(BaseModel):
     default_gen_count: int = Field(default=3, ge=1, le=10)
     image_width: int = Field(default=1920, ge=64, le=8192)
     image_height: int = Field(default=1080, ge=64, le=8192)
+    style_preset: str = ""           # selected style preset value
+    custom_style_text: str = ""      # text when style_preset == '__custom__'
 
 
 class AudioEngineConfig(BaseModel):
