@@ -7,6 +7,7 @@
         <span class="text-muted" style="font-size:12px">角色外观描述将自动注入图片提示词，保持角色一致性</span>
       </div>
       <div class="toolbar-right">
+        <button class="btn btn-secondary btn-sm" @click="openImportFromProject" :disabled="syncing">⇨ 从其他项目导入</button>
         <button class="btn btn-secondary btn-sm" @click="importFromManuscript" :disabled="syncing">
           {{ syncing ? '导入中...' : '↓ 从文案导入角色' }}
         </button>
@@ -109,11 +110,65 @@
 
     <!-- Status -->
     <div v-if="statusMsg" class="status-toast" :class="statusType">{{ statusMsg }}</div>
+
+    <!-- Import from other project dialog -->
+    <Teleport to="body">
+      <div v-if="importProjectDialog.show" class="overlay" @click.self="importProjectDialog.show = false">
+        <div class="dialog card" style="min-width:480px;max-width:600px">
+          <h3 class="dialog-title">从其他项目导入角色</h3>
+
+          <!-- step 1: pick project -->
+          <div v-if="!importProjectDialog.sourceChars">
+            <div class="form-group">
+              <label>选择来源项目</label>
+              <select v-model="importProjectDialog.selectedProjectId" class="input">
+                <option value="">请选择…</option>
+                <option v-for="p in importProjectDialog.projects" :key="p.id" :value="p.id"
+                  :disabled="p.id === props.projectId">{{ p.name }}</option>
+              </select>
+            </div>
+            <div class="dialog-actions">
+              <button class="btn btn-primary" :disabled="!importProjectDialog.selectedProjectId || importProjectDialog.loading"
+                @click="loadImportProjectChars">
+                {{ importProjectDialog.loading ? '加载中…' : '下一步' }}
+              </button>
+              <button class="btn btn-ghost" @click="importProjectDialog.show = false">取消</button>
+            </div>
+          </div>
+
+          <!-- step 2: pick characters -->
+          <div v-else>
+            <p class="text-muted" style="font-size:13px;margin-bottom:12px">
+              勾选要导入的角色（已存在同名角色将询问是否覆盖）：
+            </p>
+            <div v-if="!importProjectDialog.sourceChars.length" class="text-muted" style="font-size:13px">
+              该项目暂无角色
+            </div>
+            <div v-else class="import-char-list">
+              <label v-for="(c, i) in importProjectDialog.sourceChars" :key="i" class="import-char-row">
+                <input type="checkbox" :value="i" v-model="importProjectDialog.selectedIndices" />
+                <span class="import-char-name">{{ c.name || '(无名)' }}</span>
+                <span class="import-char-role text-muted">{{ c.role }}</span>
+              </label>
+            </div>
+            <div class="dialog-actions" style="margin-top:16px">
+              <button class="btn btn-primary"
+                :disabled="!importProjectDialog.selectedIndices.length"
+                @click="doImportFromProject">
+                导入已选（{{ importProjectDialog.selectedIndices.length }}）
+              </button>
+              <button class="btn btn-ghost" @click="importProjectDialog.sourceChars = null; importProjectDialog.selectedIndices = []">返回</button>
+              <button class="btn btn-ghost" @click="importProjectDialog.show = false">取消</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({ projectId: String })
 const emit  = defineEmits(['dirty', 'saved'])
@@ -126,6 +181,82 @@ const saving   = ref(false)
 const syncing  = ref(false)
 const statusMsg  = ref('')
 const statusType = ref('')
+
+// ── Import from other project dialog state ────────────────────────────────────
+const importProjectDialog = reactive({
+  show: false,
+  projects: [],
+  selectedProjectId: '',
+  loading: false,
+  sourceChars: null,      // null = not loaded yet; [] = loaded (empty); [...] = loaded
+  selectedIndices: [],    // indices into sourceChars
+})
+
+async function openImportFromProject() {
+  importProjectDialog.selectedProjectId = ''
+  importProjectDialog.sourceChars = null
+  importProjectDialog.selectedIndices = []
+  importProjectDialog.loading = false
+  try {
+    const res = await fetch(`${API}/projects`)
+    importProjectDialog.projects = res.ok ? await res.json() : []
+  } catch {
+    importProjectDialog.projects = []
+  }
+  importProjectDialog.show = true
+}
+
+async function loadImportProjectChars() {
+  if (!importProjectDialog.selectedProjectId) return
+  importProjectDialog.loading = true
+  try {
+    const res = await fetch(`${API}/projects/${importProjectDialog.selectedProjectId}/characters`)
+    const d = res.ok ? await res.json() : { characters: [] }
+    importProjectDialog.sourceChars = (d.characters || []).map(c => ({
+      name: c.name || '', role: c.role || '', traits: c.traits || '',
+      appearance: c.appearance || '', negative: c.negative || '',
+    }))
+    importProjectDialog.selectedIndices = importProjectDialog.sourceChars.map((_, i) => i)
+  } catch {
+    importProjectDialog.sourceChars = []
+  } finally {
+    importProjectDialog.loading = false
+  }
+}
+
+async function doImportFromProject() {
+  const toImport = importProjectDialog.selectedIndices
+    .map(i => importProjectDialog.sourceChars[i])
+    .filter(Boolean)
+  if (!toImport.length) return
+
+  const existingMap = new Map(characters.value.map(c => [normalizeName(c.name), c]))
+  let added = 0, overwritten = 0
+
+  for (const src of toImport) {
+    const key = normalizeName(src.name)
+    if (!key) continue
+    if (existingMap.has(key)) {
+      const ok = confirm(`角色「${src.name}」已存在，是否用导入数据覆盖？`)
+      if (!ok) continue
+      const existing = existingMap.get(key)
+      Object.assign(existing, { role: src.role, traits: src.traits, appearance: src.appearance, negative: src.negative })
+      overwritten++
+    } else {
+      characters.value.push({ ...src, _generating: false, _finding: false, _profiling: false })
+      existingMap.set(key, characters.value[characters.value.length - 1])
+      added++
+    }
+  }
+
+  if (added + overwritten > 0) {
+    markDirty()
+    showStatus(`导入完成：新增 ${added} 个，覆盖 ${overwritten} 个`, 'ok')
+  } else {
+    showStatus('未导入任何角色', 'warn')
+  }
+  importProjectDialog.show = false
+}
 
 function emptyChar() {
   return {
@@ -485,4 +616,10 @@ function showStatus(msg, type = '') {
 .status-toast.ok   { color: var(--color-success); }
 .status-toast.err  { color: var(--color-error); }
 .status-toast.warn { color: var(--color-warning); }
+
+.import-char-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+.import-char-row  { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.import-char-row:hover { background: var(--bg-input); }
+.import-char-name { font-weight: 600; font-size: 14px; min-width: 80px; }
+.import-char-role { font-size: 12px; }
 </style>

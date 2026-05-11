@@ -129,9 +129,19 @@
         <div class="detail-frame-section">
           <div class="detail-frame-header">
             <span class="frame-badge badge-blue">首帧</span>
-            <span class="frame-prompt text-muted truncate">{{ activeScene.start_frame_prompt || '(无提示词)' }}</span>
+            <button class="btn btn-ghost btn-xs" :disabled="running || regenPromptingId === activeScene.id + ':start'"
+              @click="regenPromptOnly(activeScene,'start')" title="重新生成首帧提示词">
+              {{ regenPromptingId === activeScene.id + ':start' ? '⏳' : '↺' }} 提示词
+            </button>
             <button class="btn btn-ghost btn-xs" :disabled="running" @click="regenFrame(activeScene,'start')">↺ 重新生成所有</button>
           </div>
+          <textarea
+            class="input textarea frame-prompt-edit"
+            rows="3"
+            placeholder="首帧提示词（英文）…"
+            :value="activeScene.start_frame_prompt"
+            @input="onPromptInput(activeScene, 'start', $event.target.value)"
+          />
           <div class="image-slots">
             <div
               v-for="slot in getFrameSlotCount(activeScene.id, 'start')" :key="slot-1"
@@ -169,9 +179,19 @@
         <div class="detail-frame-section">
           <div class="detail-frame-header">
             <span class="frame-badge badge-purple">尾帧</span>
-            <span class="frame-prompt text-muted truncate">{{ activeScene.end_frame_prompt || '(无提示词)' }}</span>
+            <button class="btn btn-ghost btn-xs" :disabled="running || regenPromptingId === activeScene.id + ':end'"
+              @click="regenPromptOnly(activeScene,'end')" title="重新生成尾帧提示词">
+              {{ regenPromptingId === activeScene.id + ':end' ? '⏳' : '↺' }} 提示词
+            </button>
             <button class="btn btn-ghost btn-xs" :disabled="running" @click="regenFrame(activeScene,'end')">↺ 重新生成所有</button>
           </div>
+          <textarea
+            class="input textarea frame-prompt-edit"
+            rows="3"
+            placeholder="尾帧提示词（英文）…"
+            :value="activeScene.end_frame_prompt"
+            @input="onPromptInput(activeScene, 'end', $event.target.value)"
+          />
           <div class="image-slots">
             <div
               v-for="slot in getFrameSlotCount(activeScene.id, 'end')" :key="slot-1"
@@ -326,6 +346,7 @@ const effectiveStyle  = computed(() =>
 
 const activeSceneId = ref(null)
 const activeScene   = computed(() => scenes.value.find(s => s.id === activeSceneId.value) ?? null)
+const regenPromptingId = ref('')   // "{sceneId}:start" or "{sceneId}:end" while regenerating prompt only
 watch(scenes, (list) => { if (list.length && !activeSceneId.value) activeSceneId.value = list[0].id }, { immediate: true })
 
 // Persist selected workflow back to global settings whenever user changes it
@@ -723,6 +744,62 @@ async function regenFrame(scene, frameType) {
   emit('dirty')
 }
 
+// ── Prompt editing: linked with ScenesTab via shared /scenes endpoint ─────────
+let _promptSaveTimer = null
+function onPromptInput(scene, frameType, value) {
+  if (frameType === 'start') scene.start_frame_prompt = value
+  else                        scene.end_frame_prompt   = value
+  emit('dirty')
+  clearTimeout(_promptSaveTimer)
+  _promptSaveTimer = setTimeout(() => saveScenes(), 800)
+}
+
+async function saveScenes() {
+  try {
+    const payload = scenes.value.map(s => {
+      const { _selected_start, _selected_end, _scene_characters, ...rest } = s
+      return { ...rest, _selected_start, _selected_end, _scene_characters }
+    })
+    await axios.put(API + '/projects/' + props.projectId + '/scenes', { scenes: payload })
+  } catch {}
+}
+
+async function regenPromptOnly(scene, frameType) {
+  const key = scene.id + ':' + frameType
+  if (regenPromptingId.value === key) return
+  regenPromptingId.value = key
+  try {
+    const selected = scene._scene_characters || []
+    const allChars = characters.value || []
+    const chars = allChars.filter(c => selected.includes(c.name))
+    const res = await fetch(API + '/text-engine/generate-frame-prompts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        description:  scene.description,
+        dialogues:    scene.dialogues || [],
+        characters:   chars,
+        manuscript:   manuscript.value,
+        scene_index:  scene.index,
+        total_scenes: scenes.value.length,
+      }),
+    })
+    if (!res.ok) throw new Error(await res.text())
+    const data = await res.json()
+    if (frameType === 'start' && data.start_frame_prompt) {
+      scene.start_frame_prompt = data.start_frame_prompt
+    } else if (frameType === 'end' && data.end_frame_prompt) {
+      scene.end_frame_prompt = data.end_frame_prompt
+    }
+    emit('dirty')
+    saveScenes()
+  } catch (e) {
+    alert('提示词生成失败：' + e.message)
+  } finally {
+    regenPromptingId.value = ''
+  }
+}
+
 async function runSingleSlot(sceneId, frameType, slotIndex, prompt) {
   const key = slotKey(sceneId, frameType, slotIndex)
   try {
@@ -991,6 +1068,11 @@ async function addOneMore(scene, frameType) {
 .badge-blue   { background: rgba(99,179,237,.15); color: #63b3ed; }
 .badge-purple { background: rgba(183,148,244,.15); color: #b794f4; }
 .frame-prompt { font-size: 12px; flex: 1; min-width: 0; }
+.frame-prompt-edit {
+  width: 100%; font-size: 12px; font-family: monospace; resize: vertical;
+  border-radius: 0; border: none; border-bottom: 1px solid var(--border);
+  background: var(--bg-panel); padding: 8px 12px; line-height: 1.5;
+}
 .image-slots { display: flex; gap: 12px; flex-wrap: wrap; padding: 12px; }
 .image-slot {
   width: 192px; height: 128px; border-radius: 6px;

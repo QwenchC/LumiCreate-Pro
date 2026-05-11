@@ -158,7 +158,7 @@
 
     <!-- Create project dialog -->
     <Teleport to="body">
-      <div v-if="showCreateDialog" class="overlay" @click.self="showCreateDialog = false">
+      <div v-if="showCreateDialog" class="overlay" @click.self="showCreateDialog = false; copyFromProjectId = ''">
         <div class="dialog card">
           <h3 class="dialog-title">新建项目</h3>
           <div class="form-group">
@@ -168,6 +168,14 @@
           <div class="form-group">
             <label>项目描述</label>
             <textarea v-model="newDesc" class="input textarea" placeholder="简短描述项目内容（可选）" rows="3" />
+          </div>
+          <div class="form-group">
+            <label>复制配置（可选）</label>
+            <select v-model="copyFromProjectId" class="input">
+              <option value="">不复制，从空白开始</option>
+              <option v-for="p in store.projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select>
+            <p v-if="copyFromProjectId" class="field-hint" style="margin-top:4px;font-size:11px;color:var(--color-text-muted);opacity:0.7">将从该项目复制角色列表与文案配置（世界观、角色设定等），不复制文案内容和分镜。</p>
           </div>
           <div class="dialog-actions">
             <button class="btn btn-primary" :disabled="!newName.trim()" @click="createProject">创建</button>
@@ -444,6 +452,7 @@ const searchQuery = ref('')
 const showCreateDialog = ref(false)
 const newName = ref('')
 const newDesc = ref('')
+const copyFromProjectId = ref('')
 const activeMenu = ref(null)
 const deleteTarget = ref(null)
 const projectsDir = ref('')
@@ -505,9 +514,19 @@ async function doDelete() {
 async function createProject() {
   if (!newName.value.trim()) return
   const proj = await store.createProject(newName.value.trim(), newDesc.value.trim(), activeFolder.value)
+  if (copyFromProjectId.value) {
+    try {
+      await fetch(`http://127.0.0.1:18520/api/projects/${proj.id}/copy-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_project_id: copyFromProjectId.value }),
+      })
+    } catch {}
+  }
   showCreateDialog.value = false
   newName.value = ''
   newDesc.value = ''
+  copyFromProjectId.value = ''
   router.push(`/project/${proj.id}`)
 }
 
@@ -759,13 +778,7 @@ onUnmounted(() => {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* Dialogs */
-.overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-  display: flex; align-items: center; justify-content: center; z-index: 9999;
-}
-.dialog { max-width: 440px; width: 90%; max-height: 85vh; overflow-y: auto; }
-.dialog-title { font-size: 16px; margin-bottom: 16px; }
-.dialog-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+/* Dialogs — base styles are in global.css */
 .form-group { margin-bottom: 14px; }
 .form-group label { display: block; font-size: 13px; margin-bottom: 6px; color: var(--color-text-muted); }
 .required { color: var(--color-error); }

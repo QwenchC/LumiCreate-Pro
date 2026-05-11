@@ -167,6 +167,15 @@ html, body, #app {
 /* Light-theme overlay tint */
 [data-theme="light"] .overlay { background: rgba(0,0,0,0.35); }
 
+/* Global overlay / dialog — used by Teleport dialogs across all components */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center; z-index: 9999;
+}
+.dialog { max-width: 440px; width: 90%; max-height: 85vh; overflow-y: auto; }
+.dialog-title { font-size: 16px; margin-bottom: 16px; font-weight: 600; }
+.dialog-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+
 /* Smooth theme transition */
 body, .app-shell, .titlebar, .sidebar, .main-content, .settings-sidebar,
 .settings-main, .project-layout, .tab-content, .card {

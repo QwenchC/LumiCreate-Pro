@@ -102,6 +102,31 @@ async def create_project(req: CreateProjectRequest):
 
 @router.get("/{project_id}", response_model=ProjectMeta)
 async def get_project(project_id: str):
+    meta = _read_meta(project_id)
+    meta.has_final_video = (_project_dir(project_id) / "video" / "final_video.mp4").exists()
+    return meta
+
+
+# ── Copy config from another project ──────────────────────────────────────────
+
+class CopyConfigRequest(BaseModel):
+    source_project_id: str
+
+@router.post("/{project_id}/copy-config", status_code=204)
+async def copy_config_from_project(project_id: str, req: CopyConfigRequest):
+    """Copy manuscript_config.json and characters.json from source to target project."""
+    _read_meta(project_id)
+    src_dir = _project_dir(req.source_project_id)
+    dst_dir = _project_dir(project_id)
+    for filename in ("manuscript_config.json", "characters.json"):
+        src = src_dir / filename
+        if src.exists():
+            import shutil as _shutil
+            _shutil.copy2(src, dst_dir / filename)
+
+
+
+async def get_project(project_id: str):
     return _read_meta(project_id)
 
 
