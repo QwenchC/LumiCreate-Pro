@@ -185,7 +185,7 @@ def _make_reading_scene(index: int, text: str) -> dict:
     return {
         "id":                 f"scene_{index:03d}",
         "index":              index,
-        "description":        text[:30] + ("…" if len(text) > 30 else ""),
+        "description":        text,
         "duration_estimate":  duration,
         "start_frame_prompt": "",
         "end_frame_prompt":   "",

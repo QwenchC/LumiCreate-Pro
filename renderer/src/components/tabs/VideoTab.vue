@@ -105,7 +105,7 @@
         <!-- Header -->
         <div class="svcard-header">
           <span class="scene-num">{{ String(scene.index).padStart(2,'0') }}</span>
-          <span class="svcard-desc" :title="scene.description">{{ scene.description || '（无描述）' }}</span>
+          <div class="svcard-desc">{{ sceneFullText(scene) }}</div>
           <span class="svcard-status" :class="sceneStatusClass(scene.id)">
             {{ sceneStatusLabel(scene.id) }}
           </span>
@@ -213,7 +213,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 
 const props = defineProps({ projectId: String })
@@ -293,6 +293,16 @@ const allVideosReady = computed(() =>
 )
 
 function sceneReady(s) { return s.hasStart && s.hasEnd && s.hasAudio }
+
+function sceneFullText(scene) {
+  if (!scene) return '（无描述）'
+  const desc = scene.description || ''
+  const firstDialogue = (scene.dialogues || [])[0]?.text || ''
+  if (firstDialogue && (desc.endsWith('…') || desc.length < firstDialogue.length)) {
+    return firstDialogue
+  }
+  return desc || '（无描述）'
+}
 function sceneStatusClass(id) { return sceneState.value[id] || 'pending' }
 function sceneStatusLabel(id) {
   return ({ pending: '', active: '生成中…', done: '✓ 完成', error: '✗ 错误' })[sceneState.value[id]] || ''
@@ -378,6 +388,7 @@ async function loadData() {
 }
 
 onMounted(loadData)
+onUnmounted(() => { clearTimeout(_promptSaveTimer); _savePrompts() })
 
 // ── generation ─────────────────────────────────────────────────────────────────
 let currentReader = null
@@ -732,7 +743,7 @@ async function showMergedInFolder() {
 .svcard-header { display:flex; align-items:flex-start; gap:8px; }
 .svcard-desc {
   flex:1; min-width:0; font-size:13px; font-weight:500;
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:default;
+  white-space:pre-wrap; word-break:break-all; cursor:default;
 }
 .svcard-status { font-size:12px; font-weight:600; }
 .svcard-status.active { color:var(--accent); }

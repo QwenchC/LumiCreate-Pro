@@ -115,14 +115,16 @@
       <!-- Right panel: detail -->
       <div class="scene-detail-panel" v-if="activeScene">
         <div class="detail-header">
-          <span class="detail-num">{{ String(activeScene.index).padStart(2,'0') }}</span>
-          <span class="detail-desc" :title="activeScene.description">{{ activeScene.description || '(无描述)' }}</span>
-          <button class="btn btn-secondary btn-sm"
+          <div class="detail-header-top">
+            <span class="detail-num">{{ String(activeScene.index).padStart(2,'0') }}</span>
+            <button class="btn btn-secondary btn-sm"
             :disabled="running || !!sceneGenerating[activeScene.id] || !selectedWorkflow"
             @click="generateOneScene(activeScene)">
             <span v-if="sceneGenerating[activeScene.id]">⏳ 生成中…</span>
             <span v-else>▶ 重新生成此分镜</span>
           </button>
+          </div>
+          <div class="detail-desc-block">{{ sceneFullText(activeScene) }}</div>
         </div>
 
         <!-- Start frame -->
@@ -299,6 +301,20 @@ const imgHeight       = ref(1080)
 const characters      = ref([])   // from /characters endpoint
 const manuscript      = ref('')   // for pronoun-aware LLM suggestions
 const suggestingChars = ref(false)
+
+// Returns the best available full text for a scene:
+// pure-reading scenes may have description truncated in old data — fall back to dialogue text.
+function sceneFullText(scene) {
+  if (!scene) return '(无描述)'
+  const desc = scene.description || ''
+  // If dialogues exist and description looks like a truncated label (ends with … or very short),
+  // prefer the first dialogue's full text.
+  const firstDialogue = (scene.dialogues || [])[0]?.text || ''
+  if (firstDialogue && (desc.endsWith('…') || desc.length < firstDialogue.length)) {
+    return firstDialogue
+  }
+  return desc || '(无描述)'
+}
 
 function toggleSceneChar(scene, charName) {
   const current = scene._scene_characters || []
@@ -526,11 +542,14 @@ function onKeyDown(e) {
 onMounted(() => {
   loadData()
   window.addEventListener('keydown', onKeyDown)
-  window.addEventListener('lumi:save-project', saveImages)
+  window.addEventListener('lumi:save-project', _onGlobalSave)
 })
+function _onGlobalSave(e) { if (e?.detail?.projectId && e.detail.projectId !== props.projectId) return; saveImages() }
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
-  window.removeEventListener('lumi:save-project', saveImages)
+  window.removeEventListener('lumi:save-project', _onGlobalSave)
+  clearTimeout(_promptSaveTimer)
+  saveScenes()
 })
 
 let currentReader = null
@@ -1045,15 +1064,19 @@ async function addOneMore(scene, frameType) {
 }
 .char-select-fallback { font-size: 11px; margin: 0; }
 .detail-header {
-  display: flex; align-items: flex-start; gap: 10px;
+  display: flex; flex-direction: column; gap: 8px;
   padding: 10px 14px; background: var(--bg-input);
   border-radius: 8px; flex-shrink: 0;
 }
+.detail-header-top {
+  display: flex; align-items: center; gap: 10px;
+}
 .detail-num  { font-size: 22px; font-weight: 800; color: var(--accent); min-width: 32px; flex-shrink: 0; }
-.detail-desc {
-  font-size: 14px; flex: 1; min-width: 0;
-  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
-  cursor: default;
+.detail-desc-block {
+  font-size: 13px; line-height: 1.6; color: var(--text-muted);
+  white-space: pre-wrap; word-break: break-all;
+  background: var(--bg-panel); border-radius: 6px;
+  padding: 8px 10px; border: 1px solid var(--border);
 }
 .detail-frame-section {
   border: 1px solid var(--border); border-radius: 8px;

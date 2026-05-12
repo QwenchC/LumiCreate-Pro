@@ -682,10 +682,11 @@ async function stitchScene(scene) {
 // ── lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(async () => {
   await loadData()
-  window.addEventListener('lumi:save-project', saveAudio)
+  window.addEventListener('lumi:save-project', _onGlobalSave)
 })
+function _onGlobalSave(e) { if (e?.detail?.projectId && e.detail.projectId !== props.projectId) return; saveAudio() }
 onUnmounted(() => {
-  window.removeEventListener('lumi:save-project', saveAudio)
+  window.removeEventListener('lumi:save-project', _onGlobalSave)
 })
 </script>
 

@@ -548,7 +548,7 @@ async function save() {
   }
 }
 
-function onGlobalSave() { if (isDirty.value) save() }
+function onGlobalSave(e) { if (e?.detail?.projectId && e.detail.projectId !== props.projectId) return; if (isDirty.value) save() }
 </script>
 
 <style scoped>

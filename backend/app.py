@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import settings, projects, text_engine, image_engine, audio_engine, video_engine
+from routers import settings, projects, text_engine, image_engine, audio_engine, video_engine, subtitle_engine
 
 
 def create_app() -> FastAPI:
@@ -25,7 +25,8 @@ def create_app() -> FastAPI:
     app.include_router(text_engine.router,    prefix="/api/text-engine",    tags=["text-engine"])
     app.include_router(image_engine.router,   prefix="/api/image-engine",   tags=["image-engine"])
     app.include_router(audio_engine.router,   prefix="/api/audio-engine",   tags=["audio-engine"])
-    app.include_router(video_engine.router,   prefix="/api/video-engine",   tags=["video-engine"])
+    app.include_router(video_engine.router,     prefix="/api/video-engine",     tags=["video-engine"])
+    app.include_router(subtitle_engine.router,  prefix="/api/subtitle-engine",  tags=["subtitle-engine"])
 
     @app.get("/api/health")
     async def health():

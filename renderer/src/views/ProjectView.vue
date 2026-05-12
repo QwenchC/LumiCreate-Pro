@@ -1,17 +1,5 @@
 <template>
   <div class="project-layout">
-    <!-- Project header -->
-    <div class="project-header">
-      <button class="btn btn-ghost btn-sm" @click="goBack">← 返回</button>
-      <div class="project-header-info">
-        <h2 class="project-header-name">{{ meta?.name ?? '加载中...' }}</h2>
-        <span v-if="isDirty" class="unsaved-badge">● 未保存</span>
-      </div>
-      <button class="btn btn-primary btn-sm" :disabled="!isDirty || saving" @click="saveProject">
-        {{ saving ? '保存中...' : '💾 保存' }}
-      </button>
-    </div>
-
     <!-- Tabs -->
     <div class="tab-bar">
       <button
@@ -23,27 +11,36 @@
       >
         <span>{{ tab.icon }}</span> {{ tab.label }}
       </button>
+      <div class="tab-bar-spacer" />
+      <button class="btn btn-primary btn-sm tab-save-btn" :disabled="!isDirty || saving" @click="saveProject">
+        {{ saving ? '保存中...' : '💾 保存' }}
+      </button>
+      <span v-if="isDirty" class="unsaved-badge">● 未保存</span>
     </div>
 
     <!-- Tab content -->
     <div class="tab-content">
-      <Component :is="currentTabComponent" :project-id="projectId" @dirty="isDirty = true" @saved="isDirty = false" />
+      <Component
+        :is="currentTabComponent"
+        :project-id="projectId"
+        @dirty="onDirty"
+        @saved="onSaved"
+      />
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { defineAsyncComponent } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
+import { useTabsStore } from '../stores/tabs'
 
-const route = useRoute()
-const router = useRouter()
-const projectId = computed(() => route.params.id)
+const props = defineProps({ projectId: String })
+const emit  = defineEmits(['close-tab', 'go-home'])
 
-const meta = ref(null)
-const isDirty = ref(false)
-const saving = ref(false)
+const tabsStore = useTabsStore()
+
+const isDirty  = ref(false)
+const saving   = ref(false)
 const activeTab = ref('manuscript')
 
 const TABS = [
@@ -53,9 +50,9 @@ const TABS = [
   { key: 'images',      label: '图片生成', icon: '🖼' },
   { key: 'audio',       label: '音频生成', icon: '🎙' },
   { key: 'video',       label: '视频生成', icon: '🎬' },
+  { key: 'subtitle',    label: '字幕生成', icon: '💬' },
 ]
 
-// Load tab components lazily
 const TAB_COMPONENTS = {
   manuscript:  defineAsyncComponent(() => import('../components/tabs/ManuscriptTab.vue')),
   characters:  defineAsyncComponent(() => import('../components/tabs/CharactersTab.vue')),
@@ -63,57 +60,44 @@ const TAB_COMPONENTS = {
   images:      defineAsyncComponent(() => import('../components/tabs/ImagesTab.vue')),
   audio:       defineAsyncComponent(() => import('../components/tabs/AudioTab.vue')),
   video:       defineAsyncComponent(() => import('../components/tabs/VideoTab.vue')),
+  subtitle:    defineAsyncComponent(() => import('../components/tabs/SubtitleTab.vue')),
 }
 
 const currentTabComponent = computed(() => TAB_COMPONENTS[activeTab.value])
 
+function onDirty() {
+  isDirty.value = true
+  tabsStore.setDirty(props.projectId, true)
+}
+function onSaved() {
+  isDirty.value = false
+  tabsStore.setDirty(props.projectId, false)
+}
+
 async function saveProject() {
   saving.value = true
-  window.dispatchEvent(new CustomEvent('lumi:save-project'))
+  window.dispatchEvent(new CustomEvent('lumi:save-project', { detail: { projectId: props.projectId } }))
   await new Promise(r => setTimeout(r, 300))
   isDirty.value = false
+  tabsStore.setDirty(props.projectId, false)
   saving.value = false
 }
 
-function goBack() {
-  if (isDirty.value) {
-    window.__lumiUnsaved = true
-    window.electronAPI?.windowClose()
-    return
-  }
-  router.push('/')
-}
-
 onMounted(async () => {
-  // Load project meta from backend
+  // Load meta to update tab name
   try {
-    const res = await fetch(`http://127.0.0.1:18520/api/projects/${projectId.value}`)
-    meta.value = await res.json()
+    const res = await fetch(`http://127.0.0.1:18520/api/projects/${props.projectId}`)
+    const data = await res.json()
+    if (data?.name) tabsStore.setName(props.projectId, data.name)
   } catch {}
-
-  window.__lumiUnsaved = false
-  window.electronAPI?.onMenuSaveProject(() => saveProject())
-})
-
-onUnmounted(() => {
-  window.__lumiUnsaved = false
-  window.electronAPI?.removeAllListeners('menu:save-project')
 })
 </script>
 
 <style scoped>
 .project-layout { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-.project-header {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 16px; border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface); flex-shrink: 0;
-}
-.project-header-info { flex: 1; display: flex; align-items: center; gap: 10px; }
-.project-header-name { font-size: 15px; font-weight: 700; }
-.unsaved-badge { font-size: 12px; color: var(--color-warning); }
 
 .tab-bar {
-  display: flex; gap: 2px; padding: 8px 16px 0;
+  display: flex; align-items: center; gap: 2px; padding: 8px 16px 0;
   background: var(--color-surface); border-bottom: 1px solid var(--color-border); flex-shrink: 0;
 }
 .tab-btn {
@@ -129,6 +113,9 @@ onUnmounted(() => {
   margin-bottom: -1px;
 }
 .tab-btn:hover:not(.active) { color: var(--color-text); background: var(--color-border); }
+.tab-bar-spacer { flex: 1; }
+.tab-save-btn { margin-bottom: 4px; }
+.unsaved-badge { font-size: 12px; color: var(--color-warning); margin-bottom: 4px; padding: 0 6px; }
 
 .tab-content { flex: 1; overflow: hidden; background: var(--color-bg); }
 </style>

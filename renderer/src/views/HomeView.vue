@@ -298,9 +298,11 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProjectStore } from '../stores/projects'
+import { useTabsStore } from '../stores/tabs'
 
 const router = useRouter()
 const store = useProjectStore()
+const tabsStore = useTabsStore()
 
 const STEPS = { manuscript: '文案', scenes: '分镜', images: '图片', audio: '音频', video: '视频' }
 
@@ -482,7 +484,7 @@ function isActive(progress, key) {
 
 function openProject(proj) {
   activeMenu.value = null
-  router.push(`/project/${proj.id}`)
+  tabsStore.openTab(proj.id, proj.name)
 }
 
 function playVideo(proj) {
@@ -527,7 +529,7 @@ async function createProject() {
   newName.value = ''
   newDesc.value = ''
   copyFromProjectId.value = ''
-  router.push(`/project/${proj.id}`)
+  tabsStore.openTab(proj.id, proj.name)
 }
 
 function startRenameProject(proj) {

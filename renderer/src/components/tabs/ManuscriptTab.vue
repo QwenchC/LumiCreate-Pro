@@ -394,7 +394,7 @@ function onInput() {
   emit('dirty')
 }
 
-function onGlobalSave() {
+function onGlobalSave(e) { if (e?.detail?.projectId && e.detail.projectId !== props.projectId) return;
   if (isDirty.value) save()
 }
 </script>
