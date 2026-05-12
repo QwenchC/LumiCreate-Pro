@@ -2,11 +2,11 @@
   <div class="app-shell">
     <TitleBar @close-tab="requestCloseTab" @go-home="goHome" />
     <div class="app-body">
-      <!-- Home / Settings use RouterView -->
-      <RouterView v-if="!tabsStore.activeId" />
+      <!-- Home / Settings use RouterView; v-show keeps it mounted so ProjectViews stay alive -->
+      <RouterView v-show="!tabsStore.activeId" />
 
-      <!-- Multi-project tabs area -->
-      <div v-else class="tabs-area">
+      <!-- Multi-project tabs area: created once first tab opens, never destroyed while tabs exist -->
+      <div v-if="tabsStore.tabs.length" v-show="!!tabsStore.activeId" class="tabs-area">
         <!-- Each open project is always mounted but shown/hidden with v-show -->
         <div
           v-for="tab in tabsStore.tabs"

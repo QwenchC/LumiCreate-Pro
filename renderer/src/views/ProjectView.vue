@@ -41,7 +41,13 @@ const tabsStore = useTabsStore()
 
 const isDirty  = ref(false)
 const saving   = ref(false)
-const activeTab = ref('manuscript')
+
+// Active inner tab is stored per-project in the tabs store so it survives
+// going home and back without destroying the ProjectView instance.
+const activeTab = computed({
+  get: () => tabsStore.getInnerTab(props.projectId),
+  set: (v) => tabsStore.setInnerTab(props.projectId, v),
+})
 
 const TABS = [
   { key: 'manuscript',  label: '文案创建', icon: '📝' },

@@ -213,8 +213,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import axios from 'axios'
+import { useTabsStore } from '../../stores/tabs'
 
 const props = defineProps({ projectId: String })
 const emit  = defineEmits(['dirty', 'saved'])
@@ -389,6 +390,18 @@ async function loadData() {
 
 onMounted(loadData)
 onUnmounted(() => { clearTimeout(_promptSaveTimer); _savePrompts() })
+
+// When this project's tab becomes active again (after being in the background),
+// refresh the saved video list so any videos that finished while hidden show up.
+const tabsStore = useTabsStore()
+watch(() => tabsStore.activeId, async (newId) => {
+  if (newId !== props.projectId) return
+  if (running.value || !scenes.value.length) return
+  try {
+    const { data } = await axios.get(`${API}/projects/${props.projectId}/videos`)
+    sceneVideos.value = data || {}
+  } catch {}
+})
 
 // ── generation ─────────────────────────────────────────────────────────────────
 let currentReader = null
