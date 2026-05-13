@@ -9,6 +9,7 @@ Endpoints:
   POST /embed                 — burn SRT subtitles into final_video.mp4
 """
 
+import asyncio
 import json
 import threading
 from pathlib import Path
@@ -184,9 +185,10 @@ async def generate_srt_endpoint(req: GenerateSrtRequest):
     thread.start()
 
     async def stream():
+        loop = asyncio.get_event_loop()
         while True:
             try:
-                evt = q.get(timeout=300)
+                evt = await loop.run_in_executor(None, lambda: q.get(timeout=300))
             except Empty:
                 yield _SSE({'step': 'error', 'message': '超时'})
                 break
@@ -246,9 +248,10 @@ async def embed_subtitles_endpoint(req: EmbedRequest):
 
     async def stream():
         yield _SSE({'step': 'embedding', 'message': f'正在将字幕烧录到视频（字体：{req.font_name}）…', 'pct': 0})
+        loop = asyncio.get_event_loop()
         while True:
             try:
-                evt = q.get(timeout=600)
+                evt = await loop.run_in_executor(None, lambda: q.get(timeout=600))
             except Empty:
                 yield _SSE({'step': 'error', 'message': '嵌入超时'})
                 break

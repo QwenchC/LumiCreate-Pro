@@ -328,21 +328,12 @@ async def generate_frame_prompts(req: GenerateFramePromptsRequest):
     char_block = ""
     if char_parts:
         char_block = (
-            "Characters appearing in this scene — use ONLY these appearance tags for their respective owner:\n"
+            "Characters in this scene (ONLY these characters exist in this frame — do not add any others):\n"
             + "\n".join(char_parts)
             + "\n\n"
         )
 
-    # Optionally include manuscript context (truncated to keep context window manageable)
-    manuscript_section = ""
-    if req.manuscript.strip():
-        ms = req.manuscript.strip()
-        if len(ms) > 2500:
-            ms = ms[:2500] + "... (truncated)"
-        manuscript_section = f"Full story manuscript (for character identity context):\n{ms}\n\n"
-
     user_msg = FRAME_PROMPT_USER_TEMPLATE.format(
-        manuscript_section=manuscript_section,
         char_block=char_block,
         description=req.description,
         dialogue_lines=dialogue_lines,
@@ -538,7 +529,7 @@ async def generate_video_prompt(req: GenerateVideoPromptRequest):
             if visual: line += f": {visual}"
             char_lines.append(line)
     characters_block = (
-        "Characters in this scene:\n" + "\n".join(char_lines) + "\n\n"
+        "Characters in this scene (ONLY these characters — do not add others):\n" + "\n".join(char_lines) + "\n\n"
         if char_lines else ""
     )
 

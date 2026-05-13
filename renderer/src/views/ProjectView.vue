@@ -20,12 +20,14 @@
 
     <!-- Tab content -->
     <div class="tab-content">
-      <Component
-        :is="currentTabComponent"
-        :project-id="projectId"
-        @dirty="onDirty"
-        @saved="onSaved"
-      />
+      <KeepAlive>
+        <Component
+          :is="currentTabComponent"
+          :project-id="projectId"
+          @dirty="onDirty"
+          @saved="onSaved"
+        />
+      </KeepAlive>
     </div>
   </div>
 </template>

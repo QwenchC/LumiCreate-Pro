@@ -443,13 +443,11 @@ async function embedSubtitles() {
 
 // ── File actions ──────────────────────────────────────────────────────────────
 async function openSrtFolder() {
-  // Open the video directory
   try {
-    const { data } = await axios.get(`http://127.0.0.1:18520/api/projects/${props.projectId}`)
-    const projectDir = data?.projects_dir || ''
-    // Use electronAPI to open folder
+    const { data } = await axios.get('http://127.0.0.1:18520/api/settings')
+    const projectsDir = (data?.projects_dir || '').replace(/[\\/]+$/, '')
     await window.electronAPI?.showItemInFolder(
-      `${projectDir}\\${props.projectId}\\video\\subtitles.srt`
+      `${projectsDir}\\${props.projectId}\\video\\subtitles.srt`
     )
   } catch {}
 }
