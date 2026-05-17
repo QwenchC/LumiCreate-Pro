@@ -50,9 +50,6 @@
               </div>
             </div>
           </div>
-          <button class="add-folder-btn" @click="openCreateFolderDialog">
-            + 新建文件夹
-          </button>
         </template>
         <!-- Collapsed: emoji icons only -->
         <template v-else>
@@ -68,6 +65,9 @@
           </div>
         </template>
       </nav>
+      <button v-if="!sidebarCollapsed" class="add-folder-btn" @click="openCreateFolderDialog">
+        + 新建文件夹
+      </button>
       <div class="sidebar-footer">
         <button v-if="!sidebarCollapsed" class="btn btn-ghost btn-sm" @click="$router.push('/settings')">
           ⚙ 引擎设置
@@ -688,7 +688,8 @@ onUnmounted(() => {
 /* Add folder button */
 .add-folder-btn {
   display: flex; align-items: center; gap: 6px;
-  width: 100%; padding: 8px 10px; margin-top: 4px;
+  width: calc(100% - 16px); margin: 0 8px 8px;
+  padding: 8px 10px; flex-shrink: 0;
   background: transparent; border: 1px dashed var(--color-border);
   border-radius: var(--radius); color: var(--color-text-muted);
   cursor: pointer; font-size: 12px; text-align: left;

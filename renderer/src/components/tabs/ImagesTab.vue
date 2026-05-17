@@ -281,7 +281,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, onActivated } from 'vue'
 import axios from 'axios'
 
 const props = defineProps({ projectId: String })
@@ -543,6 +543,29 @@ onMounted(() => {
   loadData()
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('lumi:save-project', _onGlobalSave)
+})
+// Re-fetch scenes when this tab is re-activated after being kept alive.
+// Lightweight: only requests the scenes endpoint; preserves loaded images and selected state.
+onActivated(async () => {
+  if (running.value || paused.value) return
+  try {
+    const res = await axios.get(API + '/projects/' + props.projectId + '/scenes')
+    const fresh = ((res.data?.scenes) || []).map(s => ({
+      ...s,
+      _selected_start: s._selected_start ?? 0,
+      _selected_end:   s._selected_end   ?? 0,
+    }))
+    // Preserve in-memory image selection indices so thumbnails don't reset
+    const oldMap = new Map(scenes.value.map(s => [s.id, s]))
+    for (const ns of fresh) {
+      const old = oldMap.get(ns.id)
+      if (old) {
+        ns._selected_start = old._selected_start ?? 0
+        ns._selected_end   = old._selected_end   ?? 0
+      }
+    }
+    scenes.value = fresh
+  } catch {}
 })
 function _onGlobalSave(e) { if (e?.detail?.projectId && e.detail.projectId !== props.projectId) return; saveImages() }
 onUnmounted(() => {

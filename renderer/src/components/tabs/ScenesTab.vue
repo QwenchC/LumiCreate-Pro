@@ -233,7 +233,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, onDeactivated } from 'vue'
 
 const props = defineProps({ projectId: String })
 const emit = defineEmits(['dirty', 'saved'])
@@ -298,6 +298,8 @@ onMounted(async () => {
   window.addEventListener('lumi:save-project', onGlobalSave)
 })
 onUnmounted(() => window.removeEventListener('lumi:save-project', onGlobalSave))
+// Auto-save when navigating away (KeepAlive: onDeactivated fires on every tab switch)
+onDeactivated(async () => { if (isDirty.value) await save() })
 
 // ── Generate from manuscript ──────────────────────────────────────────────────
 async function generateScenes() {
