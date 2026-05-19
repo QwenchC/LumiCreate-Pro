@@ -622,11 +622,18 @@ async function generateAllMsTts() {
   completedCount.value = 0
   totalCount.value     = readingScenes.value.length
   _stopReading         = false
-  for (const scene of readingScenes.value) {
-    if (_stopReading) break
-    await generateMsTts(scene)
-    completedCount.value++
+  const CONCURRENCY = 5
+  const list = readingScenes.value
+  let cursor = 0
+  async function worker() {
+    while (cursor < list.length) {
+      if (_stopReading) break
+      const scene = list[cursor++]
+      await generateMsTts(scene)
+      completedCount.value++
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, list.length) }, worker))
   running.value   = false
   batchDone.value = true
 }

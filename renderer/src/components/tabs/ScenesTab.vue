@@ -9,7 +9,10 @@
       </div>
       <div class="toolbar-right">
         <button class="btn btn-secondary btn-sm" :disabled="!manuscript || generating" @click="generateScenes">
-          {{ generating ? '生成中...' : '✨ 从文案生成分镜' }}
+          {{ generating ? '生成中...' : '✨ 从文案自动生成分镜' }}
+        </button>
+        <button class="btn btn-secondary btn-sm" :disabled="!manuscript" @click="openManualSplit">
+          ✂ 从文案手动生成分镜
         </button>
         <button
           class="btn btn-secondary btn-sm"
@@ -154,7 +157,7 @@
                     <span class="label-hint">（英文，给 ComfyUI）</span>
                     <button
                       class="btn-gen-prompt"
-                      :disabled="generatingPromptIdx !== null"
+                      :disabled="generatingPrompts || generatingPromptIdx !== null"
                       @click.stop="generateScenePrompt(scene, idx)"
                       title="用 LLM 生成该分镜的图片提示词"
                     >{{ generatingPromptIdx === idx ? '生成中...' : '✦ 生成提示词' }}</button>
@@ -230,10 +233,67 @@
       </button>
     </div>
   </div>
+
+  <!-- ── Manual split modal ── -->
+  <Teleport to="body">
+    <div v-if="showManualSplit" class="ms-overlay" @click.self="showManualSplit = false">
+      <div class="ms-dialog">
+        <!-- Header -->
+        <div class="ms-header">
+          <div class="ms-header-left">
+            <span class="ms-scene-label">
+              {{ manualAssignedUpTo >= manualSentences.length - 1
+                  ? `✅ 划分完成，共 ${manualPendingScenes.length} 个分镜`
+                  : `正在划分第 ${manualCurrentScene} 分镜` }}
+            </span>
+            <span class="ms-hint text-muted">
+              {{ manualCurrentScene === 1 && manualAssignedUpTo < 0
+                  ? '将鼠标移至文案中某句上，高亮内容即为第 1 分镜范围，点击确认'
+                  : manualAssignedUpTo >= manualSentences.length - 1
+                    ? '点击「确认分镜」生成场景列表'
+                    : '继续点击某句作为当前分镜的结束位置' }}
+            </span>
+          </div>
+          <div class="ms-header-right">
+            <button
+              class="btn btn-ghost btn-sm"
+              :disabled="!manualPendingScenes.length"
+              @click="undoLastSplit"
+              title="撤销上一次划分"
+            >↩ 撤销</button>
+            <button
+              class="btn btn-primary btn-sm"
+              :disabled="!manualPendingScenes.length || manualSplitting"
+              @click="finishManualSplit"
+            >{{ manualSplitting ? '处理中...' : '✔ 确认分镜' }}</button>
+            <button class="btn btn-ghost btn-sm" @click="showManualSplit = false">✕</button>
+          </div>
+        </div>
+        <!-- Manuscript body -->
+        <div class="ms-body" ref="msBodyRef">
+          <template v-for="(item, k) in manualRenderItems" :key="k">
+            <span
+              v-if="item.type === 'sentence'"
+              class="ms-sent"
+              :class="{
+                'ms-done': item.idx <= manualAssignedUpTo,
+                'ms-hl':   manualHoverIdx >= 0 && item.idx > manualAssignedUpTo && item.idx <= manualHoverIdx,
+                'ms-cur':  item.idx > manualAssignedUpTo,
+              }"
+              @mouseenter="item.idx > manualAssignedUpTo && (manualHoverIdx = item.idx)"
+              @mouseleave="manualHoverIdx = -1"
+              @click="item.idx > manualAssignedUpTo && clickSentence(item.idx)"
+            >{{ item.text }}</span>
+            <span v-else class="ms-divider">┄ 第 {{ item.sceneNum }} 分镜 ┄</span>
+          </template>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, onDeactivated } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, onDeactivated } from 'vue'
 
 const props = defineProps({ projectId: String })
 const emit = defineEmits(['dirty', 'saved'])
@@ -258,6 +318,25 @@ let promptAbortController = null
 const detectingChars     = ref(false)
 const detectProgress     = ref(0)
 let detectAbortController = null
+
+// ── Manual split state ──────────────────────────────────────────────────────────────────
+const showManualSplit     = ref(false)
+const manualSentences     = ref([])     // array of sentence strings
+const manualPendingScenes = ref([])     // [{ startIdx, endIdx }]
+const manualCurrentScene  = ref(1)
+const manualAssignedUpTo  = ref(-1)     // index of last assigned sentence (-1 = none)
+const manualHoverIdx      = ref(-1)
+const manualSplitting     = ref(false)
+const msBodyRef           = ref(null)
+const manualRenderItems = computed(() => {
+  const sceneEndMap = new Map(manualPendingScenes.value.map((s, i) => [s.endIdx, i + 1]))
+  const items = []
+  for (let i = 0; i < manualSentences.value.length; i++) {
+    items.push({ type: 'sentence', text: manualSentences.value[i], idx: i })
+    if (sceneEndMap.has(i)) items.push({ type: 'divider', sceneNum: sceneEndMap.get(i) })
+  }
+  return items
+})
 
 // ── Load ───────────────────────────────────────────────────────────────────────
 onMounted(async () => {
@@ -334,7 +413,105 @@ async function generateScenes() {
   }
 }
 
-// ── Character selection per scene ─────────────────────────────────────────────
+// ── Manual split helpers ──────────────────────────────────────────────────────────────────
+function _splitSentences(text) {
+  const result = []
+  let buf = ''
+  for (const ch of text) {
+    buf += ch
+    if ('。！？'.includes(ch) || ch === '\n') {
+      const t = buf.replace(/\n/g, '').trim()
+      if (t) result.push(t)
+      buf = ''
+    }
+  }
+  if (buf.trim()) result.push(buf.trim())
+  return result
+}
+
+function _extractDialogues(text) {
+  const mode = manuscriptConfig.value.dialogue_mode
+  if (mode === 'reading') {
+    return [{ character: '', text: text.trim(), emotion: '平静' }]
+  }
+  // Simple heuristic: extract content within Chinese/regular quote pairs
+  const dlgs = []
+  const re = /[「“‘](.*?)[」”’]/gs
+  let m
+  while ((m = re.exec(text)) !== null) {
+    const t = m[1].trim()
+    if (t) dlgs.push({ character: '', text: t, emotion: '平静' })
+  }
+  return dlgs
+}
+
+function openManualSplit() {
+  if (!manuscript.value.trim()) return
+  manualSentences.value    = _splitSentences(manuscript.value)
+  manualPendingScenes.value = []
+  manualCurrentScene.value  = 1
+  manualAssignedUpTo.value  = -1
+  manualHoverIdx.value      = -1
+  manualSplitting.value     = false
+  showManualSplit.value     = true
+}
+
+async function clickSentence(idx) {
+  if (idx <= manualAssignedUpTo.value) return
+  manualPendingScenes.value.push({ startIdx: manualAssignedUpTo.value + 1, endIdx: idx })
+  manualAssignedUpTo.value = idx
+  manualCurrentScene.value++
+  manualHoverIdx.value = -1
+  // If all text now assigned, auto-finish
+  if (idx >= manualSentences.value.length - 1) {
+    await nextTick()
+    finishManualSplit()
+    return
+  }
+  // Scroll next unassigned sentence into view
+  await nextTick()
+  const els = msBodyRef.value?.querySelectorAll('.ms-sent')
+  if (els?.[idx + 1]) els[idx + 1].scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+function undoLastSplit() {
+  if (!manualPendingScenes.value.length) return
+  manualPendingScenes.value.pop()
+  manualCurrentScene.value--
+  manualAssignedUpTo.value = manualPendingScenes.value.length > 0
+    ? manualPendingScenes.value.at(-1).endIdx
+    : -1
+}
+
+function finishManualSplit() {
+  // Any remaining unassigned text becomes the last scene
+  if (manualAssignedUpTo.value < manualSentences.value.length - 1) {
+    manualPendingScenes.value.push({
+      startIdx: manualAssignedUpTo.value + 1,
+      endIdx:   manualSentences.value.length - 1,
+    })
+  }
+  if (!manualPendingScenes.value.length) return
+  manualSplitting.value = true
+  const newScenes = manualPendingScenes.value.map((split, i) => {
+    const text = manualSentences.value.slice(split.startIdx, split.endIdx + 1).join('')
+    return {
+      id:                 `scene_${String(i + 1).padStart(3, '0')}_manual`,
+      index:              i + 1,
+      description:        text,
+      duration_estimate:  Math.max(4, Math.round(text.length / 5)),
+      start_frame_prompt: '',
+      end_frame_prompt:   '',
+      _scene_characters:  [],
+      dialogues:          _extractDialogues(text),
+    }
+  })
+  scenes.value      = newScenes
+  expandedIdx.value = 0
+  markDirty()
+  manualSplitting.value = false
+  showManualSplit.value  = false
+}
 function toggleSceneChar(scene, charName) {
   const current = scene._scene_characters || []
   if (current.includes(charName)) {
@@ -389,20 +566,26 @@ async function generateAllPrompts() {
   promptAbortController = new AbortController()
   generatingPrompts.value = true
   promptProgress.value = 0
-  for (let i = 0; i < scenes.value.length; i++) {
-    if (!promptAbortController) break
-    generatingPromptIdx.value = i
-    try {
-      const data = await _fetchFramePrompts(scenes.value[i])
-      scenes.value[i].start_frame_prompt = data.start_frame_prompt || scenes.value[i].start_frame_prompt
-      scenes.value[i].end_frame_prompt   = data.end_frame_prompt   || scenes.value[i].end_frame_prompt
-      markDirty()
-    } catch (e) {
-      if (e.name === 'AbortError') break
-      /* skip failed scene */
+  const total = scenes.value.length
+  const CONCURRENCY = 3
+  let cursor = 0
+  async function worker() {
+    while (cursor < total) {
+      if (!promptAbortController) break
+      const i = cursor++
+      try {
+        const data = await _fetchFramePrompts(scenes.value[i])
+        scenes.value[i].start_frame_prompt = data.start_frame_prompt || scenes.value[i].start_frame_prompt
+        scenes.value[i].end_frame_prompt   = data.end_frame_prompt   || scenes.value[i].end_frame_prompt
+        markDirty()
+      } catch (e) {
+        if (e.name === 'AbortError') break
+      } finally {
+        promptProgress.value++
+      }
     }
-    promptProgress.value = i + 1
   }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, worker))
   generatingPromptIdx.value = null
   generatingPrompts.value = false
   promptAbortController = null
@@ -433,35 +616,43 @@ async function autoDetectSceneCharacters() {
   detectAbortController = new AbortController()
 
   let changed = false
-  for (let i = 0; i < scenes.value.length; i++) {
-    if (detectAbortController?.signal.aborted) break
-    const scene = scenes.value[i]
-    try {
-      const res = await fetch(`${API}/text-engine/suggest-scene-characters`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: detectAbortController.signal,
-        body: JSON.stringify({
-          description: scene.description,
-          dialogues:   scene.dialogues || [],
-          all_names:   allCharNames,
-          manuscript:  manuscript.value,
-        }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        const detected = (data.characters || []).sort()
-        const current  = [...(scene._scene_characters || [])].sort()
-        if (JSON.stringify(current) !== JSON.stringify(detected)) {
-          scene._scene_characters = data.characters || []
-          changed = true
+  const total = scenes.value.length
+  const CONCURRENCY = 3
+  let cursor = 0
+  async function worker() {
+    while (cursor < total) {
+      if (detectAbortController?.signal.aborted) break
+      const i = cursor++
+      const scene = scenes.value[i]
+      try {
+        const res = await fetch(`${API}/text-engine/suggest-scene-characters`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: detectAbortController.signal,
+          body: JSON.stringify({
+            description: scene.description,
+            dialogues:   scene.dialogues || [],
+            all_names:   allCharNames,
+            manuscript:  manuscript.value,
+          }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          const detected = (data.characters || []).sort()
+          const current  = [...(scene._scene_characters || [])].sort()
+          if (JSON.stringify(current) !== JSON.stringify(detected)) {
+            scene._scene_characters = data.characters || []
+            changed = true
+          }
         }
+      } catch (e) {
+        if (e.name === 'AbortError') break
+      } finally {
+        detectProgress.value++
       }
-    } catch (e) {
-      if (e.name === 'AbortError') break
     }
-    detectProgress.value = i + 1
   }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, worker))
 
   if (changed) markDirty()
   detectingChars.value = false
@@ -668,5 +859,46 @@ function onGlobalSave(e) { if (e?.detail?.projectId && e.detail.projectId !== pr
 .expand-enter-active, .expand-leave-active { transition: max-height 0.25s ease, opacity 0.2s; overflow: hidden; }
 .expand-enter-from, .expand-leave-to { max-height: 0; opacity: 0; }
 .expand-enter-to, .expand-leave-from { max-height: 2000px; opacity: 1; }
+
+/* ── Manual split modal ── */
+.ms-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.65);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9999;
+}
+.ms-dialog {
+  width: min(820px, 95vw); height: min(78vh, 700px);
+  background: var(--color-surface); border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.ms-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--color-border); flex-shrink: 0;
+  background: var(--color-surface-2); gap: 12px;
+}
+.ms-header-left  { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.ms-header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.ms-scene-label  { font-size: 15px; font-weight: 700; }
+.ms-hint         { font-size: 12px; }
+.ms-body {
+  flex: 1; overflow-y: auto; padding: 20px 24px;
+  font-size: 15px; line-height: 2.2; color: var(--color-text);
+}
+.ms-sent {
+  border-radius: 3px; padding: 1px 3px;
+  transition: background .1s, color .1s;
+}
+.ms-cur  { cursor: pointer; }
+.ms-cur:not(.ms-hl):hover { background: rgba(99,179,237,.1); }
+.ms-hl   { background: rgba(99,179,237,.28); color: var(--color-accent); }
+.ms-done { color: var(--color-text-muted); opacity: 0.4; cursor: default; }
+.ms-divider {
+  display: inline-block; margin: 0 8px;
+  font-size: 11px; color: var(--color-accent); opacity: 0.85;
+  vertical-align: middle; letter-spacing: 0.05em;
+  border-left: 2px solid var(--color-accent);
+  padding-left: 6px;
+}
 </style>
 

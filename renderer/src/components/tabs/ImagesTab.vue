@@ -492,7 +492,13 @@ async function loadData() {
     const imgState = imagesRes.data
     const newSlotImages = {}
     for (const slot of imgState.slots || []) {
-      newSlotImages[slotKey(slot.scene_id, slot.frame_type, slot.slot_index)] = 'data:image/png;base64,' + slot.data
+      if (slot.url) {
+        newSlotImages[slotKey(slot.scene_id, slot.frame_type, slot.slot_index)] =
+          'http://localhost:18520' + slot.url
+      } else if (slot.data) {
+        newSlotImages[slotKey(slot.scene_id, slot.frame_type, slot.slot_index)] =
+          'data:image/png;base64,' + slot.data
+      }
     }
     slotImages.value = newSlotImages
     frameSlotCounts.value = imgState.counts || {}
@@ -510,26 +516,57 @@ async function loadData() {
   }
 }
 
+const _SLOT_PARALLEL = 10  // concurrent per-slot save requests
+
+let _imgSaving = false
 async function saveImages() {
-  const slots = []
-  for (const [key, dataUrl] of Object.entries(slotImages.value)) {
-    if (!dataUrl) continue
-    const parts = key.split(':')
-    const sceneId = parts[0], frameType = parts[1], slotIndex = Number(parts[2])
-    const data = dataUrl.replace(/^data:image\/\w+;base64,/, '')
-    slots.push({ scene_id: sceneId, frame_type: frameType, slot_index: slotIndex, data })
-  }
+  if (_imgSaving) return
+  _imgSaving = true
+
+  // Build a snapshot of all current slot keys + their data-urls (references, not copies)
+  const entries = Object.entries(slotImages.value).filter(([, v]) => Boolean(v))
+
   const selected = {}
   for (const scene of scenes.value) {
     selected[scene.id + ':start'] = scene._selected_start ?? 0
     selected[scene.id + ':end']   = scene._selected_end   ?? 0
   }
+
   try {
-    await axios.put(API + '/projects/' + props.projectId + '/images', {
-      slots, counts: frameSlotCounts.value, selected
+    // Only upload entries that are freshly generated (base64 data URLs).
+    // Entries loaded from disk are already URL strings — no need to re-upload them.
+    const newEntries = entries.filter(([, v]) => v.startsWith('data:'))
+
+    for (let i = 0; i < newEntries.length; i += _SLOT_PARALLEL) {
+      const batch = newEntries.slice(i, i + _SLOT_PARALLEL)
+      await Promise.all(batch.map(([key, dataUrl]) => {
+        const [sceneId, frameType, slotIdx] = key.split(':')
+        return axios.put(API + '/projects/' + props.projectId + '/images/slot', {
+          scene_id:   sceneId,
+          frame_type: frameType,
+          slot_index: Number(slotIdx),
+          data:       dataUrl.replace(/^data:image\/\w+;base64,/, ''),
+        })
+      }))
+    }
+
+    // Rebuild images.json with the complete slot manifest + counts/selected.
+    // The backend verifies each file exists before including it.
+    await axios.put(API + '/projects/' + props.projectId + '/images/metadata', {
+      counts:    frameSlotCounts.value,
+      selected,
+      slot_keys: entries.map(([key]) => {
+        const [sceneId, frameType, slotIdx] = key.split(':')
+        return { scene_id: sceneId, frame_type: frameType, slot_index: Number(slotIdx) }
+      }),
     })
+
+    emit('saved')
   } catch (e) {
     console.error('Failed to save images:', e)
+    alert('图片保存失败：' + (e?.response?.data?.detail || e.message || '未知错误'))
+  } finally {
+    _imgSaving = false
   }
 }
 
@@ -633,6 +670,20 @@ async function generateSceneSlots(scene, { skipExisting = false } = {}) {
   }
 
   for (const f of frames) {
+    // When doing a full regeneration (not skipExisting), purge ALL old slot entries
+    // including those beyond the new genCount (stale URLs from a previous higher-count run),
+    // and reset the selection so the user sees the freshly generated slot 0.
+    if (!skipExisting) {
+      const prevCount = frameSlotCounts.value[f.scene_id + ':' + f.frame_type] ?? 0
+      const imgs = { ...slotImages.value }
+      for (let s = 0; s < prevCount; s++) delete imgs[slotKey(f.scene_id, f.frame_type, s)]
+      slotImages.value = imgs
+      const scene = scenes.value.find(sc => sc.id === f.scene_id)
+      if (scene) {
+        if (f.frame_type === 'start') scene._selected_start = 0
+        else                          scene._selected_end   = 0
+      }
+    }
     setFrameSlotCount(f.scene_id, f.frame_type, genCount.value)
     for (let s = 0; s < genCount.value; s++) {
       const key = slotKey(f.scene_id, f.frame_type, s)
@@ -734,8 +785,12 @@ async function _runBatchFrom(fromIdx) {
   }
   running.value         = false
   batchCurrentIdx.value = -1
-  if (!paused.value) batchDone.value = true
-  emit('dirty')
+  if (!paused.value) {
+    batchDone.value = true
+    await saveImages()   // auto-save on batch complete; emits 'saved' on success
+  } else {
+    emit('dirty')        // paused: mark dirty so user can manually save later
+  }
 }
 
 function startBatch() {
@@ -756,7 +811,7 @@ async function generateOneScene(scene) {
   sceneGenerating.value = { ...sceneGenerating.value, [scene.id]: true }
   try {
     await generateSceneSlots(scene)
-    emit('dirty')
+    await saveImages()   // auto-save after single-scene generation
   } finally {
     const next = { ...sceneGenerating.value }
     delete next[scene.id]

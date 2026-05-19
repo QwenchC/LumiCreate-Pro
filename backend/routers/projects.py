@@ -56,7 +56,7 @@ def _read_meta(project_id: str) -> ProjectMeta:
     meta_file = _project_dir(project_id) / "project.json"
     if not meta_file.exists():
         raise HTTPException(status_code=404, detail="Project not found")
-    return ProjectMeta(**json.loads(meta_file.read_text(encoding="utf-8")))
+    return ProjectMeta(**json.loads(meta_file.read_text(encoding="utf-8-sig")))
 
 
 def _write_meta(meta: ProjectMeta) -> None:
@@ -78,7 +78,7 @@ async def list_projects():
             meta_file = entry / "project.json"
             if meta_file.exists():
                 try:
-                    meta = ProjectMeta(**json.loads(meta_file.read_text(encoding="utf-8")))
+                    meta = ProjectMeta(**json.loads(meta_file.read_text(encoding="utf-8-sig")))
                     meta.has_final_video = (entry / "video" / "final_video.mp4").exists()
                     projects.append(meta)
                 except Exception:
@@ -161,8 +161,8 @@ async def get_manuscript(project_id: str):
     _read_meta(project_id)  # validates project exists
     path = _project_dir(project_id) / "manuscript.md"
     cfg_path = _project_dir(project_id) / "manuscript_config.json"
-    content = path.read_text(encoding="utf-8") if path.exists() else ""
-    config = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+    content = path.read_text(encoding="utf-8-sig") if path.exists() else ""
+    config = json.loads(cfg_path.read_text(encoding="utf-8-sig")) if cfg_path.exists() else {}
     return {"content": content, "config": config}
 
 
@@ -202,6 +202,18 @@ class ImagesState(BaseModel):
     selected: dict   # "{scene_id}:start" | "{scene_id}:end" -> int
 
 
+class SlotKey(BaseModel):
+    scene_id:   str
+    frame_type: str
+    slot_index: int
+
+
+class ImageMetadataUpdate(BaseModel):
+    counts:    dict
+    selected:  dict
+    slot_keys: list[SlotKey] = []
+
+
 @router.get("/{project_id}/images")
 async def load_images(project_id: str):
     proj_dir  = _project_dir(project_id)
@@ -209,18 +221,17 @@ async def load_images(project_id: str):
     if not meta_path.exists():
         return {"slots": [], "counts": {}, "selected": {}}
 
-    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata = json.loads(meta_path.read_text(encoding="utf-8-sig"))
     img_dir  = proj_dir / "images"
     slots    = []
     for saved in metadata.get("saved_slots", []):
         img_path = img_dir / saved["filename"]
         if img_path.exists():
-            data = base64.b64encode(img_path.read_bytes()).decode("ascii")
             slots.append({
                 "scene_id":   saved["scene_id"],
                 "frame_type": saved["frame_type"],
                 "slot_index": saved["slot_index"],
-                "data":       data,
+                "url":  f"/api/projects/{project_id}/images/file/{saved['filename']}",
             })
 
     return {
@@ -267,13 +278,74 @@ async def save_images(project_id: str, state: ImagesState):
     return {"ok": True, "saved": len(saved_slots)}
 
 
+@router.get("/{project_id}/images/file/{filename}")
+async def serve_image_file(project_id: str, filename: str):
+    """Serve a single PNG image file directly (avoids large base64 JSON payloads)."""
+    from fastapi.responses import FileResponse
+    # Sanitize filename — only allow safe characters to prevent path traversal
+    if not filename.replace('_', '').replace('.', '').replace('-', '').isalnum():
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    img_path = _project_dir(project_id) / "images" / filename
+    if not img_path.exists():
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(img_path, media_type="image/png")
+
+
+@router.put("/{project_id}/images/slot")
+async def save_image_slot(project_id: str, slot: ImageSlot):
+    """Save a single image slot file to disk (does not touch images.json)."""
+    proj_dir = _project_dir(project_id)
+    img_dir  = proj_dir / "images"
+    img_dir.mkdir(exist_ok=True)
+    filename = f"{slot.scene_id}_{slot.frame_type}_{slot.slot_index}.png"
+    (img_dir / filename).write_bytes(base64.b64decode(slot.data))
+    return {"ok": True}
+
+
+@router.put("/{project_id}/images/metadata")
+async def save_image_metadata(project_id: str, meta_update: ImageMetadataUpdate):
+    """Rebuild images.json from the provided slot_keys list + save counts/selected."""
+    proj_dir = _project_dir(project_id)
+    img_dir  = proj_dir / "images"
+    img_dir.mkdir(exist_ok=True)
+
+    saved_slots = []
+    for key in meta_update.slot_keys:
+        filename = f"{key.scene_id}_{key.frame_type}_{key.slot_index}.png"
+        if (img_dir / filename).exists():
+            saved_slots.append({
+                "scene_id":   key.scene_id,
+                "frame_type": key.frame_type,
+                "slot_index": key.slot_index,
+                "filename":   filename,
+            })
+
+    metadata = {
+        "saved_slots": saved_slots,
+        "counts":      meta_update.counts,
+        "selected":    meta_update.selected,
+    }
+    (proj_dir / "images.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    # Update project progress
+    proj_meta = _read_meta(project_id)
+    progress = proj_meta.progress.model_dump()
+    progress["images"] = 100 if saved_slots else 0
+    await update_project(project_id, {"progress": progress})
+
+    return {"ok": True, "saved": len(saved_slots)}
+
+
 @router.get("/{project_id}/scenes")
 async def get_scenes(project_id: str):
     _read_meta(project_id)
     path = _project_dir(project_id) / "scenes.json"
     if not path.exists():
         return {"scenes": []}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 @router.put("/{project_id}/scenes", response_model=ProjectMeta)
@@ -297,7 +369,7 @@ async def get_audio(project_id: str):
     path = _project_dir(project_id) / "audio.json"
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 @router.put("/{project_id}/audio")
@@ -333,7 +405,7 @@ async def load_videos(project_id: str):
     meta_path = proj_dir / "videos.json"
     if not meta_path.exists():
         return {}
-    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata = json.loads(meta_path.read_text(encoding="utf-8-sig"))
     result = {}
     for scene_id, filename in metadata.items():
         vid_path = vid_dir / filename
@@ -371,7 +443,7 @@ async def load_video_prompts(project_id: str):
     path = _project_dir(project_id) / "video_prompts.json"
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 @router.put("/{project_id}/video-prompts")
@@ -399,14 +471,14 @@ async def get_characters(project_id: str):
         # Fall back to characters stored in manuscript_config
         cfg_path = _project_dir(project_id) / "manuscript_config.json"
         if cfg_path.exists():
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
             chars = cfg.get("characters", [])
             # Migrate: add empty appearance field if missing
             for c in chars:
                 c.setdefault("appearance", "")
             return {"characters": chars}
         return {"characters": []}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 @router.put("/{project_id}/characters")

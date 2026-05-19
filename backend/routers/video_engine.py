@@ -127,6 +127,22 @@ async def generate_video_stream(req: VideoGenerateRequest):
     width, height = _parse_resolution(req.resolution)
     total = len(req.scenes)
 
+    # Error substring that indicates VRAM weight offload to CPU — safe to free+retry
+    _VRAM_OFFLOAD_SIG = "should be the same"
+
+    async def _free_vram() -> None:
+        """Ask ComfyUI to unload models and free VRAM, then wait for it to settle."""
+        import asyncio
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                await client.post(
+                    f"{vcfg.comfyui_url}/free",
+                    json={"unload_models": True, "free_memory": True},
+                )
+            await asyncio.sleep(3)
+        except Exception:
+            pass
+
     async def stream():
         from services.ltx2video import generate_video
 
@@ -155,28 +171,50 @@ async def generate_video_stream(req: VideoGenerateRequest):
                 "total":       total,
             })
 
-            async for event in generate_video(
-                comfyui_url        = vcfg.comfyui_url,
-                workflow           = workflow,
-                first_frame_b64    = scene.start_image_b64,
-                last_frame_b64     = scene.end_image_b64,
-                audio_b64          = scene.audio_b64,
-                width              = width,
-                height             = height,
-                fps                = req.fps,
-                duration_ms        = scene.duration_ms,
-                positive_prompt    = scene.positive_prompt,
-                scene_id           = scene.scene_id,
-                comfyui_input_dir  = vcfg.comfyui_input_dir,
-                workflow_dir       = wdir or "",
-            ):
-                ev = event.get("event")
-                if ev == "completed":
-                    yield _sse({**event, "event": "scene_done", "scene_index": scene.scene_index})
-                elif ev == "error":
-                    yield _sse({**event, "event": "scene_error", "scene_index": scene.scene_index})
+            gen_kwargs = dict(
+                comfyui_url       = vcfg.comfyui_url,
+                workflow          = workflow,
+                first_frame_b64   = scene.start_image_b64,
+                last_frame_b64    = scene.end_image_b64,
+                audio_b64         = scene.audio_b64,
+                width             = width,
+                height            = height,
+                fps               = req.fps,
+                duration_ms       = scene.duration_ms,
+                positive_prompt   = scene.positive_prompt,
+                scene_id          = scene.scene_id,
+                comfyui_input_dir = vcfg.comfyui_input_dir,
+                workflow_dir      = wdir or "",
+            )
+
+            for attempt in range(2):   # at most one retry
+                vram_error = False
+                async for event in generate_video(**gen_kwargs):
+                    ev  = event.get("event")
+                    msg = event.get("message", "")
+                    if ev == "error":
+                        if _VRAM_OFFLOAD_SIG in msg and attempt == 0:
+                            # VRAM offload detected on first attempt — free and retry
+                            vram_error = True
+                            break
+                        yield _sse({**event, "event": "scene_error",
+                                    "scene_index": scene.scene_index})
+                        break
+                    elif ev == "completed":
+                        yield _sse({**event, "event": "scene_done",
+                                    "scene_index": scene.scene_index})
+                        break
+                    else:
+                        yield _sse(event)
+
+                if vram_error:
+                    yield _sse({"event":    "scene_retrying",
+                                "scene_id": scene.scene_id,
+                                "message":  "检测到 VRAM 权重迁移，释放显存后重试…"})
+                    await _free_vram()
+                    # attempt=1 will re-run generate_video
                 else:
-                    yield _sse(event)
+                    break   # success or non-retryable error — next scene
 
         yield _sse({"event": "batch_done", "total": total})
         yield "data: [DONE]\n\n"

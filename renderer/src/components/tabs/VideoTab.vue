@@ -331,11 +331,12 @@ async function loadData() {
 
     scenes.value = scenesRes.data?.scenes || []
 
-    // Build images lookup: "{sceneId}:start:{slotIndex}" → base64
+    // Build images lookup: "{sceneId}:start:{slotIndex}" → URL or data URL
     const imgLookup = {}
     for (const slot of (imgRes.data?.slots || [])) {
       const key = `${slot.scene_id}:${slot.frame_type}:${slot.slot_index}`
-      imgLookup[key] = slot.data
+      if (slot.url)  imgLookup[key] = 'http://localhost:18520' + slot.url
+      else if (slot.data) imgLookup[key] = 'data:image/png;base64,' + slot.data
     }
     imagesData.value    = imgLookup
     imagesSelected.value = imgRes.data?.selected || {}
@@ -558,28 +559,33 @@ function editPrompt(scene) {
 
 let _videoPromptAbort = null
 
+const _PROMPT_PARALLEL = 3   // concurrent LLM prompt requests
+
 async function generateAllPrompts() {
   if (generatingAllVideoPrompts.value) return
   generatingAllVideoPrompts.value = true
   videoPromptProgress.value = 0
   _videoPromptAbort = new AbortController()
 
-  for (let i = 0; i < scenesWithData.value.length; i++) {
+  const allScenes = scenesWithData.value
+  for (let i = 0; i < allScenes.length; i += _PROMPT_PARALLEL) {
     if (_videoPromptAbort?.signal.aborted) break
-    const s = scenesWithData.value[i]
-    generatingVideoPromptId.value = s.id
-    try {
-      const text = await _fetchVideoPromptLLM(s, _videoPromptAbort.signal)
-      scenePrompts.value  = { ...scenePrompts.value,  [s.id]: text || _buildPromptFallback(s) }
-      promptVisible.value = { ...promptVisible.value, [s.id]: true }
-      _scheduleSavePrompts()
-    } catch (e) {
-      if (e.name === 'AbortError') break
-      scenePrompts.value  = { ...scenePrompts.value,  [s.id]: _buildPromptFallback(s) }
-      promptVisible.value = { ...promptVisible.value, [s.id]: true }
-      _scheduleSavePrompts()
-    }
-    videoPromptProgress.value = i + 1
+    const batch = allScenes.slice(i, i + _PROMPT_PARALLEL)
+    await Promise.allSettled(batch.map(async s => {
+      if (_videoPromptAbort?.signal.aborted) return
+      try {
+        const text = await _fetchVideoPromptLLM(s, _videoPromptAbort.signal)
+        scenePrompts.value  = { ...scenePrompts.value,  [s.id]: text || _buildPromptFallback(s) }
+        promptVisible.value = { ...promptVisible.value, [s.id]: true }
+      } catch (e) {
+        if (e.name === 'AbortError') return
+        scenePrompts.value  = { ...scenePrompts.value,  [s.id]: _buildPromptFallback(s) }
+        promptVisible.value = { ...promptVisible.value, [s.id]: true }
+      } finally {
+        videoPromptProgress.value++
+        _scheduleSavePrompts()
+      }
+    }))
   }
 
   generatingVideoPromptId.value   = null
@@ -610,49 +616,92 @@ async function _savePrompts() {
   }
 }
 
-async function _runGeneration(sceneList) {
-  const payload = {
-    workflow_name: selectedWorkflow.value,
-    resolution:    resolution.value,
-    fps:           fps.value,
-    scenes: sceneList.map(s => ({
-      scene_id:        String(s.id),
-      scene_index:     s.index,
-      start_image_b64: s.startImageB64,
-      end_image_b64:   s.endImageB64,
-      audio_b64:       s.audioB64,
-      duration_ms:     s.audioDurationMs || 4000,
-      positive_prompt: scenePrompts.value[s.id] ?? _buildPromptFallback(s),
+// Resolve an image src (URL string or data-URL) to a raw base64 string.
+// Uses FileReader for efficient binary→base64 conversion without string size limits.
+function _srcToB64(src) {
+  if (!src) return Promise.resolve('')
+  if (src.startsWith('data:')) return Promise.resolve(src.replace(/^data:image\/\w+;base64,/, ''))
+  return fetch(src)
+    .then(r => r.ok ? r.blob() : Promise.reject(new Error('fetch ' + r.status)))
+    .then(blob => new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload  = () => resolve(reader.result.replace(/^data:[^;]+;base64,/, ''))
+      reader.onerror = () => reject(reader.error)
+      reader.readAsDataURL(blob)
     }))
-  }
+    .catch(() => '')
+}
 
+// Send one scene at a time to avoid "Invalid string length" from huge JSON payloads.
+async function _runGeneration(sceneList) {
   try {
-    const response = await fetch(`${API}/video-engine/generate-stream`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(payload),
-    })
-    currentReader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-    while (true) {
-      if (stopFlag.value) { currentReader.cancel(); break }
-      const { done, value } = await currentReader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      const lines = buf.split('\n'); buf = lines.pop()
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const raw = line.slice(6).trim()
-        if (raw === '[DONE]') { genFinished.value = true; break }
-        try { handleEvent(JSON.parse(raw)) } catch {}
+    for (const s of sceneList) {
+      if (stopFlag.value) break
+
+      // Resolve images for this single scene only
+      const [startB64, endB64] = await Promise.all([
+        _srcToB64(s.startImageB64),
+        _srcToB64(s.endImageB64),
+      ])
+
+      const payload = {
+        workflow_name: selectedWorkflow.value,
+        resolution:    resolution.value,
+        fps:           fps.value,
+        scenes: [{
+          scene_id:        String(s.id),
+          scene_index:     s.index,
+          start_image_b64: startB64,
+          end_image_b64:   endB64,
+          audio_b64:       s.audioB64,
+          duration_ms:     s.audioDurationMs || 4000,
+          positive_prompt: scenePrompts.value[s.id] ?? _buildPromptFallback(s),
+        }],
       }
+
+      let response
+      try {
+        response = await fetch(`${API}/video-engine/generate-stream`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify(payload),
+        })
+      } catch (fetchErr) {
+        handleEvent({ event: 'scene_error', scene_id: String(s.id), message: fetchErr.message })
+        continue
+      }
+
+      if (!response.ok) {
+        let detail = 'HTTP ' + response.status
+        try { const j = await response.json(); detail = j.detail || detail } catch {}
+        handleEvent({ event: 'scene_error', scene_id: String(s.id), message: detail })
+        continue
+      }
+
+      currentReader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      while (true) {
+        if (stopFlag.value) { currentReader.cancel(); break }
+        const { done, value } = await currentReader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n'); buf = lines.pop()
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const raw = line.slice(6).trim()
+          if (raw === '[DONE]') break
+          try { handleEvent(JSON.parse(raw)) } catch {}
+        }
+      }
+      currentReader = null
     }
+    if (!stopFlag.value) genFinished.value = true
   } catch (e) {
     if (!stopFlag.value) genError.value = `生成失败: ${e.message}`
   } finally {
-    running.value   = false
-    currentReader   = null
+    running.value = false
+    currentReader = null
     emit('dirty')
   }
 }
@@ -670,6 +719,10 @@ function handleEvent(evt) {
       // Persist all completed videos to project
       _saveVideos()
     }
+  } else if (event === 'scene_retrying') {
+    // VRAM offload detected — backend is freeing memory and retrying; keep scene active
+    sceneProgress.value = { ...sceneProgress.value, [scene_id]: { value: 0, max: 100, retrying: true } }
+    console.info(`分镜 ${scene_id}: ${evt.message}`)
   } else if (event === 'scene_error') {
     sceneState.value = { ...sceneState.value, [scene_id]: 'error' }
     genError.value = `分镜 ${scene_id} 失败: ${evt.message}`

@@ -83,12 +83,20 @@ function onSaved() {
 }
 
 async function saveProject() {
+  if (saving.value) return
   saving.value = true
   window.dispatchEvent(new CustomEvent('lumi:save-project', { detail: { projectId: props.projectId } }))
   await new Promise(r => setTimeout(r, 300))
   isDirty.value = false
   tabsStore.setDirty(props.projectId, false)
   saving.value = false
+}
+
+function onCtrlS(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault()
+    saveProject()
+  }
 }
 
 onMounted(async () => {
@@ -98,6 +106,11 @@ onMounted(async () => {
     const data = await res.json()
     if (data?.name) tabsStore.setName(props.projectId, data.name)
   } catch {}
+  window.addEventListener('keydown', onCtrlS)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onCtrlS)
 })
 </script>
 
