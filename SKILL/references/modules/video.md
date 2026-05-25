@@ -1,0 +1,140 @@
+# video 模块（LTX-2.3 视频生成）
+
+通过 ComfyUI 加载 LTX-2.3 工作流，输入"首帧 + 末帧 + 音频"生成单分镜视频，最后用 ffmpeg concat 合并为成片。
+
+## 接口
+
+| 方法 | 路径                                       | 流式 | 用途                                       |
+|------|--------------------------------------------|------|--------------------------------------------|
+| GET  | `/api/video-engine/test`                   | ✗    | 探活视频 ComfyUI                            |
+| GET  | `/api/video-engine/workflows`              | ✗    | 列工作流（先 video.workflow_dir，再 image） |
+| POST | `/api/video-engine/generate-stream`        | ✓    | 顺序生成所有分镜视频                       |
+| POST | `/api/video-engine/merge-project-video`    | ✗    | ffmpeg 合并为 `final_video.mp4`             |
+
+## generate-stream 请求
+
+```json
+{
+  "workflow_name": "flfa2i-lumicreate",
+  "resolution": "720x1280",      // 自动按 32 对齐, clamp 64..1280
+  "fps": 25.0,                   // 24/25/30
+  "scenes": [
+    {
+      "scene_id": "scene_001",
+      "scene_index": 1,
+      "start_image_b64": "...",  // 必填，base64 PNG
+      "end_image_b64": "...",    // 必填
+      "audio_b64": "...",        // 必填，wav 或 mp3 base64
+      "duration_ms": 8000,
+      "positive_prompt": "<英文 video prompt>"
+    },
+    ...
+  ]
+}
+```
+
+**必填三要素缺一不可**，缺失会发 `scene_error` 跳过该镜继续。
+
+**关于 `audio_b64` 的格式**：
+- WAV（IndexTTS stitch 结果）和 MP3（Edge TTS reading 模式）**都能直接用**。
+- 后端写入 ComfyUI input/ 时强制命名为 `lumi_aud_{scene}.wav`，但内容字节不变；ComfyUI LoadAudio 节点按内容识别格式。
+- 客户端只传纯 base64 字符串，**不要加 `data:audio/...;base64,` 前缀**。
+
+**SKILL 调用 reading 模式时的常见错误**：
+- ❌ 仅生成音频后直接进入视频生成，但**没有先生成图片** → 每镜 `scene_error: 缺少首帧图片`
+- ❌ 直接把 `__ms_reading__{id}` 的 audio 在视频请求里再 base64 一次（双重编码）
+- ✅ 正确流程：图片批量生成 → 等待全部 `completed` 落盘 → 取每镜 selected slot 的 PNG 转 base64 → 调 `ms-tts` 拿 mp3 base64 → 三件套传给 video-engine
+
+## SSE 事件
+
+| event           | 字段                                                                          |
+|-----------------|-------------------------------------------------------------------------------|
+| `scene_start`   | `{scene_id, scene_index, current, total}`                                     |
+| `queued`        | `{prompt_id, scene_id}` ComfyUI 已接受任务                                    |
+| `progress`      | `{value, max, scene_id}` ComfyUI 推理进度                                      |
+| `scene_retrying`| `{scene_id, message}` VRAM 自动重试                                           |
+| `scene_done`    | **`{scene_id, scene_index, video:"<b64 mp4>", filename, mime:"video/mp4"}`** |
+| `scene_error`   | `{scene_id, scene_index, message}`                                            |
+| `batch_done`    | `{total}`                                                                     |
+
+最后：`data: [DONE]`。
+
+⚠️ 视频 base64 字段叫 **`video`**，不是 `video_b64`。前端 VideoTab.vue 实现：`sceneVideos[scene_id] = evt.video`。
+
+## VRAM 自动重试
+
+后端检测到 ComfyUI 报错包含 `should be the same`（CUDA/CPU 权重错配信号）时：
+1. 发 `scene_retrying`
+2. 调 `POST {comfyui_url}/free` 释放显存
+3. 等 3 秒后重新跑当前 scene 一次
+4. 仍失败则发 `scene_error` 跳过
+
+**只重试一次**，不要在客户端再额外重试。
+
+## LiteGraph → API 转换
+
+LumiCreate 自动把 ComfyUI LiteGraph UI 格式的 workflow 转成 API 格式，处理：
+- SetNode/GetNode 传送对
+- Bypass 节点
+- 虚拟节点过滤
+- UI-only 输入过滤
+- dict 形式 widgets_values
+- wv_idx 偏移
+- VAELoaderKJ → VAELoader 自动替换
+
+如果用户自己导出的 workflow 报错，**优先确认是否走了这条路径**。
+
+## 落盘协议
+
+每个 `scene_done` 事件后，立即把 **`evt.video`**（注意：字段名 `video`）保存：
+```http
+PUT /api/projects/{id}/videos
+[
+  {"scene_id":"scene_001","data":"<b64 mp4 from evt.video>"}
+]
+```
+（注意：当前 PUT 接口是整体覆盖，更优做法是攒齐所有分镜一次 PUT）
+
+**音频替换**：后端 LTX 生成完后会自动用用户原始 `audio_b64` 通过 ffmpeg 替换 AI 解码音轨（更清晰、无失真），客户端拿到的 `evt.video` 已经是替换后的版本。
+
+## 合并成片
+
+```http
+POST /api/video-engine/merge-project-video
+{
+  "project_id": "<id>",
+  "scene_order": ["scene_001","scene_002","scene_003"]
+}
+→ {"output_path":".../video/final_video.mp4","output_dir":".../<project>"}
+```
+
+执行 `ffmpeg -f concat -safe 0 -i list.txt -c copy final_video.mp4`，要求：
+- 所有分镜视频 codec / 分辨率 / fps 一致（由 LTX 工作流保证）
+- 缺任意一镜的 mp4 会报 400 `分镜 X 尚无视频`
+
+## ffmpeg 定位
+
+后端通过 `services/ltx2video.py:_find_ffmpeg` 查找：
+1. `settings.video_engine.comfyui_input_dir` 的祖先目录中 `.ext/Library/bin/ffmpeg.exe`
+2. `settings.video_engine.workflow_dir` / `image_engine.workflow_dir` 的祖先
+3. PATH
+
+未找到时 `merge-project-video` 直接 500 `未找到 ffmpeg`。
+
+## 性能与建议
+
+- 单分镜 LTX-2.3 720×1280 / 8s 视频约 30s ~ 3min（看 GPU 与采样步数）
+- 批量是**严格顺序**，不并发（单 GPU）
+- 视频 base64 体积大，**前端流式收到后立即写盘并释放内存**
+- 用户中断生成只能在前端断开 SSE，后端无显式 cancel；ComfyUI 当前作业会继续到完成
+- **漫剧默认分辨率 `720x1280` 竖屏 / `fps=25`**，与 LTX-2.3 工作流匹配
+- **分镜单段时长**：手动分镜 ≤ 50 字符约 12.5 秒，视频 `duration_ms` 取 `audio.duration_ms` 即可；超过 25 秒的分镜要警惕 LTX 工作流稳定性
+
+## 视频提示词
+
+视频 prompt 由 `text generate-video-prompt` 流式生成，前端把英文 prompt 缓存到：
+```http
+PUT /api/projects/{id}/video-prompts
+{ "scene_001": "...", "scene_002": "..." }
+```
+下次进入视频页可直接取，无需重生成。

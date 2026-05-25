@@ -132,6 +132,7 @@ LumiCreate-Pro/
 ├── electron/
 │   ├── main.js                 # Electron 主进程（窗口 / IPC / shell 操作）
 │   └── preload.js              # contextBridge API 暴露
+├── SKILL/                      # OpenClaw 智能体 Skill（意图声明 + API 参考 + 示例脚本）
 ├── .gitignore
 └── README.md
 ```
@@ -149,9 +150,38 @@ LumiCreate-Pro/
 | **音频引擎** | IndexTTS-2.0 Gradio URL、音色/情感参考目录、默认音色/权重；朗读模式自动使用微软 Edge TTS |
 | **视频引擎** | ComfyUI URL + 工作流目录 + ComfyUI input/ 目录 + 默认分辨率/帧率 |
 
+## OpenClaw 智能体接入（SKILL）
+
+LumiCreate-Pro 提供标准 **SKILL.md** 规范接口，可被 [OpenClaw](https://openclaw.ai) 等兼容智能体直接调用，实现端到端 AI 视频创作流水线的自动化驱动。
+
+```
+SKILL/
+├── SKILL.md              # 技能声明（意图判断 / 调用规范 / 危险操作确认）
+├── references/
+│   ├── pipeline.md       # 完整流水线骨架与 SSE 消费示例
+│   ├── dialogue-modes.md # 四种对白模式差异（旁白/对话/混合/朗读）
+│   ├── manual-scenes.md  # 角色感知手动分镜算法（漫剧推荐）
+│   ├── character-cards.md# 角色卡建立与 appearance 注入
+│   ├── prompts.md        # 首/尾帧 & 视频提示词生成链路
+│   ├── sse-events.md     # SSE 事件格式速查
+│   └── modules/          # 各模块 API 接口文档
+└── scripts/
+    ├── lumi.py           # 完整功能 CLI（httpx）
+    ├── lumi.sh           # bash 轻量版包装
+    ├── end_to_end_example.py  # 端到端流水线示例脚本
+    └── README.md         # 脚本使用说明
+```
+
+智能体在对话中出现以下意图时会自动激活本 Skill：「用 LumiCreate 生成视频」「做漫剧 / 解说视频 / 朗读视频」「调用 ComfyUI / IndexTTS / LTX-2.3」「批量出图 / 出视频 / 拼字幕」。
+
 ## 更新日志
 
-### v1.3.4（当前）
+### v1.3.5（当前）
+- ✅ **OpenClaw 智能体 Skill 接入**：新增 `SKILL/` 目录，提供标准 SKILL.md 声明，支持 OpenClaw 等兼容智能体通过本地 API（`127.0.0.1:18520`）端到端驱动完整视频创作流水线
+- ✅ **完整 Skill 参考文档**：覆盖流水线骨架、对白模式差异、漫剧手动分镜算法、角色卡建立、提示词注入链路、SSE 事件格式及各模块 API
+- ✅ **客户端示例脚本**：提供 `lumi.py`（httpx CLI）、`lumi.sh`（bash 包装）及端到端流水线示例，可直接用于智能体调试和手动批处理
+
+### v1.3.4
 - ✅ **图片存储策略优化**：图片数据改为项目内文件落盘 + 元数据引用，避免超大 Base64 导致前端字符串长度异常与接口负载过高
 - ✅ **项目读取兼容性修复**：项目与资源 JSON 读取统一兼容 UTF-8 BOM（`utf-8-sig`），修复部分项目在 Windows 环境下读取失败的问题
 - ✅ **视频生成稳定性增强**：LTX 视频生成遇到 CUDA/CPU 权重类型不一致错误时，自动触发 ComfyUI 显存释放并重试一次当前分镜
