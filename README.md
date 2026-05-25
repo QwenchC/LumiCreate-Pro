@@ -176,12 +176,10 @@ SKILL/
 
 ## 更新日志
 
-### v1.3.5（当前）
+### v1.3.4
 - ✅ **OpenClaw 智能体 Skill 接入**：新增 `SKILL/` 目录，提供标准 SKILL.md 声明，支持 OpenClaw 等兼容智能体通过本地 API（`127.0.0.1:18520`）端到端驱动完整视频创作流水线
 - ✅ **完整 Skill 参考文档**：覆盖流水线骨架、对白模式差异、漫剧手动分镜算法、角色卡建立、提示词注入链路、SSE 事件格式及各模块 API
 - ✅ **客户端示例脚本**：提供 `lumi.py`（httpx CLI）、`lumi.sh`（bash 包装）及端到端流水线示例，可直接用于智能体调试和手动批处理
-
-### v1.3.4
 - ✅ **图片存储策略优化**：图片数据改为项目内文件落盘 + 元数据引用，避免超大 Base64 导致前端字符串长度异常与接口负载过高
 - ✅ **项目读取兼容性修复**：项目与资源 JSON 读取统一兼容 UTF-8 BOM（`utf-8-sig`），修复部分项目在 Windows 环境下读取失败的问题
 - ✅ **视频生成稳定性增强**：LTX 视频生成遇到 CUDA/CPU 权重类型不一致错误时，自动触发 ComfyUI 显存释放并重试一次当前分镜
@@ -291,11 +289,6 @@ SKILL/
 - ✅ 工作流选择自动记忆
 - ✅ 项目保存状态（dirty/saved）正确联动
 
-## 后续规划
-
-- [ ] 图片生成：IP-Adapter 角色参考图一致性控制
-- [ ] 整体软件窗口布局优化
-
 ## 核心功能
 
 ### 📝 文案创建
@@ -333,106 +326,6 @@ SKILL/
 - LTX-2.3图片音频生成视频工作流（或合并图片、音频、字幕）
 - 支持多种分辨率和帧率
 - 预览和导出
-
-## 安装与运行
-
-### 前端设置
-```sh
-cd renderer
-npm install
-npm run dev      # 开发模式（Vite + HMR）
-npm run build    # 生产构建
-npx electron .   # 运行 Electron 应用
-```
-
-### 后端设置
-```sh
-cd backend
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-python main.py   # 启动 FastAPI 服务 (http://localhost:18520)
-```
-
-## 项目结构
-
-```
-LumiCreate-Pro/
-├── renderer/              # Vue 3 + Electron 前端
-│   ├── src/
-│   │   ├── views/        # 页面
-│   │   ├── components/   # 组件（tabs/*, common/*）
-│   │   ├── assets/       # 样式/资源
-│   │   ├── stores/       # Pinia 状态管理
-│   │   ├── router/       # Vue Router
-│   │   └── main.js       # 应用入口
-│   ├── index.html        # HTML 入口
-│   └── vite.config.js    # Vite 配置
-├── backend/              # FastAPI 后端
-│   ├── routers/         # API 路由
-│   │   ├── projects.py  # 项目 CRUD
-│   │   ├── image_engine.py
-│   │   ├── audio_engine.py
-│   │   ├── text_engine.py
-│   │   ├── video_engine.py
-│   │   └── settings.py
-│   ├── services/        # 外部服务集成
-│   │   ├── comfyui.py
-│   │   ├── indextts.py
-│   │   ├── gptsovits.py
-│   │   ├── llm.py
-│   │   └── prompts.py
-│   ├── config.py        # 设置管理
-│   ├── main.py          # FastAPI 应用
-│   └── requirements.txt  # Python 依赖
-├── electron/            # Electron 主进程
-│   ├── main.js
-│   └── preload.js
-├── .gitignore           # Git 配置
-├── project.md           # 项目进度跟踪
-└── README.md            # 本文件
-```
-
-## 配置
-
-全局设置存储在：`%APPDATA%/LumiCreate-Pro/settings.json`
-
-支持的引擎配置：
-- **文本引擎**：Ollama / LM Studio / Deepseek / OpenAI 兼容
-- **图片引擎**：ComfyUI + 可选工作流选择记忆
-- **音频引擎**：IndexTTS-2.0（默认）/ GPT-SoVITS / 手动导入
-  - IndexTTS 配置：Gradio 地址、音色参考文件夹、情感参考文件夹、默认音色文件、默认情感权重
-- **视频引擎**：ComfyUI + FFmpeg
-
-## 开发指南
-
-### 热重载
-- 前端：Vite HMR 自动刷新
-- 后端：修改代码后手动重启 `python main.py`
-
-### 文件编码注意事项（Windows GBK 环境）
-- 不要用 PowerShell `Get-Content`/`Set-Content` 编辑 UTF-8 文件
-- 使用 Python 脚本或 VS Code 编辑器处理中文字符
-
-### 项目保存机制
-- 标签页组件监听 `lumi:save-project` 事件并自动保存数据
-- 所有数据更新应触发 `emit('dirty')` 来标记项目修改
-- 项目数据存储：`~\LumiCreate-Projects\{project_id}\`
-
-### 项目数据存储
-```
-~\LumiCreate-Projects\
-└── {project_id}\
-    ├── project.json        # 元数据与进度
-    ├── manuscript.md       # 文案
-    ├── scenes.json         # 分镜列表（含台词）
-    ├── images.json         # 图片槽位元数据
-    ├── images\             # PNG 文件
-    ├── audio.json          # 音频数据（含合并结果）
-    ├── videos.json         # 分镜视频元数据
-    ├── video\              # MP4 文件（各分镜 + final_video.mp4）
-    └── cache\              # 临时缓存
-```
 
 ## 许可证
 
