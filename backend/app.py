@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import settings, projects, text_engine, image_engine, audio_engine, video_engine, subtitle_engine, orchestrator, templates, logs
+from routers import settings, projects, text_engine, image_engine, audio_engine, video_engine, subtitle_engine, orchestrator, templates, logs, tasks
 
 
 def create_app() -> FastAPI:
@@ -30,6 +30,7 @@ def create_app() -> FastAPI:
     app.include_router(orchestrator.router,     prefix="/api/orchestrator",     tags=["orchestrator"])
     app.include_router(templates.router,        prefix="/api/templates",        tags=["templates"])
     app.include_router(logs.router,             prefix="/api/logs",             tags=["logs"])
+    app.include_router(tasks.router,            prefix="/api/tasks",            tags=["tasks"])
     from routers import task_history as th_router
     app.include_router(th_router.router,        prefix="/api/task-history",     tags=["task-history"])
 
@@ -40,6 +41,27 @@ def create_app() -> FastAPI:
         from services.log_bus import install_tee, set_main_loop
         install_tee()
         set_main_loop(_aio.get_running_loop())
+
+    # B2: 进程退出时关掉共享线程池（避免 Windows 端口不释放等问题）
+    @app.on_event("shutdown")
+    async def _shutdown_exec_pool():
+        try:
+            from services.exec_pool import shutdown
+            shutdown(wait=False)
+        except Exception:
+            pass
+
+    # B1: 启动时清理上次进程崩溃留下的"假死"任务
+    @app.on_event("startup")
+    async def _cleanup_interrupted_tasks():
+        try:
+            from services.task_runner import cleanup_interrupted_tasks
+            n = cleanup_interrupted_tasks()
+            if n:
+                print(f"[startup] marked {n} stale running/pending task(s) as interrupted",
+                      flush=True)
+        except Exception as e:
+            print(f"[startup] cleanup_interrupted_tasks failed: {e}", flush=True)
 
     @app.get("/api/health")
     async def health():

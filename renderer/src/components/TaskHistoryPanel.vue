@@ -107,25 +107,28 @@ const stats   = ref(null)
 const filterType    = ref('')
 const filterProject = ref('')
 
+// C1: 使用 typed API client —— schema 改了编译期立刻报错
+import { api } from '../api/client'
+
 async function loadStats() {
   try {
-    const r = await fetch(`${API}/task-history/stats`)
-    if (r.ok) stats.value = await r.json()
+    stats.value = await api.get('/api/task-history/stats')
   } catch {}
 }
 
 async function loadRecords() {
   loading.value = true
   try {
-    const url = new URL(`${API}/task-history`)
-    url.searchParams.set('limit', '500')
-    if (filterType.value)    url.searchParams.set('type',       filterType.value)
-    if (filterProject.value) url.searchParams.set('project_id', filterProject.value)
-    const r = await fetch(url)
-    if (r.ok) {
-      const d = await r.json()
-      records.value = d.records || []
-    }
+    const d = await api.get('/api/task-history', {
+      params: {
+        query: {
+          limit:      500,
+          type:       filterType.value || undefined,
+          project_id: filterProject.value || undefined,
+        },
+      },
+    })
+    records.value = (d || {}).records || []
   } catch {}
   loading.value = false
 }
@@ -137,7 +140,7 @@ async function loadAll() {
 async function confirmClear() {
   if (!confirm('清空所有任务历史？此操作不可撤销。')) return
   try {
-    await fetch(`${API}/task-history`, { method: 'DELETE' })
+    await api.delete('/api/task-history')
     await loadAll()
   } catch (e) { alert('清空失败: ' + e.message) }
 }

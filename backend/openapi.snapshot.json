@@ -1,0 +1,5787 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "LumiCreate-Pro API",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Settings",
+        "operationId": "get_settings_api_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppSettings"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Update Settings",
+        "operationId": "update_settings_api_settings_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppSettings"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "List Projects",
+        "operationId": "list_projects_api_projects_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectMeta"
+                  },
+                  "type": "array",
+                  "title": "Response List Projects Api Projects Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Create Project",
+        "operationId": "create_project_api_projects_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMeta"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Get Project",
+        "operationId": "get_project_api_projects__project_id__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMeta"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Update Project",
+        "operationId": "update_project_api_projects__project_id__put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Updates"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMeta"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Delete Project",
+        "operationId": "delete_project_api_projects__project_id__delete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/copy-config": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Copy Config From Project",
+        "description": "Copy manuscript_config.json and characters.json from source to target project.",
+        "operationId": "copy_config_from_project_api_projects__project_id__copy_config_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CopyConfigRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/assets/file/{scene_id}/{asset_type}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Get Asset File",
+        "operationId": "get_asset_file_api_projects__project_id__assets_file__scene_id___asset_type__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "scene_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scene Id"
+            }
+          },
+          {
+            "name": "asset_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Asset Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/assets/file/{scene_id}/{asset_type}/{slot_index}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Get Asset File Slot",
+        "operationId": "get_asset_file_slot_api_projects__project_id__assets_file__scene_id___asset_type___slot_index__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "scene_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scene Id"
+            }
+          },
+          {
+            "name": "asset_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Asset Type"
+            }
+          },
+          {
+            "name": "slot_index",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Slot Index"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/assets": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "List Assets",
+        "description": "列出某项目（或某镜）的所有资产 — 用于前端 URL 寻址，避免 base64。",
+        "operationId": "list_assets_api_projects__project_id__assets_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "scene_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scene Id"
+            }
+          },
+          {
+            "name": "asset_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asset Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/events": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Get Project Events",
+        "description": "E1: 查项目的事件流。可按 trace_id / task_id / scene_id / level 过滤。\n用于\"任务回放\"——选一次任务的 trace_id 就能看到完整时间线。",
+        "operationId": "get_project_events_api_projects__project_id__events_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Trace Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "scene_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scene Id"
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Level"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 500,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/traces": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "List Recent Traces",
+        "operationId": "list_recent_traces_api_projects__project_id__traces_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/status": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Get Project Status",
+        "description": "A1: 返回项目级状态机视图（项目阶段 + scene 计数 + 资产计数）。",
+        "operationId": "get_project_status_api_projects__project_id__status_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/manuscript": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Get Manuscript",
+        "operationId": "get_manuscript_api_projects__project_id__manuscript_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Save Manuscript",
+        "operationId": "save_manuscript_api_projects__project_id__manuscript_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManuscriptData"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMeta"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/images": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Load Images",
+        "operationId": "load_images_api_projects__project_id__images_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Save Images",
+        "operationId": "save_images_api_projects__project_id__images_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImagesState"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/images/file/{filename}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Serve Image File",
+        "description": "Serve a single PNG image file directly (avoids large base64 JSON payloads).",
+        "operationId": "serve_image_file_api_projects__project_id__images_file__filename__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Filename"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/images/slot": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Save Image Slot",
+        "description": "Save a single image slot file to disk + A2 双写到 scene_assets。",
+        "operationId": "save_image_slot_api_projects__project_id__images_slot_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageSlot"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/images/metadata": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Save Image Metadata",
+        "description": "Rebuild images.json from the provided slot_keys list + save counts/selected.",
+        "operationId": "save_image_metadata_api_projects__project_id__images_metadata_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageMetadataUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/scenes": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Get Scenes",
+        "operationId": "get_scenes_api_projects__project_id__scenes_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Save Scenes",
+        "operationId": "save_scenes_api_projects__project_id__scenes_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScenesData"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMeta"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/audio": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Get Audio",
+        "operationId": "get_audio_api_projects__project_id__audio_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Save Audio",
+        "operationId": "save_audio_api_projects__project_id__audio_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Data"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/audio/slot": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Put Audio Slot",
+        "operationId": "put_audio_slot_api_projects__project_id__audio_slot_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AudioSlotPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/videos": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Load Videos",
+        "operationId": "load_videos_api_projects__project_id__videos_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Save Videos",
+        "operationId": "save_videos_api_projects__project_id__videos_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/VideoSlot"
+                },
+                "title": "Data"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/videos/slot": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Put Video Slot",
+        "operationId": "put_video_slot_api_projects__project_id__videos_slot_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoSlot"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/video-prompts": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Load Video Prompts",
+        "operationId": "load_video_prompts_api_projects__project_id__video_prompts_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Save Video Prompts",
+        "operationId": "save_video_prompts_api_projects__project_id__video_prompts_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Data"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/last-run-errors": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Get Last Run Errors",
+        "operationId": "get_last_run_errors_api_projects__project_id__last_run_errors_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Put Last Run Errors",
+        "operationId": "put_last_run_errors_api_projects__project_id__last_run_errors_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LastRunErrors"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Clear Last Run Errors",
+        "operationId": "clear_last_run_errors_api_projects__project_id__last_run_errors_delete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/characters": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Get Characters",
+        "operationId": "get_characters_api_projects__project_id__characters_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Save Characters",
+        "operationId": "save_characters_api_projects__project_id__characters_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CharactersData"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/text-engine/test": {
+      "get": {
+        "tags": [
+          "text-engine"
+        ],
+        "summary": "Test Connection",
+        "operationId": "test_connection_api_text_engine_test_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routers__text_engine__ConnectionTestResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/text-engine/generate-manuscript": {
+      "post": {
+        "tags": [
+          "text-engine"
+        ],
+        "summary": "Generate Manuscript",
+        "operationId": "generate_manuscript_api_text_engine_generate_manuscript_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateManuscriptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/text-engine/generate-scenes": {
+      "post": {
+        "tags": [
+          "text-engine"
+        ],
+        "summary": "Generate Scenes",
+        "operationId": "generate_scenes_api_text_engine_generate_scenes_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateScenesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/text-engine/generate-frame-prompts": {
+      "post": {
+        "tags": [
+          "text-engine"
+        ],
+        "summary": "Generate Frame Prompts",
+        "operationId": "generate_frame_prompts_api_text_engine_generate_frame_prompts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateFramePromptsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/text-engine/generate-character-appearance": {
+      "post": {
+        "tags": [
+          "text-engine"
+        ],
+        "summary": "Generate Character Appearance",
+        "operationId": "generate_character_appearance_api_text_engine_generate_character_appearance_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateCharacterAppearanceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/text-engine/generate-character-profile": {
+      "post": {
+        "tags": [
+          "text-engine"
+        ],
+        "summary": "Generate Character Profile",
+        "operationId": "generate_character_profile_api_text_engine_generate_character_profile_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateCharacterProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/text-engine/suggest-scene-characters": {
+      "post": {
+        "tags": [
+          "text-engine"
+        ],
+        "summary": "Suggest Scene Characters",
+        "operationId": "suggest_scene_characters_api_text_engine_suggest_scene_characters_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SuggestSceneCharactersRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/text-engine/generate-video-prompt": {
+      "post": {
+        "tags": [
+          "text-engine"
+        ],
+        "summary": "Generate Video Prompt",
+        "operationId": "generate_video_prompt_api_text_engine_generate_video_prompt_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateVideoPromptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/image-engine/precheck": {
+      "get": {
+        "tags": [
+          "image-engine"
+        ],
+        "summary": "Precheck Workflow",
+        "description": "生成前校验工作流：ComfyUI 是否在线 + 节点 class_type 是否齐 + 资源引用统计。",
+        "operationId": "precheck_workflow_api_image_engine_precheck_get",
+        "parameters": [
+          {
+            "name": "workflow_name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workflow Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/image-engine/test": {
+      "get": {
+        "tags": [
+          "image-engine"
+        ],
+        "summary": "Test Connection",
+        "operationId": "test_connection_api_image_engine_test_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routers__image_engine__ConnectionTestResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/image-engine/workflows": {
+      "get": {
+        "tags": [
+          "image-engine"
+        ],
+        "summary": "Get Workflows",
+        "operationId": "get_workflows_api_image_engine_workflows_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response Get Workflows Api Image Engine Workflows Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/image-engine/workflow/{workflow_name}": {
+      "get": {
+        "tags": [
+          "image-engine"
+        ],
+        "summary": "Get Workflow",
+        "operationId": "get_workflow_api_image_engine_workflow__workflow_name__get",
+        "parameters": [
+          {
+            "name": "workflow_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workflow Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/image-engine/workflow-meta/{workflow_name}": {
+      "get": {
+        "tags": [
+          "image-engine"
+        ],
+        "summary": "Get Workflow Meta",
+        "operationId": "get_workflow_meta_api_image_engine_workflow_meta__workflow_name__get",
+        "parameters": [
+          {
+            "name": "workflow_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workflow Name"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "video",
+              "title": "Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "image-engine"
+        ],
+        "summary": "Put Workflow Meta",
+        "operationId": "put_workflow_meta_api_image_engine_workflow_meta__workflow_name__put",
+        "parameters": [
+          {
+            "name": "workflow_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workflow Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowMetaPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/image-engine/generate-stream": {
+      "post": {
+        "tags": [
+          "image-engine"
+        ],
+        "summary": "Generate Single Stream",
+        "operationId": "generate_single_stream_api_image_engine_generate_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/routers__image_engine__SingleGenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/image-engine/generate-batch-stream": {
+      "post": {
+        "tags": [
+          "image-engine"
+        ],
+        "summary": "Generate Batch Stream",
+        "description": "Launch len(frames) * gen_count concurrent generation tasks.\nMultiplex all events into one SSE stream.\n\nEvent types: queued | progress | completed | error | batch_done\nEach carries: scene_id, frame_type, slot_index\ncompleted carries: images = [{filename, data(base64), type}]",
+        "operationId": "generate_batch_stream_api_image_engine_generate_batch_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/routers__image_engine__BatchGenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audio-engine/test": {
+      "get": {
+        "tags": [
+          "audio-engine"
+        ],
+        "summary": "Test Connection",
+        "description": "C2: 走统一 adapter，路由 engine_type 的分支逻辑收敛进 adapter factory。",
+        "operationId": "test_connection_api_audio_engine_test_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routers__audio_engine__ConnectionTestResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audio-engine/voice-refs": {
+      "get": {
+        "tags": [
+          "audio-engine"
+        ],
+        "summary": "Get Voice Refs",
+        "operationId": "get_voice_refs_api_audio_engine_voice_refs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response Get Voice Refs Api Audio Engine Voice Refs Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audio-engine/emotion-refs": {
+      "get": {
+        "tags": [
+          "audio-engine"
+        ],
+        "summary": "Get Emotion Refs",
+        "operationId": "get_emotion_refs_api_audio_engine_emotion_refs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response Get Emotion Refs Api Audio Engine Emotion Refs Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audio-engine/generate-stream": {
+      "post": {
+        "tags": [
+          "audio-engine"
+        ],
+        "summary": "Generate Single Stream",
+        "operationId": "generate_single_stream_api_audio_engine_generate_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/routers__audio_engine__SingleGenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audio-engine/generate-batch-stream": {
+      "post": {
+        "tags": [
+          "audio-engine"
+        ],
+        "summary": "Generate Batch Stream",
+        "operationId": "generate_batch_stream_api_audio_engine_generate_batch_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/routers__audio_engine__BatchGenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audio-engine/stitch-scene": {
+      "post": {
+        "tags": [
+          "audio-engine"
+        ],
+        "summary": "Stitch Scene",
+        "description": "Merge clips for one scene into a single WAV (with pre/post silence).",
+        "operationId": "stitch_scene_api_audio_engine_stitch_scene_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StitchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audio-engine/ms-tts": {
+      "post": {
+        "tags": [
+          "audio-engine"
+        ],
+        "summary": "Ms Tts",
+        "description": "Generate a single TTS clip with Microsoft Edge neural voices.\nReturns base64 MP3 by default; pass format=\"wav\" for stitch-scene compatible WAV.",
+        "operationId": "ms_tts_api_audio_engine_ms_tts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MsTtsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audio-engine/ms-tts/test-all": {
+      "post": {
+        "tags": [
+          "audio-engine"
+        ],
+        "summary": "Ms Tts Test All",
+        "description": "逐一测试 Microsoft Edge neural voices；返回 {voice: ok/err}，\n并将通过的 voice 列表写入 settings.audio_engine.msedge_available_voices。",
+        "operationId": "ms_tts_test_all_api_audio_engine_ms_tts_test_all_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestAllRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/video-engine/precheck": {
+      "get": {
+        "tags": [
+          "video-engine"
+        ],
+        "summary": "Precheck Video Workflow Endpoint",
+        "operationId": "precheck_video_workflow_endpoint_api_video_engine_precheck_get",
+        "parameters": [
+          {
+            "name": "workflow_name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workflow Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/video-engine/test": {
+      "get": {
+        "tags": [
+          "video-engine"
+        ],
+        "summary": "Test Connection",
+        "operationId": "test_connection_api_video_engine_test_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/routers__video_engine__ConnectionTestResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/video-engine/workflows": {
+      "get": {
+        "tags": [
+          "video-engine"
+        ],
+        "summary": "Get Video Workflows",
+        "operationId": "get_video_workflows_api_video_engine_workflows_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response Get Video Workflows Api Video Engine Workflows Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/video-engine/generate-stream": {
+      "post": {
+        "tags": [
+          "video-engine"
+        ],
+        "summary": "Generate Video Stream",
+        "operationId": "generate_video_stream_api_video_engine_generate_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoGenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/video-engine/bgm/{project_id}": {
+      "get": {
+        "tags": [
+          "video-engine"
+        ],
+        "summary": "Get Project Bgm",
+        "description": "返回 BGM 元信息：是否存在、文件名。",
+        "operationId": "get_project_bgm_api_video_engine_bgm__project_id__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "video-engine"
+        ],
+        "summary": "Delete Project Bgm",
+        "operationId": "delete_project_bgm_api_video_engine_bgm__project_id__delete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "video-engine"
+        ],
+        "summary": "Upload Project Bgm",
+        "description": "上传 BGM。前端读取本地文件 → base64 → 此接口。",
+        "operationId": "upload_project_bgm_api_video_engine_bgm__project_id__put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadBgmRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/video-engine/merge-project-video": {
+      "post": {
+        "tags": [
+          "video-engine"
+        ],
+        "summary": "Merge Project Video",
+        "description": "Concatenate all scene MP4 files in order into one final video using ffmpeg concat demuxer.",
+        "operationId": "merge_project_video_api_video_engine_merge_project_video_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeVideoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeVideoResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/subtitle-engine/status/{project_id}": {
+      "get": {
+        "tags": [
+          "subtitle-engine"
+        ],
+        "summary": "Subtitle Status",
+        "operationId": "subtitle_status_api_subtitle_engine_status__project_id__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubtitleStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/subtitle-engine/script/{project_id}": {
+      "get": {
+        "tags": [
+          "subtitle-engine"
+        ],
+        "summary": "Get Script",
+        "description": "Return subtitle script lines extracted from the project's scenes (dialogue / description).",
+        "operationId": "get_script_api_subtitle_engine_script__project_id__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/subtitle-engine/preprocess-text": {
+      "post": {
+        "tags": [
+          "subtitle-engine"
+        ],
+        "summary": "Preprocess Text Endpoint",
+        "operationId": "preprocess_text_endpoint_api_subtitle_engine_preprocess_text_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreprocessRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/subtitle-engine/generate-srt": {
+      "post": {
+        "tags": [
+          "subtitle-engine"
+        ],
+        "summary": "Generate Srt Endpoint",
+        "description": "SSE stream: normalize video → extract audio → align → write SRT.",
+        "operationId": "generate_srt_endpoint_api_subtitle_engine_generate_srt_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateSrtRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/subtitle-engine/embed": {
+      "post": {
+        "tags": [
+          "subtitle-engine"
+        ],
+        "summary": "Embed Subtitles Endpoint",
+        "description": "Burn subtitles.srt into final_video.mp4 → final_video_subbed.mp4.",
+        "operationId": "embed_subtitles_endpoint_api_subtitle_engine_embed_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/orchestrator/generate-all": {
+      "post": {
+        "tags": [
+          "orchestrator"
+        ],
+        "summary": "Generate All",
+        "description": "SSE：按顺序跑所有 stage。前端接事件流，实时显示进度。",
+        "operationId": "generate_all_api_orchestrator_generate_all_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrchestratorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/templates": {
+      "get": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "List Templates",
+        "operationId": "list_templates_api_templates_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TemplateMeta"
+                  },
+                  "type": "array",
+                  "title": "Response List Templates Api Templates Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/templates/{template_id}": {
+      "get": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Get Template",
+        "operationId": "get_template_api_templates__template_id__get",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateMeta"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Delete Template",
+        "operationId": "delete_template_api_templates__template_id__delete",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/templates/from-project": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Create From Project",
+        "operationId": "create_from_project_api_templates_from_project_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTemplateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateMeta"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/templates/{template_id}/apply": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Apply Template",
+        "operationId": "apply_template_api_templates__template_id__apply_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyTemplateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/templates/{template_id}/spawn-project": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Spawn Project From Template",
+        "operationId": "spawn_project_from_template_api_templates__template_id__spawn_project_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewProjectFromTemplateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/recent": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "Recent",
+        "operationId": "recent_api_logs_recent_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "after_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "After Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/stream": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "Stream",
+        "description": "SSE: 实时推送新日志行。",
+        "operationId": "stream_api_logs_stream_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/clear": {
+      "delete": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "Clear",
+        "operationId": "clear_api_logs_clear_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    },
+    "/api/tasks": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Submit Task",
+        "operationId": "submit_task_api_tasks_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitTaskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "List Tasks",
+        "operationId": "list_tasks_api_tasks_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Get Task",
+        "operationId": "get_task_api_tasks__task_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/cancel": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Cancel Task",
+        "operationId": "cancel_task_api_tasks__task_id__cancel_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/events": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Stream Task Events",
+        "description": "SSE：先回放历史事件（id > last_event_id），再实时推送新事件。\n\n- 断网重连：前端 EventSource 自动带上 Last-Event-ID header → 服务端从那以后回放\n- 历史持久化在 SQLite events 表，任务结束后仍可看完整时间线",
+        "operationId": "stream_task_events_api_tasks__task_id__events_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task-history": {
+      "get": {
+        "tags": [
+          "task-history"
+        ],
+        "summary": "List Records",
+        "operationId": "list_records_api_task_history_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "task-history"
+        ],
+        "summary": "Clear All",
+        "operationId": "clear_all_api_task_history_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    },
+    "/api/task-history/stats": {
+      "get": {
+        "tags": [
+          "task-history"
+        ],
+        "summary": "Stats",
+        "operationId": "stats_api_task_history_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AppSettings": {
+        "properties": {
+          "projects_dir": {
+            "type": "string",
+            "title": "Projects Dir",
+            "default": "C:\\Users\\LumiTree\\LumiCreate-Projects"
+          },
+          "text_engine": {
+            "$ref": "#/components/schemas/TextEngineConfig"
+          },
+          "image_engine": {
+            "$ref": "#/components/schemas/ImageEngineConfig"
+          },
+          "audio_engine": {
+            "$ref": "#/components/schemas/AudioEngineConfig"
+          },
+          "video_engine": {
+            "$ref": "#/components/schemas/VideoEngineConfig"
+          }
+        },
+        "type": "object",
+        "title": "AppSettings"
+      },
+      "ApplyTemplateRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "ApplyTemplateRequest"
+      },
+      "AudioEngineConfig": {
+        "properties": {
+          "engine_type": {
+            "type": "string",
+            "enum": [
+              "gptsovits",
+              "indextts",
+              "msedge",
+              "manual"
+            ],
+            "title": "Engine Type",
+            "default": "indextts"
+          },
+          "api_url": {
+            "type": "string",
+            "title": "Api Url",
+            "default": "http://localhost:7860"
+          },
+          "default_gen_count": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Default Gen Count",
+            "default": 3
+          },
+          "voice_ref_dir": {
+            "type": "string",
+            "title": "Voice Ref Dir",
+            "default": ""
+          },
+          "emotion_ref_dir": {
+            "type": "string",
+            "title": "Emotion Ref Dir",
+            "default": ""
+          },
+          "default_voice_ref": {
+            "type": "string",
+            "title": "Default Voice Ref",
+            "default": ""
+          },
+          "default_emo_weight": {
+            "type": "number",
+            "maximum": 1.6,
+            "minimum": 0.0,
+            "title": "Default Emo Weight",
+            "default": 0.8
+          },
+          "msedge_voice": {
+            "type": "string",
+            "title": "Msedge Voice",
+            "default": "zh-CN-XiaoxiaoNeural"
+          },
+          "msedge_rate": {
+            "type": "string",
+            "title": "Msedge Rate",
+            "default": "+25%"
+          },
+          "msedge_available_voices": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Msedge Available Voices"
+          }
+        },
+        "type": "object",
+        "title": "AudioEngineConfig"
+      },
+      "AudioSlotPayload": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "entry": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Entry"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "entry"
+        ],
+        "title": "AudioSlotPayload"
+      },
+      "BatchDialogue": {
+        "properties": {
+          "scene_id": {
+            "type": "string",
+            "title": "Scene Id"
+          },
+          "dialogue_id": {
+            "type": "string",
+            "title": "Dialogue Id"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "voice_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice Ref"
+          },
+          "emo_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emo Ref"
+          },
+          "emo_weight": {
+            "type": "number",
+            "title": "Emo Weight",
+            "default": 0.8
+          },
+          "lang": {
+            "type": "string",
+            "title": "Lang",
+            "default": "zh"
+          },
+          "speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speaker"
+          },
+          "msedge_voice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Msedge Voice"
+          },
+          "msedge_rate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Msedge Rate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scene_id",
+          "dialogue_id",
+          "text"
+        ],
+        "title": "BatchDialogue"
+      },
+      "CancelResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "title": "CancelResponse"
+      },
+      "CharactersData": {
+        "properties": {
+          "characters": {
+            "items": {},
+            "type": "array",
+            "title": "Characters"
+          }
+        },
+        "type": "object",
+        "required": [
+          "characters"
+        ],
+        "title": "CharactersData"
+      },
+      "CopyConfigRequest": {
+        "properties": {
+          "source_project_id": {
+            "type": "string",
+            "title": "Source Project Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_project_id"
+        ],
+        "title": "CopyConfigRequest"
+      },
+      "CreateProjectRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "folder_id": {
+            "type": "string",
+            "title": "Folder Id",
+            "default": "default"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "CreateProjectRequest"
+      },
+      "CreateTemplateRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "include_characters": {
+            "type": "boolean",
+            "title": "Include Characters",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "name"
+        ],
+        "title": "CreateTemplateRequest"
+      },
+      "EmbedRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "font_name": {
+            "type": "string",
+            "title": "Font Name",
+            "default": "等线 Bold"
+          },
+          "font_size": {
+            "type": "integer",
+            "title": "Font Size",
+            "default": 18
+          },
+          "primary_colour": {
+            "type": "string",
+            "title": "Primary Colour",
+            "default": "#FFFFFF"
+          },
+          "outline_colour": {
+            "type": "string",
+            "title": "Outline Colour",
+            "default": "#000000"
+          },
+          "outline_width": {
+            "type": "number",
+            "title": "Outline Width",
+            "default": 2.0
+          },
+          "shadow_depth": {
+            "type": "number",
+            "title": "Shadow Depth",
+            "default": 0.0
+          },
+          "margin_v": {
+            "type": "integer",
+            "title": "Margin V",
+            "default": 30
+          },
+          "position": {
+            "type": "string",
+            "title": "Position",
+            "default": "bottom"
+          },
+          "bold": {
+            "type": "boolean",
+            "title": "Bold",
+            "default": true
+          },
+          "italic": {
+            "type": "boolean",
+            "title": "Italic",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "EmbedRequest"
+      },
+      "GenerateCharacterAppearanceRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "default": ""
+          },
+          "traits": {
+            "type": "string",
+            "title": "Traits",
+            "default": ""
+          },
+          "existing": {
+            "type": "string",
+            "title": "Existing",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "GenerateCharacterAppearanceRequest"
+      },
+      "GenerateCharacterProfileRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "manuscript": {
+            "type": "string",
+            "title": "Manuscript",
+            "default": ""
+          },
+          "existing_role": {
+            "type": "string",
+            "title": "Existing Role",
+            "default": ""
+          },
+          "existing_traits": {
+            "type": "string",
+            "title": "Existing Traits",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "GenerateCharacterProfileRequest"
+      },
+      "GenerateFramePromptsRequest": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "dialogues": {
+            "items": {},
+            "type": "array",
+            "title": "Dialogues",
+            "default": []
+          },
+          "characters": {
+            "items": {},
+            "type": "array",
+            "title": "Characters",
+            "default": []
+          },
+          "manuscript": {
+            "type": "string",
+            "title": "Manuscript",
+            "default": ""
+          },
+          "scene_index": {
+            "type": "integer",
+            "title": "Scene Index",
+            "default": 0
+          },
+          "total_scenes": {
+            "type": "integer",
+            "title": "Total Scenes",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "description"
+        ],
+        "title": "GenerateFramePromptsRequest"
+      },
+      "GenerateManuscriptRequest": {
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/ManuscriptConfig"
+          },
+          "existing_content": {
+            "type": "string",
+            "title": "Existing Content",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "config"
+        ],
+        "title": "GenerateManuscriptRequest"
+      },
+      "GenerateScenesRequest": {
+        "properties": {
+          "manuscript": {
+            "type": "string",
+            "title": "Manuscript"
+          },
+          "dialogue_mode": {
+            "type": "string",
+            "title": "Dialogue Mode",
+            "default": "mixed"
+          },
+          "characters": {
+            "items": {},
+            "type": "array",
+            "title": "Characters",
+            "default": []
+          },
+          "force_llm": {
+            "type": "boolean",
+            "title": "Force Llm",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "manuscript"
+        ],
+        "title": "GenerateScenesRequest"
+      },
+      "GenerateSrtRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Lines"
+          },
+          "fps": {
+            "type": "integer",
+            "title": "Fps",
+            "default": 24
+          },
+          "manual_advance": {
+            "type": "number",
+            "title": "Manual Advance",
+            "default": 0.0
+          },
+          "model_name": {
+            "type": "string",
+            "title": "Model Name",
+            "default": "base"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "lines"
+        ],
+        "title": "GenerateSrtRequest"
+      },
+      "GenerateVideoPromptRequest": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "dialogues": {
+            "items": {},
+            "type": "array",
+            "title": "Dialogues",
+            "default": []
+          },
+          "characters": {
+            "items": {},
+            "type": "array",
+            "title": "Characters",
+            "default": []
+          },
+          "start_frame_prompt": {
+            "type": "string",
+            "title": "Start Frame Prompt",
+            "default": ""
+          },
+          "end_frame_prompt": {
+            "type": "string",
+            "title": "End Frame Prompt",
+            "default": ""
+          },
+          "manuscript": {
+            "type": "string",
+            "title": "Manuscript",
+            "default": ""
+          },
+          "scene_index": {
+            "type": "integer",
+            "title": "Scene Index",
+            "default": 0
+          },
+          "total_scenes": {
+            "type": "integer",
+            "title": "Total Scenes",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "GenerateVideoPromptRequest"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ImageEngineConfig": {
+        "properties": {
+          "comfyui_url": {
+            "type": "string",
+            "title": "Comfyui Url",
+            "default": "http://localhost:8188"
+          },
+          "workflow_dir": {
+            "type": "string",
+            "title": "Workflow Dir",
+            "default": ""
+          },
+          "default_workflow": {
+            "type": "string",
+            "title": "Default Workflow",
+            "default": ""
+          },
+          "default_gen_count": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Default Gen Count",
+            "default": 3
+          },
+          "image_width": {
+            "type": "integer",
+            "maximum": 8192.0,
+            "minimum": 64.0,
+            "title": "Image Width",
+            "default": 1920
+          },
+          "image_height": {
+            "type": "integer",
+            "maximum": 8192.0,
+            "minimum": 64.0,
+            "title": "Image Height",
+            "default": 1080
+          },
+          "style_preset": {
+            "type": "string",
+            "title": "Style Preset",
+            "default": ""
+          },
+          "custom_style_text": {
+            "type": "string",
+            "title": "Custom Style Text",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ImageEngineConfig"
+      },
+      "ImageMetadataUpdate": {
+        "properties": {
+          "counts": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Counts"
+          },
+          "selected": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Selected"
+          },
+          "slot_keys": {
+            "items": {
+              "$ref": "#/components/schemas/SlotKey"
+            },
+            "type": "array",
+            "title": "Slot Keys",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "counts",
+          "selected"
+        ],
+        "title": "ImageMetadataUpdate"
+      },
+      "ImageSlot": {
+        "properties": {
+          "scene_id": {
+            "type": "string",
+            "title": "Scene Id"
+          },
+          "frame_type": {
+            "type": "string",
+            "title": "Frame Type"
+          },
+          "slot_index": {
+            "type": "integer",
+            "title": "Slot Index"
+          },
+          "data": {
+            "type": "string",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scene_id",
+          "frame_type",
+          "slot_index",
+          "data"
+        ],
+        "title": "ImageSlot"
+      },
+      "ImagesState": {
+        "properties": {
+          "slots": {
+            "items": {
+              "$ref": "#/components/schemas/ImageSlot"
+            },
+            "type": "array",
+            "title": "Slots"
+          },
+          "counts": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Counts"
+          },
+          "selected": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Selected"
+          }
+        },
+        "type": "object",
+        "required": [
+          "slots",
+          "counts",
+          "selected"
+        ],
+        "title": "ImagesState"
+      },
+      "LastRunErrors": {
+        "properties": {
+          "stage": {
+            "type": "string",
+            "title": "Stage",
+            "default": ""
+          },
+          "ts": {
+            "type": "string",
+            "title": "Ts",
+            "default": ""
+          },
+          "errors": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Errors",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "LastRunErrors"
+      },
+      "ManuscriptConfig": {
+        "properties": {
+          "length": {
+            "type": "string",
+            "title": "Length",
+            "default": "medium"
+          },
+          "audience": {
+            "type": "string",
+            "title": "Audience",
+            "default": ""
+          },
+          "style": {
+            "type": "string",
+            "title": "Style",
+            "default": ""
+          },
+          "tone": {
+            "type": "string",
+            "title": "Tone",
+            "default": ""
+          },
+          "theme": {
+            "type": "string",
+            "title": "Theme",
+            "default": ""
+          },
+          "worldview": {
+            "type": "string",
+            "title": "Worldview",
+            "default": ""
+          },
+          "characters": {
+            "items": {},
+            "type": "array",
+            "title": "Characters",
+            "default": []
+          },
+          "dialogue_mode": {
+            "type": "string",
+            "title": "Dialogue Mode",
+            "default": "mixed"
+          }
+        },
+        "type": "object",
+        "title": "ManuscriptConfig"
+      },
+      "ManuscriptData": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "ManuscriptData"
+      },
+      "MergeVideoRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "scene_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scene Order"
+          },
+          "transition": {
+            "type": "string",
+            "title": "Transition",
+            "default": "cut"
+          },
+          "transition_duration_ms": {
+            "type": "integer",
+            "title": "Transition Duration Ms",
+            "default": 300
+          },
+          "bgm_volume_db": {
+            "type": "number",
+            "title": "Bgm Volume Db",
+            "default": -20.0
+          },
+          "bgm_fade_in_ms": {
+            "type": "integer",
+            "title": "Bgm Fade In Ms",
+            "default": 1000
+          },
+          "bgm_fade_out_ms": {
+            "type": "integer",
+            "title": "Bgm Fade Out Ms",
+            "default": 1500
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "scene_order"
+        ],
+        "title": "MergeVideoRequest"
+      },
+      "MergeVideoResult": {
+        "properties": {
+          "output_path": {
+            "type": "string",
+            "title": "Output Path"
+          },
+          "output_dir": {
+            "type": "string",
+            "title": "Output Dir"
+          }
+        },
+        "type": "object",
+        "required": [
+          "output_path",
+          "output_dir"
+        ],
+        "title": "MergeVideoResult"
+      },
+      "MsTtsRequest": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "voice": {
+            "type": "string",
+            "title": "Voice",
+            "default": "zh-CN-XiaoxiaoNeural"
+          },
+          "rate": {
+            "type": "string",
+            "title": "Rate",
+            "default": "+0%"
+          },
+          "format": {
+            "type": "string",
+            "title": "Format",
+            "default": "mp3"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "MsTtsRequest"
+      },
+      "NewProjectFromTemplateRequest": {
+        "properties": {
+          "template_id": {
+            "type": "string",
+            "title": "Template Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "folder_id": {
+            "type": "string",
+            "title": "Folder Id",
+            "default": "default"
+          }
+        },
+        "type": "object",
+        "required": [
+          "template_id",
+          "name"
+        ],
+        "title": "NewProjectFromTemplateRequest"
+      },
+      "OrchestratorRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "stages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Stages",
+            "default": [
+              "scenes",
+              "prompts",
+              "images",
+              "audio",
+              "video",
+              "merge",
+              "subtitle"
+            ]
+          },
+          "image_workflow": {
+            "type": "string",
+            "title": "Image Workflow",
+            "default": ""
+          },
+          "video_workflow": {
+            "type": "string",
+            "title": "Video Workflow",
+            "default": ""
+          },
+          "subtitle_font": {
+            "type": "string",
+            "title": "Subtitle Font",
+            "default": "等线 Bold"
+          },
+          "subtitle_font_size": {
+            "type": "integer",
+            "title": "Subtitle Font Size",
+            "default": 0
+          },
+          "manual_split": {
+            "type": "boolean",
+            "title": "Manual Split",
+            "default": false
+          },
+          "max_chars_per_scene": {
+            "type": "integer",
+            "title": "Max Chars Per Scene",
+            "default": 50
+          },
+          "rate": {
+            "type": "string",
+            "title": "Rate",
+            "default": "+25%"
+          },
+          "fps": {
+            "type": "integer",
+            "title": "Fps",
+            "default": 24
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "OrchestratorRequest"
+      },
+      "PreprocessRequest": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "PreprocessRequest"
+      },
+      "ProjectMeta": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/ProjectProgress",
+            "default": {
+              "manuscript": 0,
+              "scenes": 0,
+              "images": 0,
+              "audio": 0,
+              "video": 0
+            }
+          },
+          "has_final_video": {
+            "type": "boolean",
+            "title": "Has Final Video",
+            "default": false
+          },
+          "folder_id": {
+            "type": "string",
+            "title": "Folder Id",
+            "default": "default"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ProjectMeta"
+      },
+      "ProjectProgress": {
+        "properties": {
+          "manuscript": {
+            "type": "integer",
+            "title": "Manuscript",
+            "default": 0
+          },
+          "scenes": {
+            "type": "integer",
+            "title": "Scenes",
+            "default": 0
+          },
+          "images": {
+            "type": "integer",
+            "title": "Images",
+            "default": 0
+          },
+          "audio": {
+            "type": "integer",
+            "title": "Audio",
+            "default": 0
+          },
+          "video": {
+            "type": "integer",
+            "title": "Video",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "ProjectProgress"
+      },
+      "SceneVideoRequest": {
+        "properties": {
+          "scene_id": {
+            "type": "string",
+            "title": "Scene Id"
+          },
+          "scene_index": {
+            "type": "integer",
+            "title": "Scene Index"
+          },
+          "start_image_b64": {
+            "type": "string",
+            "title": "Start Image B64",
+            "default": ""
+          },
+          "end_image_b64": {
+            "type": "string",
+            "title": "End Image B64",
+            "default": ""
+          },
+          "audio_b64": {
+            "type": "string",
+            "title": "Audio B64",
+            "default": ""
+          },
+          "duration_ms": {
+            "type": "integer",
+            "title": "Duration Ms",
+            "default": 4000
+          },
+          "positive_prompt": {
+            "type": "string",
+            "title": "Positive Prompt",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "scene_id",
+          "scene_index"
+        ],
+        "title": "SceneVideoRequest"
+      },
+      "ScenesData": {
+        "properties": {
+          "scenes": {
+            "items": {},
+            "type": "array",
+            "title": "Scenes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scenes"
+        ],
+        "title": "ScenesData"
+      },
+      "SlotKey": {
+        "properties": {
+          "scene_id": {
+            "type": "string",
+            "title": "Scene Id"
+          },
+          "frame_type": {
+            "type": "string",
+            "title": "Frame Type"
+          },
+          "slot_index": {
+            "type": "integer",
+            "title": "Slot Index"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scene_id",
+          "frame_type",
+          "slot_index"
+        ],
+        "title": "SlotKey"
+      },
+      "StitchClip": {
+        "properties": {
+          "data": {
+            "type": "string",
+            "title": "Data"
+          },
+          "pre_silence_ms": {
+            "type": "integer",
+            "title": "Pre Silence Ms",
+            "default": 0
+          },
+          "post_silence_ms": {
+            "type": "integer",
+            "title": "Post Silence Ms",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "title": "StitchClip"
+      },
+      "StitchRequest": {
+        "properties": {
+          "clips": {
+            "items": {
+              "$ref": "#/components/schemas/StitchClip"
+            },
+            "type": "array",
+            "title": "Clips"
+          }
+        },
+        "type": "object",
+        "required": [
+          "clips"
+        ],
+        "title": "StitchRequest"
+      },
+      "SubmitTaskRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "request": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Request"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "type",
+          "request"
+        ],
+        "title": "SubmitTaskRequest"
+      },
+      "SubtitleStatus": {
+        "properties": {
+          "has_final_video": {
+            "type": "boolean",
+            "title": "Has Final Video"
+          },
+          "has_fixed_cfr": {
+            "type": "boolean",
+            "title": "Has Fixed Cfr"
+          },
+          "has_srt": {
+            "type": "boolean",
+            "title": "Has Srt"
+          },
+          "has_embedded": {
+            "type": "boolean",
+            "title": "Has Embedded"
+          },
+          "srt_path": {
+            "type": "string",
+            "title": "Srt Path",
+            "default": ""
+          },
+          "embedded_path": {
+            "type": "string",
+            "title": "Embedded Path",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "has_final_video",
+          "has_fixed_cfr",
+          "has_srt",
+          "has_embedded"
+        ],
+        "title": "SubtitleStatus"
+      },
+      "SuggestSceneCharactersRequest": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "dialogues": {
+            "items": {},
+            "type": "array",
+            "title": "Dialogues",
+            "default": []
+          },
+          "all_names": {
+            "items": {},
+            "type": "array",
+            "title": "All Names",
+            "default": []
+          },
+          "manuscript": {
+            "type": "string",
+            "title": "Manuscript",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "SuggestSceneCharactersRequest"
+      },
+      "TemplateMeta": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At",
+            "default": ""
+          },
+          "source_project_id": {
+            "type": "string",
+            "title": "Source Project Id",
+            "default": ""
+          },
+          "has_characters": {
+            "type": "boolean",
+            "title": "Has Characters",
+            "default": false
+          },
+          "has_engine_snapshot": {
+            "type": "boolean",
+            "title": "Has Engine Snapshot",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "TemplateMeta"
+      },
+      "TestAllRequest": {
+        "properties": {
+          "voices": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voices"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "default": "测试"
+          },
+          "save": {
+            "type": "boolean",
+            "title": "Save",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "TestAllRequest"
+      },
+      "TextEngineConfig": {
+        "properties": {
+          "engine_type": {
+            "type": "string",
+            "enum": [
+              "ollama",
+              "lmstudio",
+              "deepseek",
+              "bailian",
+              "openai_compat"
+            ],
+            "title": "Engine Type",
+            "default": "ollama"
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url",
+            "default": "http://localhost:11434"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "default": ""
+          },
+          "temperature": {
+            "type": "number",
+            "maximum": 2.0,
+            "minimum": 0.0,
+            "title": "Temperature",
+            "default": 0.7
+          },
+          "top_p": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Top P",
+            "default": 0.9
+          },
+          "concurrency": {
+            "type": "integer",
+            "maximum": 2500.0,
+            "minimum": 1.0,
+            "title": "Concurrency",
+            "default": 4
+          }
+        },
+        "type": "object",
+        "title": "TextEngineConfig"
+      },
+      "UploadBgmRequest": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "data": {
+            "type": "string",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename",
+          "data"
+        ],
+        "title": "UploadBgmRequest"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "VideoEngineConfig": {
+        "properties": {
+          "comfyui_url": {
+            "type": "string",
+            "title": "Comfyui Url",
+            "default": "http://localhost:8188"
+          },
+          "workflow_dir": {
+            "type": "string",
+            "title": "Workflow Dir",
+            "default": ""
+          },
+          "comfyui_input_dir": {
+            "type": "string",
+            "title": "Comfyui Input Dir",
+            "default": ""
+          },
+          "default_workflow": {
+            "type": "string",
+            "title": "Default Workflow",
+            "default": "flfa2i-lumicreate"
+          },
+          "resolution": {
+            "type": "string",
+            "title": "Resolution",
+            "default": "720x1280"
+          },
+          "fps": {
+            "type": "integer",
+            "maximum": 60.0,
+            "minimum": 12.0,
+            "title": "Fps",
+            "default": 25
+          }
+        },
+        "type": "object",
+        "title": "VideoEngineConfig"
+      },
+      "VideoGenerateRequest": {
+        "properties": {
+          "workflow_name": {
+            "type": "string",
+            "title": "Workflow Name"
+          },
+          "resolution": {
+            "type": "string",
+            "title": "Resolution",
+            "default": "720x1280"
+          },
+          "fps": {
+            "type": "number",
+            "title": "Fps",
+            "default": 25.0
+          },
+          "scenes": {
+            "items": {
+              "$ref": "#/components/schemas/SceneVideoRequest"
+            },
+            "type": "array",
+            "title": "Scenes"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "workflow_name",
+          "scenes"
+        ],
+        "title": "VideoGenerateRequest"
+      },
+      "VideoSlot": {
+        "properties": {
+          "scene_id": {
+            "type": "string",
+            "title": "Scene Id"
+          },
+          "data": {
+            "type": "string",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scene_id",
+          "data"
+        ],
+        "title": "VideoSlot"
+      },
+      "WorkflowMetaPayload": {
+        "properties": {
+          "node_map": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Node Map"
+          },
+          "notes": {
+            "type": "string",
+            "title": "Notes",
+            "default": ""
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "default": "video"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version",
+            "default": 1
+          }
+        },
+        "type": "object",
+        "required": [
+          "node_map"
+        ],
+        "title": "WorkflowMetaPayload"
+      },
+      "routers__audio_engine__BatchGenerateRequest": {
+        "properties": {
+          "gen_count": {
+            "type": "integer",
+            "title": "Gen Count",
+            "default": 3
+          },
+          "speed": {
+            "type": "number",
+            "title": "Speed",
+            "default": 1.0
+          },
+          "dialogues": {
+            "items": {
+              "$ref": "#/components/schemas/BatchDialogue"
+            },
+            "type": "array",
+            "title": "Dialogues"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "dialogues"
+        ],
+        "title": "BatchGenerateRequest"
+      },
+      "routers__audio_engine__ConnectionTestResult": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "message"
+        ],
+        "title": "ConnectionTestResult"
+      },
+      "routers__audio_engine__SingleGenerateRequest": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "voice_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice Ref"
+          },
+          "emo_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Emo Ref"
+          },
+          "emo_weight": {
+            "type": "number",
+            "title": "Emo Weight",
+            "default": 0.8
+          },
+          "lang": {
+            "type": "string",
+            "title": "Lang",
+            "default": "zh"
+          },
+          "speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speaker"
+          },
+          "speed": {
+            "type": "number",
+            "title": "Speed",
+            "default": 1.0
+          },
+          "scene_id": {
+            "type": "string",
+            "title": "Scene Id",
+            "default": ""
+          },
+          "dialogue_id": {
+            "type": "string",
+            "title": "Dialogue Id",
+            "default": ""
+          },
+          "slot_index": {
+            "type": "integer",
+            "title": "Slot Index",
+            "default": 0
+          },
+          "msedge_voice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Msedge Voice"
+          },
+          "msedge_rate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Msedge Rate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "SingleGenerateRequest"
+      },
+      "routers__image_engine__BatchGenerateRequest": {
+        "properties": {
+          "workflow_name": {
+            "type": "string",
+            "title": "Workflow Name"
+          },
+          "gen_count": {
+            "type": "integer",
+            "title": "Gen Count",
+            "default": 3
+          },
+          "negative_prompt": {
+            "type": "string",
+            "title": "Negative Prompt",
+            "default": ""
+          },
+          "width": {
+            "type": "integer",
+            "title": "Width",
+            "default": 0
+          },
+          "height": {
+            "type": "integer",
+            "title": "Height",
+            "default": 0
+          },
+          "frames": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Frames"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "workflow_name",
+          "frames"
+        ],
+        "title": "BatchGenerateRequest"
+      },
+      "routers__image_engine__ConnectionTestResult": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "message"
+        ],
+        "title": "ConnectionTestResult"
+      },
+      "routers__image_engine__SingleGenerateRequest": {
+        "properties": {
+          "workflow_name": {
+            "type": "string",
+            "title": "Workflow Name"
+          },
+          "positive_prompt": {
+            "type": "string",
+            "title": "Positive Prompt"
+          },
+          "negative_prompt": {
+            "type": "string",
+            "title": "Negative Prompt",
+            "default": ""
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          },
+          "width": {
+            "type": "integer",
+            "title": "Width",
+            "default": 0
+          },
+          "height": {
+            "type": "integer",
+            "title": "Height",
+            "default": 0
+          },
+          "scene_id": {
+            "type": "string",
+            "title": "Scene Id",
+            "default": ""
+          },
+          "frame_type": {
+            "type": "string",
+            "title": "Frame Type",
+            "default": ""
+          },
+          "slot_index": {
+            "type": "integer",
+            "title": "Slot Index",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "workflow_name",
+          "positive_prompt"
+        ],
+        "title": "SingleGenerateRequest"
+      },
+      "routers__text_engine__ConnectionTestResult": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Models",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "message"
+        ],
+        "title": "ConnectionTestResult"
+      },
+      "routers__video_engine__ConnectionTestResult": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "message"
+        ],
+        "title": "ConnectionTestResult"
+      }
+    }
+  }
+}

@@ -176,6 +176,21 @@ SKILL/
 
 ## 更新日志
 
+### v1.3.7
+本版本是一次"地基级"重构。围绕项目数据模型、任务系统、阻塞调用、类型契约、引擎抽象、资产寻址、集成测试 7 大方向系统性升级，把 LumiCreate 从"功能丰富的脚本工具"升级为"可长期演进的产品"。**用户使用体验完全向后兼容**——所有改动都通过双写 / 兼容读路径不破坏现有项目。
+
+- ✅ **项目 SQLite 数据库 + 状态机**：每个项目目录新增 `project.sqlite`（5 张表：scenes/scene_assets/tasks/events/schema_version），与现有 JSON 文件并存；引入 SceneStatus 状态机（`draft → prompted → image_drafted → audio_ready → video_ready → finalized`），每次资产落盘自动推进状态 + invariant 校验；老项目首次打开自动迁移 JSON → SQLite，无感升级
+- ✅ **任务异步化（后台 worker）**：新增 `POST /api/tasks` 提交任务立即返回 task_id（< 200ms）；orchestrator 改成后台 asyncio task 跑，事件持久化到 SQLite `events` 表；`GET /tasks/{id}/events` SSE 流支持 `Last-Event-ID` 断网重连续传；**关电脑也能跑完整片**；启动时自动把上次崩溃留下的 running 任务标 interrupted
+- ✅ **结构化日志 + trace_id**：基于 contextvars 自动跨 await 传播 trace_id / task_id / stage / project_id；事件双写到 stderr（兼容前端日志浮窗）+ SQLite events 表（可按 trace_id 关联回放整次任务）；新增 `GET /events` / `GET /traces` 查询端点供"任务回放"使用
+- ✅ **阻塞调用走共享线程池**：所有 `subprocess.run(ffmpeg)` / Whisper queue 等同步阻塞改成 `await run_blocking(...)`；统一 ThreadPoolExecutor（cpu × 4 workers，环境变量可调）；视频合并 / 字幕烧录的 30 秒时间内 event loop 仍能调度其它请求；同时跑"视频合并 + 出图 + 字幕"不再互相排队
+- ✅ **OpenAPI → 前端 TypeScript 类型自动生成**：FastAPI 自动产 `/openapi.json`；`backend/openapi.snapshot.json` 入 git 让前端离线 typegen；`npm run typegen` / `typegen:live` 生成 `src/types/generated/api.ts`（73 endpoints + 59 schemas）；新增类型安全的 `api.get/post/put/delete` 客户端 —— **后端改 schema 编译期立刻报错**
+- ✅ **EngineAdapter 抽象**：把 audio_engine.py 里堆叠的 if/elif 分发逻辑收敛为统一接口（`test() / synthesise() / info()`）；4 种 adapter（msedge/indextts/gptsovits/manual），工厂 `make_audio_adapter()` 按 settings 选；新增引擎（Replicate/Civitai/RunningHub 等）只需要写一个 adapter 类，不动 router 一行
+- ✅ **ComfyUI 前置检查（precheck）**：出图/出视频前先校验工作流的节点 class_type / 模型引用 是否在当前 ComfyUI 实例里；缺失时**立刻**emit `precheck_failed` 带具体缺失项 + 修复提示；orchestrator images / video 阶段自动跑前置检查，**避免跑 5 分钟才发现"少个 LoRA"**
+- ✅ **资产 URL 化（去 base64 回环）**：通用资产寻址 `GET /projects/{id}/assets/file/{scene_id}/{asset_type}[/{slot}]`；image-engine / video-engine SSE 在 project_id 提供时**直接落盘 + record_asset**，事件多带 `file_path` / `url` 字段；orchestrator 视频阶段从"HTTP fetch 自循环"改成"直读磁盘"，30 镜项目省下 120 次 HTTP 往返 + 一半 base64 编解码
+- ✅ **router 双写全覆盖**：images/audio/video slot endpoint 写盘成功自动 `record_asset` → SQLite scene_assets 同步 → 状态机自动推进；前端代码零改动即可享受状态查询能力
+- ✅ **orchestrator 用状态机跳过已完成镜次**：每个 stage 启动前查 SQLite scene.status，已 prompted+ 的跳过 prompts，已 image_drafted+ 的跳过 images，依此类推；同一项目第二次点 🚀 一键全流程只跑剩余阶段，**关电脑去喝咖啡也能继续**
+- ✅ **集成测试 + 单元测试基础设施**：后端 **79 / 79 pytest 通过**（v1.3.6 时 14 个）；新增覆盖状态机转移 / DAL 双写 / 任务 lifecycle / events 查询 / assets URL round-trip / 老项目迁移 / 引擎工厂 / 前置检查 / 阻塞调用并行；前端 **13 / 13 vitest 通过**，新增类型化 API client 烟雾测试
+
 ### v1.3.6
 - ✅ **一键全流程（Orchestrator）**：新增 🚀 按钮串跑 分镜→帧提示词→图片→音频→视频→合并→字幕；实时进度面板 + 失败镜次累计；默认 **AI 有机分镜**（按情节/视角/动作切，宁多不少），保留机械式手动分镜为高级选项
 - ✅ **健壮性与失败恢复**：4 个核心 service 自动重试瞬态错误；三个 tab 顶部「⚠ 上次失败 N 个分镜 [↻ 只重试失败镜]」红色横幅，失败镜次持久化到 `last_run_errors.json`；删除项目时清理 ComfyUI `input/` 临时文件

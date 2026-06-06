@@ -142,6 +142,199 @@ async def update_project(project_id: str, updates: dict):
     return updated
 
 
+# ── D1: 通用资产文件下载 ──────────────────────────────────────────────────────
+# 一切按 scene_assets 表查路径 → FileResponse，**前端不再走 base64**
+# 路径模板：
+#   GET /projects/{id}/assets/file/{scene_id}/{asset_type}                # selected 那张
+#   GET /projects/{id}/assets/file/{scene_id}/{asset_type}/{slot_index}   # 指定 slot
+
+from fastapi.responses import FileResponse as _FileResponse
+
+
+def _asset_file_response(project_id: str, scene_id: str,
+                         asset_type: str, slot_index: Optional[int] = None):
+    """从 scene_assets 表查相对路径 → 拼绝对路径 → FileResponse。"""
+    from services.project_migrate import ensure_migrated
+    from services.db import get_conn
+    _read_meta(project_id)
+    ensure_migrated(project_id)
+    conn = get_conn(project_id)
+    if slot_index is None:
+        row = conn.execute(
+            "SELECT file_path, format FROM scene_assets "
+            "WHERE scene_id = ? AND asset_type = ? "
+            "ORDER BY is_selected DESC, slot_index ASC LIMIT 1",
+            (scene_id, asset_type),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT file_path, format FROM scene_assets "
+            "WHERE scene_id = ? AND asset_type = ? AND slot_index = ?",
+            (scene_id, asset_type, int(slot_index)),
+        ).fetchone()
+    if row is None or not row["file_path"]:
+        raise HTTPException(status_code=404, detail="asset not found")
+    full = _project_dir(project_id) / row["file_path"]
+    if not full.is_file():
+        raise HTTPException(status_code=404, detail=f"asset file missing on disk: {row['file_path']}")
+    # 简单 MIME 推断
+    mime = {
+        "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp",
+        "mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4", "ogg": "audio/ogg",
+        "mp4": "video/mp4", "srt": "application/x-subrip",
+    }.get((row["format"] or "").lower(), "application/octet-stream")
+    return _FileResponse(full, media_type=mime, filename=full.name)
+
+
+@router.get("/{project_id}/assets/file/{scene_id}/{asset_type}")
+async def get_asset_file(project_id: str, scene_id: str, asset_type: str):
+    return _asset_file_response(project_id, scene_id, asset_type)
+
+
+@router.get("/{project_id}/assets/file/{scene_id}/{asset_type}/{slot_index}")
+async def get_asset_file_slot(project_id: str, scene_id: str,
+                               asset_type: str, slot_index: int):
+    return _asset_file_response(project_id, scene_id, asset_type, slot_index)
+
+
+@router.get("/{project_id}/assets")
+async def list_assets(project_id: str,
+                       scene_id: Optional[str] = None,
+                       asset_type: Optional[str] = None):
+    """列出某项目（或某镜）的所有资产 — 用于前端 URL 寻址，避免 base64。"""
+    from services.project_migrate import ensure_migrated
+    from services.db import get_conn
+    _read_meta(project_id)
+    ensure_migrated(project_id)
+    conn = get_conn(project_id)
+    parts: list[str] = []
+    params: list = []
+    if scene_id:
+        parts.append("scene_id = ?"); params.append(scene_id)
+    if asset_type:
+        parts.append("asset_type = ?"); params.append(asset_type)
+    where = (" WHERE " + " AND ".join(parts)) if parts else ""
+    rows = conn.execute(
+        f"SELECT scene_id, asset_type, slot_index, file_path, format, is_selected "
+        f"FROM scene_assets{where} ORDER BY scene_id, asset_type, slot_index",
+        params,
+    ).fetchall()
+    items = []
+    for r in rows:
+        items.append({
+            "scene_id":   r["scene_id"],
+            "asset_type": r["asset_type"],
+            "slot_index": r["slot_index"],
+            "file_path":  r["file_path"],
+            "format":     r["format"],
+            "is_selected": bool(r["is_selected"]),
+            "url": f"/api/projects/{project_id}/assets/file/{r['scene_id']}/"
+                   f"{r['asset_type']}/{r['slot_index']}",
+        })
+    return {"assets": items, "count": len(items)}
+
+
+# ── A1/A2: 状态机 + SQLite 入口 ────────────────────────────────────────────────
+# 所有 router 现在可以读 SQLite 拿到结构化状态。前端可调 /status 拿"项目当前在
+# 哪个阶段 + 每镜状态"，不再依赖手工维护的 last_run_errors.json 推断。
+
+@router.get("/{project_id}/events")
+async def get_project_events(
+    project_id: str,
+    trace_id: Optional[str] = None,
+    task_id:  Optional[str] = None,
+    scene_id: Optional[str] = None,
+    level:    Optional[str] = None,
+    limit:    int = 500,
+):
+    """E1: 查项目的事件流。可按 trace_id / task_id / scene_id / level 过滤。
+    用于"任务回放"——选一次任务的 trace_id 就能看到完整时间线。"""
+    _read_meta(project_id)
+    try:
+        from services.project_migrate import ensure_migrated
+        from services.db import get_conn
+        ensure_migrated(project_id)
+        conn = get_conn(project_id)
+
+        where_parts: list[str] = []
+        params: list = []
+        if trace_id:
+            where_parts.append("trace_id = ?"); params.append(trace_id)
+        if task_id:
+            where_parts.append("task_id = ?");  params.append(task_id)
+        if scene_id:
+            where_parts.append("scene_id = ?"); params.append(scene_id)
+        if level:
+            where_parts.append("level = ?");    params.append(level)
+        where = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+        params.append(int(max(1, min(limit, 5000))))
+        rows = conn.execute(
+            f"SELECT id, trace_id, task_id, scene_id, level, stage, message, "
+            f"       payload_json, ts FROM events{where} "
+            f"ORDER BY id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["payload"] = json.loads(d.pop("payload_json") or "{}")
+            except Exception:
+                d["payload"] = {}; d.pop("payload_json", None)
+            out.append(d)
+        return {"events": out, "count": len(out)}
+    except Exception as e:
+        return {"events": [], "count": 0, "error": str(e)[:200]}
+
+
+# 列出最近 N 次 task 的 trace_id（前端可用作"任务回放选择器"）
+@router.get("/{project_id}/traces")
+async def list_recent_traces(project_id: str, limit: int = 50):
+    _read_meta(project_id)
+    try:
+        from services.project_migrate import ensure_migrated
+        from services.db import get_conn
+        ensure_migrated(project_id)
+        conn = get_conn(project_id)
+        rows = conn.execute(
+            """
+            SELECT trace_id,
+                   MIN(ts) AS started,
+                   MAX(ts) AS ended,
+                   COUNT(*) AS event_count,
+                   SUM(CASE WHEN level = 'error' THEN 1 ELSE 0 END) AS error_count,
+                   GROUP_CONCAT(DISTINCT stage) AS stages
+            FROM events
+            WHERE trace_id != '-'
+            GROUP BY trace_id
+            ORDER BY started DESC
+            LIMIT ?
+            """,
+            (int(max(1, min(limit, 500))),),
+        ).fetchall()
+        return {"traces": [dict(r) for r in rows]}
+    except Exception as e:
+        return {"traces": [], "error": str(e)[:200]}
+
+
+@router.get("/{project_id}/status")
+async def get_project_status(project_id: str):
+    """A1: 返回项目级状态机视图（项目阶段 + scene 计数 + 资产计数）。"""
+    _read_meta(project_id)
+    try:
+        from services.project_migrate import ensure_migrated
+        from services.project_repo    import project_summary, list_scene_status
+        ensure_migrated(project_id)
+        return {
+            "summary": project_summary(project_id),
+            "scenes":  list_scene_status(project_id),
+        }
+    except Exception as e:
+        return {"summary": {"project_stage": "unknown", "error": str(e)[:200]},
+                "scenes":  []}
+
+
 @router.delete("/{project_id}", status_code=204)
 async def delete_project(project_id: str):
     proj_dir = _project_dir(project_id)
@@ -161,6 +354,13 @@ async def delete_project(project_id: str):
                     scene_ids.append(str(sid))
         except Exception:
             pass
+
+    # A2: 关闭并删除 SQLite 连接（避免 Windows 上 db 被进程占用导致 rmtree 失败）
+    try:
+        from services.db import drop_project_db
+        drop_project_db(project_id)
+    except Exception as e:
+        print(f"[delete_project] drop_project_db: {e}", flush=True)
 
     shutil.rmtree(proj_dir)
 
@@ -335,12 +535,26 @@ async def serve_image_file(project_id: str, filename: str):
 
 @router.put("/{project_id}/images/slot")
 async def save_image_slot(project_id: str, slot: ImageSlot):
-    """Save a single image slot file to disk (does not touch images.json)."""
+    """Save a single image slot file to disk + A2 双写到 scene_assets。"""
     proj_dir = _project_dir(project_id)
     img_dir  = proj_dir / "images"
     img_dir.mkdir(exist_ok=True)
     filename = f"{slot.scene_id}_{slot.frame_type}_{slot.slot_index}.png"
     (img_dir / filename).write_bytes(base64.b64decode(slot.data))
+
+    # A2: 登记到 SQLite scene_assets（自动尝试推进 status → image_drafted）
+    try:
+        from services.project_repo import record_asset
+        asset_type = "image_start" if slot.frame_type == "start" else "image_end"
+        record_asset(
+            project_id, slot.scene_id, asset_type,
+            slot_index=slot.slot_index,
+            file_path=f"images/{filename}",
+            format="png",
+            is_selected=(slot.slot_index == 0),  # 第一张默认选中
+        )
+    except Exception as e:
+        print(f"[image-slot] record_asset failed: {e}", flush=True)
     return {"ok": True}
 
 
@@ -372,6 +586,29 @@ async def save_image_metadata(project_id: str, meta_update: ImageMetadataUpdate)
         encoding="utf-8",
     )
 
+    # A2: 把 selected map 同步到 scene_assets.is_selected
+    try:
+        from services.db import project_db
+        with project_db(project_id) as conn:
+            for compound_key, sel_idx in (meta_update.selected or {}).items():
+                if ":" not in compound_key:
+                    continue
+                sid, ft = compound_key.split(":", 1)
+                asset_type = "image_start" if ft == "start" else "image_end"
+                # 先把该镜该 frame_type 全部置 0，再把选中那个置 1
+                conn.execute(
+                    "UPDATE scene_assets SET is_selected = 0 "
+                    "WHERE scene_id = ? AND asset_type = ?",
+                    (sid, asset_type),
+                )
+                conn.execute(
+                    "UPDATE scene_assets SET is_selected = 1 "
+                    "WHERE scene_id = ? AND asset_type = ? AND slot_index = ?",
+                    (sid, asset_type, int(sel_idx)),
+                )
+    except Exception as e:
+        print(f"[image-metadata] sync selected to sqlite failed: {e}", flush=True)
+
     # Update project progress
     proj_meta = _read_meta(project_id)
     progress = proj_meta.progress.model_dump()
@@ -393,11 +630,18 @@ async def get_scenes(project_id: str):
 @router.put("/{project_id}/scenes", response_model=ProjectMeta)
 async def save_scenes(project_id: str, data: ScenesData):
     meta = _read_meta(project_id)
-    proj_dir = _project_dir(project_id)
-    (proj_dir / "scenes.json").write_text(
-        json.dumps({"scenes": data.scenes}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    # A2 双写：JSON + SQLite（SQLite 失败不阻塞）
+    try:
+        from services.project_repo import save_scenes as repo_save
+        repo_save(project_id, data.scenes)
+    except Exception as e:
+        # 保险：repo 写盘失败时仍写 JSON
+        proj_dir = _project_dir(project_id)
+        (proj_dir / "scenes.json").write_text(
+            json.dumps({"scenes": data.scenes}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"[save_scenes] repo failed, JSON-only fallback: {e}", flush=True)
     progress = meta.progress.model_dump()
     progress["scenes"] = 100 if data.scenes else 0
     return await update_project(project_id, {"progress": progress})
@@ -550,9 +794,30 @@ async def put_audio_slot(project_id: str, payload: AudioSlotPayload):
             existing = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             existing = {}
-    existing[payload.key] = _persist_audio_entry(payload.key, payload.entry, audio_dir)
+    persisted = _persist_audio_entry(payload.key, payload.entry, audio_dir)
+    existing[payload.key] = persisted
     path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"ok": True, "key": payload.key, "file": existing[payload.key].get("file")}
+
+    # A2: 双写到 scene_assets — 仅当 key 是 __ms_reading__/__stitched__ 这类带 scene_id 的
+    scene_id = ""
+    if payload.key.startswith("__ms_reading__"):
+        scene_id = payload.key[len("__ms_reading__"):]
+    elif payload.key.startswith("__stitched__"):
+        scene_id = payload.key[len("__stitched__"):]
+    if scene_id:
+        try:
+            from services.project_repo import record_asset
+            record_asset(
+                project_id, scene_id, "audio",
+                slot_index=0,
+                file_path=f"audio/{persisted.get('file', '')}",
+                format=persisted.get("format") or "mp3",
+                metadata={"duration_ms": persisted.get("duration_ms", 0)},
+                is_selected=True,
+            )
+        except Exception as e:
+            print(f"[audio-slot] record_asset failed: {e}", flush=True)
+    return {"ok": True, "key": payload.key, "file": persisted.get("file")}
 
 
 # ── Videos ─────────────────────────────────────────────────────────────────────
@@ -621,6 +886,19 @@ async def put_video_slot(project_id: str, slot: VideoSlot):
             metadata = {}
     metadata[slot.scene_id] = filename
     meta_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # A2: 双写 scene_assets（自动推进 → video_ready）
+    try:
+        from services.project_repo import record_asset
+        record_asset(
+            project_id, slot.scene_id, "video",
+            slot_index=0,
+            file_path=f"video/{filename}",
+            format="mp4",
+            is_selected=True,
+        )
+    except Exception as e:
+        print(f"[video-slot] record_asset failed: {e}", flush=True)
     return {"ok": True, "scene_id": slot.scene_id, "file": filename}
 
 

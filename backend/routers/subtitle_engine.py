@@ -194,10 +194,10 @@ async def generate_srt_endpoint(req: GenerateSrtRequest):
     thread.start()
 
     async def stream():
-        loop = asyncio.get_event_loop()
+        from services.exec_pool import run_blocking
         while True:
             try:
-                evt = await loop.run_in_executor(None, lambda: q.get(timeout=300))
+                evt = await run_blocking(q.get, True, 300)   # blocking get with timeout
             except Empty:
                 yield _SSE({'step': 'error', 'message': '超时'})
                 break
@@ -283,10 +283,10 @@ async def embed_subtitles_endpoint(req: EmbedRequest):
 
     async def stream():
         yield _SSE({'step': 'embedding', 'message': f'正在将字幕烧录到视频（字体：{req.font_name}）…', 'pct': 0})
-        loop = asyncio.get_event_loop()
+        from services.exec_pool import run_blocking
         while True:
             try:
-                evt = await loop.run_in_executor(None, lambda: q.get(timeout=600))
+                evt = await run_blocking(q.get, True, 600)
             except Empty:
                 yield _SSE({'step': 'error', 'message': '嵌入超时'})
                 break

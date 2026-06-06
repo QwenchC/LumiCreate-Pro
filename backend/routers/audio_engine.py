@@ -102,24 +102,11 @@ def _list_audio_files(folder: str) -> list[str]:
 
 @router.get("/test", response_model=ConnectionTestResult)
 async def test_connection():
-    cfg = load_settings().audio_engine
-    if cfg.engine_type == "manual":
-        return ConnectionTestResult(success=True, message="手动导入模式，无需连接")
-    if cfg.engine_type == "msedge":
-        # Edge TTS 走 azure 公网域，做一次极短探活
-        try:
-            from services.msedge_tts import synthesise_mp3
-            await synthesise_mp3("测试", cfg.msedge_voice, cfg.msedge_rate)
-            return ConnectionTestResult(success=True, message="微软神经语音 (edge-tts) 连接成功")
-        except Exception as e:
-            return ConnectionTestResult(success=False, message=f"edge-tts: {e}")
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            await client.get(f"{cfg.api_url}/")
-        name = "IndexTTS-2.0" if cfg.engine_type == "indextts" else "GPT-SoVITS"
-        return ConnectionTestResult(success=True, message=f"{name} 连接成功")
-    except Exception as e:
-        return ConnectionTestResult(success=False, message=str(e))
+    """C2: 走统一 adapter，路由 engine_type 的分支逻辑收敛进 adapter factory。"""
+    from services.engine_adapter import make_audio_adapter
+    adapter = make_audio_adapter()
+    result = await adapter.test()
+    return ConnectionTestResult(success=result.success, message=result.message)
 
 
 @router.get("/voice-refs", response_model=list[str])
@@ -338,8 +325,8 @@ async def stitch_scene(req: StitchRequest):
     """Merge clips for one scene into a single WAV (with pre/post silence)."""
     if not req.clips:
         return {"data": "", "duration_ms": 0}
-    loop = asyncio.get_event_loop()
-    wav_bytes = await loop.run_in_executor(None, _stitch_wavs, req.clips)
+    from services.exec_pool import run_blocking
+    wav_bytes = await run_blocking(_stitch_wavs, req.clips)
     with wave.open(io.BytesIO(wav_bytes)) as wf:
         duration_ms = int(wf.getnframes() / wf.getframerate() * 1000)
     return {"data": base64.b64encode(wav_bytes).decode(), "duration_ms": duration_ms}
@@ -363,8 +350,8 @@ async def ms_tts(req: MsTtsRequest):
         from services.msedge_tts import synthesise_mp3, _mp3_to_wav
         mp3_bytes = await synthesise_mp3(req.text.strip(), req.voice, req.rate)
         if (req.format or "mp3").lower() == "wav":
-            loop = asyncio.get_event_loop()
-            wav_bytes = await loop.run_in_executor(None, _mp3_to_wav, mp3_bytes)
+            from services.exec_pool import run_blocking
+            wav_bytes = await run_blocking(_mp3_to_wav, mp3_bytes)
             # 若 ffmpeg 不存在 _mp3_to_wav 会原样返回 mp3 —— 这种情况下
             # 报错给前端，避免后续 stitch 失败。
             if wav_bytes is mp3_bytes:

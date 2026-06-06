@@ -43,6 +43,16 @@ class SingleGenerateRequest(BaseModel):
     slot_index: int = 0
 
 
+# D2: 工作流前置检查
+@router.get("/precheck")
+async def precheck_workflow(workflow_name: str):
+    """生成前校验工作流：ComfyUI 是否在线 + 节点 class_type 是否齐 + 资源引用统计。"""
+    from services.comfyui_precheck import precheck_image_workflow
+    cfg = load_settings().image_engine
+    result = await precheck_image_workflow(cfg.comfyui_url, workflow_name)
+    return {"ok": result.ok, "issues": result.issues, "info": result.info}
+
+
 class BatchGenerateRequest(BaseModel):
     workflow_name: str
     gen_count: int = 3
@@ -189,7 +199,36 @@ async def generate_batch_stream(req: BatchGenerateRequest):
         nonlocal done_count
         meta = {"scene_id": frame["scene_id"], "frame_type": frame["frame_type"], "slot_index": slot}
         async for event in generate_image(cfg, workflow, frame.get("prompt", ""), req.negative_prompt, width=w, height=h):
-            await queue.put({**event, **meta})
+            ev_out = {**event, **meta}
+            # D1: project_id 提供时由后端直接落盘 → 事件加 file_path（前端可不再 base64 PUT）
+            if event.get("event") == "completed" and req.project_id:
+                imgs = event.get("images") or []
+                if imgs and (imgs[0] or {}).get("data"):
+                    try:
+                        import base64 as _b64
+                        from pathlib import Path as _P
+                        from config import load_settings as _ls
+                        pid = req.project_id
+                        sid = frame["scene_id"]; ft = frame["frame_type"]
+                        img_dir = _P(_ls().projects_dir) / pid / "images"
+                        img_dir.mkdir(parents=True, exist_ok=True)
+                        filename = f"{sid}_{ft}_{slot}.png"
+                        (img_dir / filename).write_bytes(_b64.b64decode(imgs[0]["data"]))
+                        rel = f"images/{filename}"
+                        ev_out["file_path"] = rel
+                        ev_out["url"] = f"/api/projects/{pid}/assets/file/{sid}/" \
+                                        f"{'image_start' if ft == 'start' else 'image_end'}/{slot}"
+                        # 同步 SQLite scene_assets（自动推进状态）
+                        from services.project_repo import record_asset
+                        record_asset(
+                            pid, sid,
+                            "image_start" if ft == "start" else "image_end",
+                            slot_index=slot, file_path=rel, format="png",
+                            is_selected=(slot == 0),
+                        )
+                    except Exception as e:
+                        print(f"[image-batch] auto-persist failed: {e}", flush=True)
+            await queue.put(ev_out)
             if event.get("event") == "error":
                 scene_errors[f"{frame['scene_id']}:{frame['frame_type']}"] = \
                     str(event.get("message", "unknown error"))[:500]

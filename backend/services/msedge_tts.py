@@ -50,8 +50,9 @@ async def synthesise(text: str, voice: str, rate: str = "+0%"):
     except Exception as e:
         yield {"event": "error", "id": gen_id, "message": f"edge-tts: {e}"}
         return
-    loop = asyncio.get_event_loop()
-    wav = await loop.run_in_executor(None, _mp3_to_wav, mp3)
+    # B2: 走共享 exec_pool（避免阻塞 event loop + 不挤占默认 executor 槽位）
+    from services.exec_pool import run_blocking
+    wav = await run_blocking(_mp3_to_wav, mp3)
     mime = "audio/wav" if wav is not mp3 else "audio/mpeg"
     yield {
         "event": "completed",

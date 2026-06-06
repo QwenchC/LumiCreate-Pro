@@ -236,6 +236,27 @@ async def _stage_prompts(client: httpx.AsyncClient, req: OrchestratorRequest, sc
     await _http_put(client, f"/api/projects/{pid}/scenes", {"scenes": scenes})
 
 
+async def _precheck_workflow(workflow_name: str, kind: str) -> tuple[bool, list[dict]]:
+    """D2: kind='image' | 'video' — 失败时返回 (False, issues)。"""
+    if not workflow_name:
+        return True, []
+    try:
+        from services.comfyui_precheck import (
+            precheck_image_workflow, precheck_video_workflow,
+        )
+        settings = load_settings()
+        if kind == "image":
+            url = settings.image_engine.comfyui_url
+            r = await precheck_image_workflow(url, workflow_name)
+        else:
+            url = settings.video_engine.comfyui_url
+            r = await precheck_video_workflow(url, workflow_name)
+        return r.ok, r.issues
+    except Exception as e:
+        print(f"[precheck {kind} {workflow_name}] {e}", flush=True)
+        return True, []   # precheck 自身崩溃不应阻塞主任务
+
+
 async def _stage_images(client: httpx.AsyncClient, req: OrchestratorRequest, scenes: list[dict]):
     """批量出图 + 逐张落盘到 <项目>/images/。
 
@@ -245,6 +266,13 @@ async def _stage_images(client: httpx.AsyncClient, req: OrchestratorRequest, sce
     """
     if not req.image_workflow:
         raise RuntimeError("image_workflow 未提供")
+
+    # D2: 前置检查（缺节点/缺模型直接告知，不浪费 GPU 时间）
+    ok, issues = await _precheck_workflow(req.image_workflow, "image")
+    if not ok:
+        yield {"event": "precheck_failed", "issues": issues}
+        raise RuntimeError(f"image workflow precheck failed: {len(issues)} issue(s)")
+
     frames = []
     for s in scenes:
         for ft in ("start", "end"):
@@ -276,10 +304,21 @@ async def _stage_images(client: httpx.AsyncClient, req: OrchestratorRequest, sce
             continue
         sid = ev.get("scene_id"); ft = ev.get("frame_type")
         slot_idx = int(ev.get("slot_index") or 0)
-        images = ev.get("images") or []
-        if not sid or not ft or not images:
+        if not sid or not ft:
             continue
-        first_b64 = (images[0] or {}).get("data") or ""
+
+        # D1: image_engine 在 project_id 提供时已经自己落盘 + record_asset
+        # 事件里若带 file_path，直接用，跳过 PUT base64 一次
+        if ev.get("file_path"):
+            ck = f"{sid}:{ft}"
+            counts[ck] = counts.get(ck, 0) + 1
+            slot_keys.append({"scene_id": sid, "frame_type": ft, "slot_index": slot_idx})
+            selected.setdefault(ck, slot_idx)
+            continue
+
+        # 老路径 fallback：自己 PUT base64
+        images = ev.get("images") or []
+        first_b64 = (images[0] or {}).get("data") if images else ""
         if not first_b64:
             continue
         try:
@@ -350,6 +389,12 @@ async def _stage_video(client: httpx.AsyncClient, req: OrchestratorRequest, scen
     if not req.video_workflow:
         raise RuntimeError("video_workflow 未提供")
 
+    # D2: 前置检查
+    ok, issues = await _precheck_workflow(req.video_workflow, "video")
+    if not ok:
+        yield {"event": "precheck_failed", "issues": issues}
+        raise RuntimeError(f"video workflow precheck failed: {len(issues)} issue(s)")
+
     pid = req.project_id
     # 1) 拉 images metadata（按 scene_id:frame_type 找 selected url）
     img_meta = await _http_get(client, f"/api/projects/{pid}/images")
@@ -360,11 +405,11 @@ async def _stage_video(client: httpx.AsyncClient, req: OrchestratorRequest, scen
         key = f"{s['scene_id']}:{s['frame_type']}:{s['slot_index']}"
         url_by_key[key] = s["url"]
 
-    async def _fetch_b64(url_path: str) -> str:
-        # url_path 是 "/api/projects/.../images/file/xxx.png"
-        r = await client.get(f"{API_BASE}{url_path}")
-        r.raise_for_status()
-        return base64.b64encode(r.content).decode()
+    # D1: 直读磁盘代替 HTTP 自循环。所有图片/音频本来就在本进程的磁盘上，
+    #      没必要先 HTTP fetch base64 再 fetch 出来——浪费 RTT + 内存
+    def _read_b64_from_disk(rel_path: str) -> str:
+        full = Path(load_settings().projects_dir) / pid / rel_path
+        return base64.b64encode(full.read_bytes()).decode()
 
     # 2) 拉 audio：reading 模式按 __ms_reading__{sid} 取 file/data
     audio_state = await _http_get(client, f"/api/projects/{pid}/audio")
@@ -375,7 +420,7 @@ async def _stage_video(client: httpx.AsyncClient, req: OrchestratorRequest, scen
         dur = entry.get("duration_ms") or 4000
         return b64, dur
 
-    # 3) 构造 scenes payload
+    # 3) 构造 scenes payload — 直接 io 读 png，不再 HTTP fetch
     scenes_payload = []
     for i, s in enumerate(scenes):
         sid = s["id"]
@@ -388,9 +433,24 @@ async def _stage_video(client: httpx.AsyncClient, req: OrchestratorRequest, scen
             yield {"event": "scene_error", "scene_id": sid,
                    "message": f"缺少素材：start={bool(start_url)} end={bool(end_url)} audio={bool(aud_b64)}"}
             continue
+        # 把 "/api/projects/{pid}/images/file/<filename>" 还原成磁盘相对路径
+        # 兼容两种 url 形态：旧的 /images/file/X.png 和新的 /assets/file/...
         try:
-            start_b64 = await _fetch_b64(start_url)
-            end_b64   = await _fetch_b64(end_url)
+            if "/images/file/" in start_url:
+                start_rel = "images/" + start_url.split("/images/file/")[1]
+                end_rel   = "images/" + end_url.split("/images/file/")[1]
+            else:
+                # 新 assets 路径不再独立保存文件名，只能 fall back 到 HTTP
+                start_rel = end_rel = None
+            if start_rel and end_rel:
+                start_b64 = _read_b64_from_disk(start_rel)
+                end_b64   = _read_b64_from_disk(end_rel)
+            else:
+                # 兼容路径未识别时的 fallback
+                r1 = await client.get(f"{API_BASE}{start_url}"); r1.raise_for_status()
+                r2 = await client.get(f"{API_BASE}{end_url}");   r2.raise_for_status()
+                start_b64 = base64.b64encode(r1.content).decode()
+                end_b64   = base64.b64encode(r2.content).decode()
         except Exception as e:
             yield {"event": "scene_error", "scene_id": sid,
                    "message": f"读取首末帧失败: {e}"}
@@ -409,7 +469,8 @@ async def _stage_video(client: httpx.AsyncClient, req: OrchestratorRequest, scen
         yield {"event": "video_skip", "message": "无可生成的镜次（缺图片/音频）"}
         return
 
-    # 4) 透传 SSE；scene_done 时把 b64 写入 videos/slot
+    # 4) D1: video_engine 在 project_id 提供时已经自动落盘 + record_asset，
+    #        orchestrator 不再调 /videos/slot —— 把那次 PUT base64 节省掉
     async for ev in _stream_sse(client, "/api/video-engine/generate-stream", {
         "workflow_name": req.video_workflow,
         "resolution":    load_settings().video_engine.resolution,
@@ -418,12 +479,6 @@ async def _stage_video(client: httpx.AsyncClient, req: OrchestratorRequest, scen
         "project_id":    pid,
     }):
         yield ev
-        if ev.get("event") == "scene_done" and ev.get("video"):
-            try:
-                await _http_put(client, f"/api/projects/{pid}/videos/slot",
-                                {"scene_id": ev["scene_id"], "data": ev["video"]})
-            except Exception as e:
-                print(f"[orchestrator] save video {ev.get('scene_id')}: {e}", flush=True)
 
 
 async def _stage_subtitle(client: httpx.AsyncClient, req: OrchestratorRequest, ms: dict, resolution_w: int, resolution_h: int):
@@ -490,8 +545,15 @@ async def generate_all(req: OrchestratorRequest):
     """SSE：按顺序跑所有 stage。前端接事件流，实时显示进度。"""
 
     async def main():
+        # E1: 整次 pipeline 起一个根 trace_id；每个 stage 内部再起子 trace_id
+        from services.structured_log import use_trace, log_event, new_trace_id
+        from services.project_migrate import ensure_migrated
+        ensure_migrated(req.project_id)
+
         async with httpx.AsyncClient(timeout=None) as client:
-            yield _sse({"event": "pipeline_start", "stages": req.stages, "project_id": req.project_id})
+            pipeline_trace = new_trace_id()
+            yield _sse({"event": "pipeline_start", "stages": req.stages,
+                        "project_id": req.project_id, "trace_id": pipeline_trace})
 
             # 提前拉文案 + 分镜元数据
             try:
@@ -502,66 +564,118 @@ async def generate_all(req: OrchestratorRequest):
 
             scenes: list[dict] = []
 
+            # A1: 用 SQLite scene.status 跳过已完成的镜次（skip 时不重新生成）
+            def _build_status_map() -> dict[str, str]:
+                try:
+                    from services.project_repo import list_scene_status
+                    return {r["id"]: r["status"] for r in list_scene_status(req.project_id)}
+                except Exception:
+                    return {}
+
+            # 简单的 helper：执行 stage 并自动包 trace_id + 事件日志
+            async def run_stage(stage_name: str, runner, *args, count=None):
+                """runner 是 async generator；自动透传事件 + 写结构化日志。"""
+                with use_trace(stage=stage_name, project_id=req.project_id,
+                               trace_id=f"{pipeline_trace}-{stage_name}"):
+                    log_event("info", f"{stage_name} start", payload={"count": count})
+                    extra = {"count": count} if count is not None else {}
+                    yield _emit_stage(stage_name, "start", **extra)
+                    try:
+                        async for ev in runner(*args):
+                            yield _sse({**ev, "stage": stage_name,
+                                        "trace_id": f"{pipeline_trace}-{stage_name}"})
+                        log_event("info", f"{stage_name} done")
+                        yield _emit_stage(stage_name, "done")
+                    except Exception as e:
+                        log_event("error", f"{stage_name} error: {e}")
+                        yield _emit_stage(stage_name, "error", message=str(e)[:300])
+
             # ── scenes ─────────────────────
             if "scenes" in req.stages:
-                yield _emit_stage("scenes", "start")
-                try:
-                    scenes = await _stage_scenes(client, req, ms) or []
-                    yield _emit_stage("scenes", "done", count=len(scenes))
-                except Exception as e:
-                    yield _emit_stage("scenes", "error", message=str(e)[:300])
+                with use_trace(stage="scenes", project_id=req.project_id,
+                               trace_id=f"{pipeline_trace}-scenes"):
+                    yield _emit_stage("scenes", "start")
+                    try:
+                        scenes = await _stage_scenes(client, req, ms) or []
+                        log_event("info", "scenes done", payload={"count": len(scenes)})
+                        yield _emit_stage("scenes", "done", count=len(scenes))
+                    except Exception as e:
+                        log_event("error", f"scenes error: {e}")
+                        yield _emit_stage("scenes", "error", message=str(e)[:300])
             else:
                 scenes = (await _http_get(client, f"/api/projects/{req.project_id}/scenes")).get("scenes") or []
 
-            # ── prompts ────────────────────
+            # A1: 拉一次状态图，让后续 stage 决定跳过
+            status_map = _build_status_map()
+
+            # ── prompts ────────────────────（跳过已 prompted+ 的镜次）
             if "prompts" in req.stages and scenes:
-                yield _emit_stage("prompts", "start", count=len(scenes))
-                try:
-                    await _stage_prompts(client, req, scenes, ms)
-                    yield _emit_stage("prompts", "done")
-                except Exception as e:
-                    yield _emit_stage("prompts", "error", message=str(e)[:300])
+                pending_prompts = [s for s in scenes if status_map.get(s.get("id"), "draft") == "draft"]
+                if not pending_prompts:
+                    log_event("info", "prompts skip — all scenes already prompted+")
+                    yield _emit_stage("prompts", "skipped", message="所有分镜已具备 frame prompt")
+                else:
+                    with use_trace(stage="prompts", project_id=req.project_id,
+                                   trace_id=f"{pipeline_trace}-prompts"):
+                        yield _emit_stage("prompts", "start", count=len(pending_prompts))
+                        try:
+                            await _stage_prompts(client, req, pending_prompts, ms)
+                            yield _emit_stage("prompts", "done")
+                        except Exception as e:
+                            yield _emit_stage("prompts", "error", message=str(e)[:300])
+                    status_map = _build_status_map()   # refresh
 
-            # ── images ─────────────────────
+            # ── images ─────────────────────（跳过已 image_drafted+ 的镜次）
             if "images" in req.stages and scenes:
-                yield _emit_stage("images", "start", count=len(scenes) * 2)
-                try:
-                    async for ev in _stage_images(client, req, scenes):
-                        # 透传上游事件，并打上 stage 标记
-                        yield _sse({**ev, "stage": "images"})
-                    yield _emit_stage("images", "done")
-                except Exception as e:
-                    yield _emit_stage("images", "error", message=str(e)[:300])
+                pending_images = [
+                    s for s in scenes
+                    if status_map.get(s.get("id"), "draft") in ("draft", "prompted")
+                ]
+                if not pending_images:
+                    log_event("info", "images skip — all scenes already image_drafted+")
+                    yield _emit_stage("images", "skipped", message="所有分镜已有图片")
+                else:
+                    async for ev in run_stage("images", _stage_images, client, req, pending_images,
+                                              count=len(pending_images) * 2):
+                        yield ev
+                    status_map = _build_status_map()
 
-            # ── audio (reading 模式) ───────
+            # ── audio ──────────────────────（跳过已 audio_ready+ 的镜次）
             if "audio" in req.stages and scenes:
-                yield _emit_stage("audio", "start", count=len(scenes))
-                try:
-                    async for ev in _stage_audio_reading(client, req, scenes, ms):
-                        yield _sse({**ev, "stage": "audio"})
-                    yield _emit_stage("audio", "done")
-                except Exception as e:
-                    yield _emit_stage("audio", "error", message=str(e)[:300])
+                pending_audio = [
+                    s for s in scenes
+                    if status_map.get(s.get("id"), "draft") not in
+                        ("audio_ready", "video_ready", "finalized")
+                ]
+                if not pending_audio:
+                    log_event("info", "audio skip — all scenes already audio_ready+")
+                    yield _emit_stage("audio", "skipped", message="所有分镜已有音频")
+                else:
+                    async for ev in run_stage("audio", _stage_audio_reading, client, req,
+                                              pending_audio, ms,
+                                              count=len(pending_audio)):
+                        yield ev
+                    status_map = _build_status_map()
 
-            # ── video ──────────────────────
+            # ── video ──────────────────────（跳过已 video_ready+ 的镜次）
             if "video" in req.stages and scenes:
-                yield _emit_stage("video", "start", count=len(scenes))
-                try:
-                    async for ev in _stage_video(client, req, scenes):
-                        yield _sse({**ev, "stage": "video"})
-                    yield _emit_stage("video", "done")
-                except Exception as e:
-                    yield _emit_stage("video", "error", message=str(e)[:300])
+                pending_video = [
+                    s for s in scenes
+                    if status_map.get(s.get("id"), "draft") not in
+                        ("video_ready", "finalized")
+                ]
+                if not pending_video:
+                    log_event("info", "video skip — all scenes already video_ready+")
+                    yield _emit_stage("video", "skipped", message="所有分镜已有视频")
+                else:
+                    async for ev in run_stage("video", _stage_video, client, req, pending_video,
+                                              count=len(pending_video)):
+                        yield ev
 
             # ── merge ──────────────────────（必须在 subtitle 之前——subtitle 需要 final_video.mp4）
             if "merge" in req.stages and scenes:
-                yield _emit_stage("merge", "start")
-                try:
-                    async for ev in _stage_merge(client, req, scenes):
-                        yield _sse({**ev, "stage": "merge"})
-                    yield _emit_stage("merge", "done")
-                except Exception as e:
-                    yield _emit_stage("merge", "error", message=str(e)[:300])
+                async for ev in run_stage("merge", _stage_merge, client, req, scenes):
+                    yield ev
 
             # ── subtitle ───────────────────
             if "subtitle" in req.stages:
@@ -572,7 +686,9 @@ async def generate_all(req: OrchestratorRequest):
                     w, h = int(parts[0]), int(parts[1])
                 except Exception:
                     pass
-                yield _emit_stage("subtitle", "start")
+                with use_trace(stage="subtitle", project_id=req.project_id,
+                               trace_id=f"{pipeline_trace}-subtitle"):
+                    yield _emit_stage("subtitle", "start")
                 try:
                     async for ev in _stage_subtitle(client, req, ms, w, h):
                         yield _sse({**ev, "stage": "subtitle"})
@@ -580,7 +696,8 @@ async def generate_all(req: OrchestratorRequest):
                 except Exception as e:
                     yield _emit_stage("subtitle", "error", message=str(e)[:300])
 
-            yield _sse({"event": "pipeline_done"})
+            log_event("info", "pipeline done", payload={"trace_id": pipeline_trace})
+            yield _sse({"event": "pipeline_done", "trace_id": pipeline_trace})
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(main(), media_type="text/event-stream",

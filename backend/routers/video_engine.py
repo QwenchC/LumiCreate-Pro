@@ -43,6 +43,15 @@ class SceneVideoRequest(BaseModel):
     positive_prompt: str = ""
 
 
+# D2: 视频工作流前置检查
+@router.get("/precheck")
+async def precheck_video_workflow_endpoint(workflow_name: str):
+    from services.comfyui_precheck import precheck_video_workflow
+    cfg = load_settings().video_engine
+    result = await precheck_video_workflow(cfg.comfyui_url, workflow_name)
+    return {"ok": result.ok, "issues": result.issues, "info": result.info}
+
+
 class VideoGenerateRequest(BaseModel):
     workflow_name: str
     resolution:    str = "720x1280"
@@ -228,8 +237,51 @@ async def generate_video_stream(req: VideoGenerateRequest):
                                     "scene_index": scene.scene_index})
                         break
                     elif ev == "completed":
-                        yield _sse({**event, "event": "scene_done",
-                                    "scene_index": scene.scene_index})
+                        # D1: project_id 提供时由后端直接落盘 + 事件加 file_path
+                        ev_out = {**event, "event": "scene_done",
+                                  "scene_index": scene.scene_index}
+                        if req.project_id and event.get("video"):
+                            try:
+                                import base64 as _b64
+                                from pathlib import Path as _P
+                                from config import load_settings as _ls
+                                vid_dir = _P(_ls().projects_dir) / req.project_id / "video"
+                                vid_dir.mkdir(parents=True, exist_ok=True)
+                                filename = f"{scene.scene_id}.mp4"
+                                (vid_dir / filename).write_bytes(
+                                    _b64.b64decode(event["video"])
+                                )
+                                rel = f"video/{filename}"
+                                ev_out["file_path"] = rel
+                                ev_out["url"] = (
+                                    f"/api/projects/{req.project_id}/assets/file/"
+                                    f"{scene.scene_id}/video"
+                                )
+                                # 同步 SQLite scene_assets（自动推进 → video_ready）
+                                from services.project_repo import record_asset
+                                record_asset(
+                                    req.project_id, scene.scene_id, "video",
+                                    slot_index=0, file_path=rel, format="mp4",
+                                    is_selected=True,
+                                )
+                                # videos.json 也维护一份（前端老路径仍能用）
+                                meta_path = _P(_ls().projects_dir) / req.project_id / "videos.json"
+                                metadata: dict = {}
+                                if meta_path.exists():
+                                    try:
+                                        metadata = json.loads(
+                                            meta_path.read_text(encoding="utf-8-sig")
+                                        )
+                                    except Exception:
+                                        metadata = {}
+                                metadata[scene.scene_id] = filename
+                                meta_path.write_text(
+                                    json.dumps(metadata, ensure_ascii=False, indent=2),
+                                    encoding="utf-8",
+                                )
+                            except Exception as e:
+                                print(f"[video-batch] auto-persist failed: {e}", flush=True)
+                        yield _sse(ev_out)
                         break
                     else:
                         yield _sse(event)
@@ -413,7 +465,9 @@ async def merge_project_video(req: MergeVideoRequest):
                 "-c", "copy",
                 str(out_path),
             ]
-            result = subprocess.run(cmd, capture_output=True, timeout=300)
+            # B2: 走线程池，避免阻塞 event loop（最长 300s）
+            from services.exec_pool import run_blocking
+            result = await run_blocking(subprocess.run, cmd, capture_output=True, timeout=300)
             if result.returncode != 0:
                 err = result.stderr.decode(errors="replace")[-500:]
                 raise HTTPException(status_code=500, detail=f"ffmpeg 合并失败: {err}")
@@ -431,10 +485,12 @@ async def merge_project_video(req: MergeVideoRequest):
         inputs += ["-stream_loop", "-1", "-i", str(bgm_file)]
 
     # 用 ffprobe 测每镜时长，xfade 偏移需要累计时长
+    from services.exec_pool import run_blocking
     durations: list[float] = []
     for p in ordered_files:
         try:
-            r = subprocess.run(
+            r = await run_blocking(
+                subprocess.run,
                 [ffmpeg.replace("ffmpeg", "ffprobe"), "-v", "error",
                  "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(p)],
                 capture_output=True, text=True, timeout=10,
@@ -503,7 +559,8 @@ async def merge_project_video(req: MergeVideoRequest):
         "-movflags", "+faststart",
         str(out_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, timeout=900)
+    # B2: 慢路径合并 / BGM 混音也走线程池（重编码 900s 上限）
+    result = await run_blocking(subprocess.run, cmd, capture_output=True, timeout=900)
     if result.returncode != 0:
         err = result.stderr.decode(errors="replace")[-800:]
         raise HTTPException(status_code=500, detail=f"ffmpeg 合并失败: {err}")
