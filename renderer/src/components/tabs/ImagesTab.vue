@@ -40,6 +40,21 @@
       </div>
     </div>
 
+    <!-- A1: 上次失败镜次提示 + 一键重试 -->
+    <div v-if="lastErrorCount && !running" class="last-errors-banner">
+      <span>⚠ 上次失败：{{ lastErrorCount }} 个分镜</span>
+      <button class="btn btn-warning btn-xs" :disabled="!selectedWorkflow" @click="retryFailedBatch">
+        ↻ 只重试失败镜
+      </button>
+      <button class="btn btn-ghost btn-xs" @click="dismissLastErrors">✕ 忽略</button>
+      <details class="last-errors-detail">
+        <summary class="text-muted" style="font-size:11px;cursor:pointer">查看详情</summary>
+        <ul>
+          <li v-for="(msg, k) in lastErrors" :key="k"><code>{{ k }}</code>: {{ msg }}</li>
+        </ul>
+      </details>
+    </div>
+
     <!-- == Progress bar == -->
     <div v-if="running || paused || batchDone" class="batch-progress-bar-wrap">
       <div class="batch-progress-label">
@@ -409,6 +424,58 @@ const paused           = ref(false)
 const batchDone        = ref(false)
 const batchCurrentIdx  = ref(-1)
 const batchResumeFrom  = ref(0)
+
+// A1: 上次批量失败的镜次 { "scene_id:frame_type": "<error msg>" }
+const lastErrors      = ref({})
+const lastErrorCount  = computed(() => Object.keys(lastErrors.value || {}).length)
+
+async function reloadLastErrors() {
+  if (!props.projectId) return
+  try {
+    const r = await fetch(`${API}/projects/${props.projectId}/last-run-errors`)
+    if (!r.ok) return
+    const d = await r.json()
+    // 只关心 images stage 的失败镜
+    lastErrors.value = (d.stage === 'images' ? d.errors : null) || {}
+  } catch { lastErrors.value = {} }
+}
+
+async function dismissLastErrors() {
+  lastErrors.value = {}
+  try { await fetch(`${API}/projects/${props.projectId}/last-run-errors`, { method: 'DELETE' }) } catch {}
+}
+
+async function retryFailedBatch() {
+  if (!Object.keys(lastErrors.value).length) return
+  // key 格式："scene_id:frame_type"；提取唯一 scene_id 集合
+  const failedSceneIds = new Set(
+    Object.keys(lastErrors.value).map(k => k.split(':')[0])
+  )
+  const failedScenes = scenes.value.filter(s => failedSceneIds.has(s.id))
+  if (!failedScenes.length) return
+
+  // 按这些 scene 串行重新走 generateSceneSlots（最大限度复用现有逻辑）
+  // skipExisting:false 让 start 和 end 都重做——简化逻辑，宁可多生成
+  running.value = true; batchDone.value = false; paused.value = false
+  batchCurrentIdx.value = -1
+  slotError.value = {}; slotProgress.value = {}
+  try {
+    for (let i = 0; i < failedScenes.length; i++) {
+      if (paused.value) break
+      batchCurrentIdx.value = scenes.value.findIndex(s => s.id === failedScenes[i].id)
+      try {
+        await generateSceneSlots(failedScenes[i], { skipExisting: false })
+      } catch (e) {
+        if (!paused.value) { loadError.value = e.message; break }
+      }
+    }
+  } finally {
+    running.value = false; batchCurrentIdx.value = -1
+    batchDone.value = true
+    await saveImages()
+    await reloadLastErrors()
+  }
+}
 const sceneGenerating  = ref({})
 const frameSlotCounts  = ref({})
 
@@ -578,6 +645,7 @@ function onKeyDown(e) {
 }
 onMounted(() => {
   loadData()
+  reloadLastErrors()
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('lumi:save-project', _onGlobalSave)
 })
@@ -715,7 +783,8 @@ async function generateSceneSlots(scene, { skipExisting = false } = {}) {
         negative_prompt: '',
         width:           imgWidth.value,
         height:          imgHeight.value,
-        frames
+        frames,
+        project_id:      props.projectId,   // A1: 让后端持久化失败镜次
       })
     })
   } catch (e) {
@@ -788,6 +857,7 @@ async function _runBatchFrom(fromIdx) {
   if (!paused.value) {
     batchDone.value = true
     await saveImages()   // auto-save on batch complete; emits 'saved' on success
+    await reloadLastErrors()   // A1: 后端在 batch_done 时已写盘，前端拉一次更新红色横幅
   } else {
     emit('dirty')        // paused: mark dirty so user can manually save later
   }
@@ -1033,6 +1103,14 @@ async function addOneMore(scene, frameType) {
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
+.last-errors-banner {
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:6px 16px; background:rgba(220,60,60,.08);
+  border-bottom:1px solid rgba(220,60,60,.4); font-size:12px;
+}
+.last-errors-banner .last-errors-detail { width:100%; }
+.last-errors-banner ul { margin:4px 0 0 18px; padding:0; font-size:11px; line-height:1.5; }
+.last-errors-banner code { background:rgba(255,255,255,.08); padding:1px 4px; border-radius:3px; }
 .batch-progress-label {
   display: flex;
   justify-content: space-between;

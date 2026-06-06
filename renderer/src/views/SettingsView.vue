@@ -33,6 +33,14 @@
           </div>
           <p class="hint">所有项目将保存在此目录下</p>
         </div>
+        <!-- F2: 语言切换 -->
+        <div class="form-group">
+          <label>Language / 语言</label>
+          <select v-model="currentLocale" @change="onChangeLocale" class="input select" style="max-width:260px">
+            <option v-for="l in availableLocales" :key="l.value" :value="l.value">{{ l.label }}</option>
+          </select>
+          <p class="hint">界面语言（重启或切换页面后部分组件文案才会同步）。</p>
+        </div>
       </section>
 
       <!-- Text engine -->
@@ -387,6 +395,12 @@ const testStatus = ref({ text: '', image: '', audio: '', video: '' })
 
 // ── MS Edge 试听 ──────────────────────────────────────────────────────────────
 import { MSEDGE_VOICES, filterVoices, groupByGender } from '../data/msedgeVoices'
+import { availableLocales, setLocale, i18n } from '../i18n'
+
+const currentLocale = ref(i18n.global.locale.value)
+function onChangeLocale() {
+  setLocale(currentLocale.value)
+}
 
 const msTestText  = ref('你好，这是一段测试。')
 const msTesting   = ref(false)

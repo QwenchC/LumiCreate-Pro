@@ -44,15 +44,19 @@ async def _upload_image(comfyui_url: str, png_bytes: bytes, filename: str) -> st
         f"Content-Type: image/png\r\n\r\n"
     ).encode() + png_bytes + f"\r\n--{boundary}--\r\n".encode()
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
-            f"{comfyui_url}/upload/image",
-            content=body,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        )
-        r.raise_for_status()
-        data = r.json()
-        return data.get("name") or filename
+    async def _once() -> str:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"{comfyui_url}/upload/image",
+                content=body,
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data.get("name") or filename
+
+    from services.retry import async_retry
+    return await async_retry(_once, attempts=3, label="comfy-upload-image")
 
 
 def _find_ffmpeg(comfyui_input_dir: str = "", workflow_dir: str = "") -> str:
@@ -161,19 +165,40 @@ def patch_workflow(
     fps: float,
     duration_secs: int,
     positive_prompt: str,
+    workflow_meta: Optional[dict] = None,
 ) -> dict:
-    """Return a deep copy of the workflow with the necessary node values patched."""
+    """Return a deep copy of the workflow with the necessary node values patched.
+
+    C1: workflow_meta（来自 <name>.meta.json）覆盖节点 ID 映射；缺失时用默认。"""
+    from services.workflow_meta import DEFAULT_VIDEO_NODE_MAP, get_node_id, get_widget
+
     wf = copy.deepcopy(workflow)
-    values = {
-        45:  {0: first_frame_file},
-        47:  {0: last_frame_file},
-        232: {0: audio_file},
-        166: {0: width},
-        167: {0: height},
-        169: {0: duration_secs},
-        164: {0: float(fps)},
-        16:  {0: positive_prompt},
+
+    # 按字段名构造 value map：key=字段名 → (value, default_node_id, default_widget)
+    by_field = {
+        "first_frame_image": first_frame_file,
+        "last_frame_image":  last_frame_file,
+        "audio":             audio_file,
+        "width":             width,
+        "height":            height,
+        "duration_secs":     duration_secs,
+        "fps":               float(fps),
+        "positive_prompt":   positive_prompt,
     }
+    # node_id -> {widget_idx: value}
+    values: dict[int, dict[int, object]] = {}
+    for field, value in by_field.items():
+        nid = get_node_id(workflow_meta, field) if workflow_meta else None
+        if nid is None:
+            d = DEFAULT_VIDEO_NODE_MAP.get(field) or {}
+            nid    = d.get("node_id")
+            widget = d.get("widget", 0)
+        else:
+            widget = get_widget(workflow_meta, field)
+        if nid is None:
+            continue
+        values.setdefault(int(nid), {})[int(widget)] = value
+
     for node in wf.get("nodes", []):
         nid = node.get("id")
         if nid in values:
@@ -227,6 +252,7 @@ async def generate_video(
     comfyui_input_dir: str = "",
     workflow_dir: str = "",
     replace_audio: bool = True,
+    workflow_meta: Optional[dict] = None,
 ) -> AsyncGenerator[dict, None]:
     """
     Upload assets, patch workflow, queue to ComfyUI, stream progress events.
@@ -261,6 +287,7 @@ async def generate_video(
     patched_lg = patch_workflow(
         workflow, ff_name, lf_name, aud_name,
         width, height, fps, duration_secs, positive_prompt,
+        workflow_meta=workflow_meta,
     )
     try:
         api_workflow = _litegraph_to_api(patched_lg)

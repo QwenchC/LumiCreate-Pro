@@ -1,15 +1,22 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
+interface ProjectTab {
+  id: string          // projectId
+  name: string
+  isDirty: boolean
+}
+
 /**
- * Each tab: { id: String (projectId), name: String, isDirty: Boolean }
+ * Open project tabs store. Migrated to TypeScript in F1.
+ * No behavior change vs. the previous tabs.js.
  */
 export const useTabsStore = defineStore('tabs', () => {
-  const tabs      = ref([])          // open project tabs
-  const activeId  = ref(null)        // currently visible project id
-  const innerTabs = ref({})          // projectId → active inner tab key
+  const tabs      = ref<ProjectTab[]>([])
+  const activeId  = ref<string | null>(null)
+  const innerTabs = ref<Record<string, string>>({})
 
-  function openTab(projectId, projectName) {
+  function openTab(projectId: string, projectName?: string) {
     const existing = tabs.value.find(t => t.id === projectId)
     if (existing) {
       activeId.value = projectId
@@ -19,20 +26,18 @@ export const useTabsStore = defineStore('tabs', () => {
     activeId.value = projectId
   }
 
-  function activateTab(projectId) {
+  function activateTab(projectId: string) {
     activeId.value = projectId
   }
 
   /** Returns true if the tab was cleanly closed, false if cancelled */
-  function closeTab(projectId) {
+  function closeTab(projectId: string): boolean {
     const idx = tabs.value.findIndex(t => t.id === projectId)
     if (idx === -1) return true
     tabs.value.splice(idx, 1)
-    // Clean up inner tab state
     const it = { ...innerTabs.value }
     delete it[projectId]
     innerTabs.value = it
-    // Switch to nearest remaining tab
     if (activeId.value === projectId) {
       const next = tabs.value[Math.max(0, idx - 1)]
       activeId.value = next ? next.id : null
@@ -40,23 +45,28 @@ export const useTabsStore = defineStore('tabs', () => {
     return true
   }
 
-  function setInnerTab(projectId, tabKey) {
+  function setInnerTab(projectId: string, tabKey: string) {
     innerTabs.value = { ...innerTabs.value, [projectId]: tabKey }
   }
 
-  function getInnerTab(projectId) {
+  function getInnerTab(projectId: string): string {
     return innerTabs.value[projectId] || 'manuscript'
   }
 
-  function setDirty(projectId, dirty) {
+  function setDirty(projectId: string, dirty: boolean) {
     const t = tabs.value.find(t => t.id === projectId)
     if (t) t.isDirty = dirty
   }
 
-  function setName(projectId, name) {
+  function setName(projectId: string, name: string) {
     const t = tabs.value.find(t => t.id === projectId)
     if (t) t.name = name
   }
 
-  return { tabs, activeId, innerTabs, openTab, activateTab, closeTab, setInnerTab, getInnerTab, setDirty, setName }
+  return {
+    tabs, activeId, innerTabs,
+    openTab, activateTab, closeTab,
+    setInnerTab, getInnerTab,
+    setDirty, setName,
+  }
 })

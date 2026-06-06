@@ -24,6 +24,19 @@
       </div>
     </div>
 
+    <!-- A1: 上次失败镜次提示 + 一键重试 -->
+    <div v-if="lastErrorCount && !running" class="last-errors-banner">
+      <span>⚠ 上次失败：{{ lastErrorCount }} 个片段（{{ lastErrorStage === 'audio' ? '音频' : lastErrorStage }}）</span>
+      <button class="btn btn-warning btn-xs" @click="retryFailedBatch">↻ 只重试失败片段</button>
+      <button class="btn btn-ghost btn-xs" @click="dismissLastErrors">✕ 忽略</button>
+      <details class="last-errors-detail">
+        <summary class="text-muted" style="font-size:11px;cursor:pointer">查看详情</summary>
+        <ul>
+          <li v-for="(msg, k) in lastErrors" :key="k"><code>{{ k }}</code>: {{ msg }}</li>
+        </ul>
+      </details>
+    </div>
+
     <!-- ── States ── -->
     <div v-if="loadError" class="empty-state">
       <div class="empty-icon">⚠</div><p>{{ loadError }}</p>
@@ -331,6 +344,53 @@ let   _stopReading   = false
 
 // ── Current audio engine (for toolbar hint; non-reading modes use settings.audio_engine.engine_type) ──
 const engineType     = ref('indextts')
+
+// A1: 上次批量失败片段
+const lastErrors      = ref({})
+const lastErrorStage  = ref('')
+const lastErrorCount  = computed(() => Object.keys(lastErrors.value || {}).length)
+
+async function reloadLastErrors() {
+  if (!props.projectId) return
+  try {
+    const r = await fetch(`http://localhost:18520/api/projects/${props.projectId}/last-run-errors`)
+    if (!r.ok) return
+    const d = await r.json()
+    // audio tab 关心 audio stage（reading 模式的 ms-tts 失败本轮先不入库）
+    if (d.stage === 'audio') {
+      lastErrors.value     = d.errors || {}
+      lastErrorStage.value = d.stage
+    } else {
+      lastErrors.value = {}; lastErrorStage.value = ''
+    }
+  } catch { lastErrors.value = {}; lastErrorStage.value = '' }
+}
+
+async function dismissLastErrors() {
+  lastErrors.value = {}
+  try { await fetch(`http://localhost:18520/api/projects/${props.projectId}/last-run-errors`, { method: 'DELETE' }) } catch {}
+}
+
+async function retryFailedBatch() {
+  if (isReadingMode.value) {
+    // 朗读模式：失败的 reading scenes 直接重跑 ms-tts
+    const failedSceneIds = new Set(Object.keys(lastErrors.value).map(k => k.split(':')[0]))
+    for (const s of readingScenes.value) {
+      if (failedSceneIds.has(String(s.sceneId))) {
+        try { await generateMsTts(s) } catch {}
+      }
+    }
+  } else {
+    // 非朗读：失败的 dialogue_id 重跑 regenClip
+    const failedDlgIds = new Set(Object.keys(lastErrors.value).map(k => k.split(':')[1]))
+    for (const clip of allClips.value) {
+      if (failedDlgIds.has(clip.id)) {
+        try { await regenClip(clip) } catch {}
+      }
+    }
+  }
+  await reloadLastErrors()
+}
 const engineLabel    = computed(() => ({
   indextts:  'IndexTTS-2.0',
   gptsovits: 'GPT-SoVITS',
@@ -592,6 +652,8 @@ async function loadData() {
   } finally {
     loadingScenes.value = false
   }
+  // A1: 顺便拉一下上次失败镜次
+  await reloadLastErrors()
 }
 
 function scene_dialogues_to_clips(scene) {
@@ -657,6 +719,7 @@ async function runBatch() {
 
   const payload = {
     gen_count: genCount.value,
+    project_id: props.projectId,   // A1: 后端持久化失败镜次
     dialogues: allClips.value.map(c => ({
       scene_id:    String(c.sceneId),
       dialogue_id: c.id,
@@ -709,6 +772,7 @@ async function runBatch() {
     for (const clip of allClips.value)
       for (const slot of clip.slots) slot.generating = false
     await saveAudio()
+    await reloadLastErrors()   // A1
   }
 }
 
@@ -735,7 +799,8 @@ async function regenClip(clip) {
   for (const slot of clip.slots) slot.generating = true
 
   const payload = {
-    gen_count: genCount.value,
+    gen_count:  genCount.value,
+    project_id: props.projectId,
     dialogues: [{
       scene_id:    String(clip.sceneId),
       dialogue_id: clip.id,
@@ -831,6 +896,27 @@ async function _msTtsClipWav(text, voice) {
   return res.json()  // {data: <b64 wav>, duration_ms, format:'wav'}
 }
 
+// A3: 朗读模式单条增量保存 —— 只写当前 scene，不全量重传 audio.json
+async function _saveOneReadingScene(scene) {
+  if (!props.projectId || !scene?.data) return
+  try {
+    await fetch(`http://localhost:18520/api/projects/${props.projectId}/audio/slot`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        key:   `__ms_reading__${scene.sceneId}`,
+        entry: {
+          data:        scene.data,
+          duration_ms: scene.duration_ms,
+          format:      scene._format || 'mp3',
+        },
+      }),
+    })
+  } catch (e) {
+    console.warn('audio slot save failed', e)
+  }
+}
+
 async function generateMsTts(scene) {
   scene.generating = true
   scene.data = null
@@ -866,7 +952,7 @@ async function generateMsTts(scene) {
       scene.duration_ms = result.duration_ms
       scene._format     = 'wav'
       emit('dirty')
-      await saveAudio()
+      await _saveOneReadingScene(scene)   // A3: 单条增量写盘
       return
     }
     // 单音色（原行为）：直接 ms-tts MP3
@@ -882,7 +968,7 @@ async function generateMsTts(scene) {
     scene.duration_ms = result.duration_ms       // will be updated from metadata below
     scene._format     = 'mp3'
     emit('dirty')
-    await saveAudio()
+    await _saveOneReadingScene(scene)   // A3: 单条增量写盘
   } catch (e) {
     console.error('MS TTS failed:', e)
   } finally {
@@ -1004,6 +1090,14 @@ onUnmounted(() => {
 .reading-generating { display:flex; align-items:center; gap:8px; padding:6px 2px; font-size:12px; }
 
 .audio-tab { display:flex; flex-direction:column; height:100%; overflow:hidden; }
+.last-errors-banner {
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:6px 16px; background:rgba(220,60,60,.08);
+  border-bottom:1px solid rgba(220,60,60,.4); font-size:12px; flex-shrink:0;
+}
+.last-errors-banner .last-errors-detail { width:100%; }
+.last-errors-banner ul { margin:4px 0 0 18px; padding:0; font-size:11px; line-height:1.5; }
+.last-errors-banner code { background:rgba(255,255,255,.08); padding:1px 4px; border-radius:3px; }
 .audio-toolbar {
   display:flex; align-items:center; justify-content:space-between;
   padding:12px 16px 8px; gap:12px; flex-shrink:0;

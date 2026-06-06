@@ -71,6 +71,8 @@ class BatchGenerateRequest(BaseModel):
     gen_count: int = 3
     speed:     float = 1.0
     dialogues: list[BatchDialogue]
+    # A1: 让后端持久化失败镜次（last_run_errors.json），前端可一键重试
+    project_id: str = ""
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -187,6 +189,8 @@ async def generate_batch_stream(req: BatchGenerateRequest):
     queue:   asyncio.Queue = asyncio.Queue()
     finished = asyncio.Event()
     done_count = 0
+    # A1: 失败镜次（按 dialogue_id 聚合）
+    scene_errors: dict[str, str] = {}
 
     async def run_one(dlg: BatchDialogue, slot: int):
         nonlocal done_count
@@ -233,16 +237,47 @@ async def generate_batch_stream(req: BatchGenerateRequest):
         )
         finished.set()
 
+    # E2
+    from datetime import datetime as _dt, timezone as _tz
+    started_at = _dt.now(_tz.utc).isoformat()
+    started_ms = int(__import__("time").time() * 1000)
+
     async def stream():
         asyncio.create_task(producer())
         while True:
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=0.1)
+                # A1: 顺手收集错误（按 scene_id:dialogue_id 聚合）
+                if item.get("event") == "error":
+                    key = f"{item.get('scene_id','?')}:{item.get('dialogue_id','?')}"
+                    scene_errors[key] = str(item.get("message","unknown error"))[:500]
                 yield _sse(item)
             except asyncio.TimeoutError:
                 if finished.is_set() and queue.empty():
                     break
-        yield _sse({"event": "batch_done", "total": total_tasks})
+        # A1: 落盘失败镜次
+        if req.project_id:
+            try:
+                from routers.projects import write_last_run_errors
+                write_last_run_errors(req.project_id, "audio", scene_errors)
+            except Exception as e:
+                print(f"[audio-batch] write_last_run_errors failed: {e}", flush=True)
+        # E2
+        try:
+            from services.task_history import append as _th_append
+            ended_at = _dt.now(_tz.utc).isoformat()
+            ended_ms = int(__import__("time").time() * 1000)
+            _th_append(
+                "audio",
+                req.project_id or "(no-project)",
+                started_at=started_at, ended_at=ended_at,
+                duration_ms=ended_ms - started_ms,
+                items=total_tasks, errors=len(scene_errors),
+                note=f"engine={cfg.engine_type}, dialogues={len(req.dialogues)}, gen={gen_count}",
+            )
+        except Exception as e:
+            print(f"[audio-batch] task_history append failed: {e}", flush=True)
+        yield _sse({"event": "batch_done", "total": total_tasks, "errors": scene_errors})
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream",

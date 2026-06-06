@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -146,7 +147,48 @@ async def delete_project(project_id: str):
     proj_dir = _project_dir(project_id)
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # 在删除前抢救出该项目的 scene_id 列表，用于清扫 ComfyUI input/ 目录里残留的
+    # lumi_ff_/lumi_lf_/lumi_aud_ 临时文件（视频生成时由 ltx2video._upload_image/_upload_audio 写入）
+    scene_ids: list[str] = []
+    scenes_path = proj_dir / "scenes.json"
+    if scenes_path.exists():
+        try:
+            scenes_data = json.loads(scenes_path.read_text(encoding="utf-8-sig"))
+            for s in (scenes_data.get("scenes") or []):
+                sid = s.get("id")
+                if sid:
+                    scene_ids.append(str(sid))
+        except Exception:
+            pass
+
     shutil.rmtree(proj_dir)
+
+    # 清扫 ComfyUI input/ 里的临时文件（best-effort，失败不影响项目删除）
+    try:
+        from services.ltx2video import _resolve_input_dir
+        settings = load_settings()
+        ve = settings.video_engine
+        ie = settings.image_engine
+        input_dir = _resolve_input_dir(ve.comfyui_input_dir, ve.workflow_dir or ie.workflow_dir)
+        if input_dir and scene_ids:
+            cleaned = 0
+            ipath = Path(input_dir)
+            for sid in scene_ids:
+                for stem in (f"lumi_ff_{sid}", f"lumi_lf_{sid}", f"lumi_aud_{sid}"):
+                    for ext in (".png", ".wav"):
+                        f = ipath / f"{stem}{ext}"
+                        if f.is_file():
+                            try:
+                                f.unlink()
+                                cleaned += 1
+                            except OSError:
+                                pass
+            if cleaned:
+                print(f"[delete_project {project_id}] cleaned {cleaned} ComfyUI input files",
+                      flush=True)
+    except Exception as e:
+        print(f"[delete_project {project_id}] cleanup warning: {e}", flush=True)
 
 
 # ── Manuscript ─────────────────────────────────────────────────────────────────
@@ -362,33 +404,155 @@ async def save_scenes(project_id: str, data: ScenesData):
 
 
 # ── Audio ──────────────────────────────────────────────────────────────────────
+#
+# A3: audio.json 现在仅存"元数据"——base64 数据拆到 audio/<key>.{mp3,wav} 单文件，
+# 避免大项目 audio.json 几百 MB。
+# Entry 形态有两种：
+#   1) Reading（直读）：{data?: <b64>, duration_ms, format?, file?}
+#   2) Clip（按对白生成）：{voiceRef, emoRef, ..., slots: [{data?, duration, file?}, ...]}
+# 兼容策略：
+#   - 老项目 entry 里只有 `data` 字段 → GET 时直接透传；PUT 时检测后拆出来落盘
+#   - 新项目 entry 里 `file` 是相对路径（"audio/xxx.mp3"），`data` 不再写入 JSON
+#   - GET 时检测到 `file` 即从磁盘读出 base64 拼回返回，前端无须改动
+
+def _audio_dir(proj_dir: Path) -> Path:
+    p = proj_dir / "audio"
+    p.mkdir(exist_ok=True)
+    return p
+
+
+def _hydrate_audio_entry(entry: dict, audio_dir: Path) -> dict:
+    """读路径上的 entry 加上 base64 data（如果当前是 file 模式）。原地修改不影响磁盘。"""
+    out = dict(entry)
+    f = out.get("file")
+    if f and not out.get("data"):
+        try:
+            out["data"] = base64.b64encode((audio_dir / f).read_bytes()).decode()
+        except OSError:
+            out["data"] = ""
+    # 嵌套 slots
+    if isinstance(out.get("slots"), list):
+        new_slots = []
+        for slot in out["slots"]:
+            s = dict(slot) if isinstance(slot, dict) else {}
+            sf = s.get("file")
+            if sf and not s.get("data"):
+                try:
+                    s["data"] = base64.b64encode((audio_dir / sf).read_bytes()).decode()
+                except OSError:
+                    s["data"] = ""
+            new_slots.append(s)
+        out["slots"] = new_slots
+    return out
+
+
+def _persist_audio_entry(key: str, entry: dict, audio_dir: Path) -> dict:
+    """把 entry 里的 base64 data 拆到磁盘，返回不含 base64 的精简 entry。"""
+    cleaned = {k: v for k, v in entry.items() if k != "data"}
+    raw = entry.get("data")
+    if raw:
+        ext = ".mp3" if (entry.get("format") or "mp3").lower() == "mp3" else ".wav"
+        # 文件名安全化
+        safe = re.sub(r"[^A-Za-z0-9_\-]+", "_", key)
+        filename = f"{safe}{ext}"
+        try:
+            (audio_dir / filename).write_bytes(base64.b64decode(raw))
+            cleaned["file"] = filename
+        except Exception as e:
+            print(f"[save_audio] persist {key}: {e}", flush=True)
+            cleaned["data"] = raw   # 失败时回退到 base64 in JSON
+
+    if isinstance(entry.get("slots"), list):
+        new_slots = []
+        for i, slot in enumerate(entry["slots"]):
+            if not isinstance(slot, dict):
+                new_slots.append(slot); continue
+            s = {k: v for k, v in slot.items() if k != "data"}
+            sraw = slot.get("data")
+            if sraw:
+                safe = re.sub(r"[^A-Za-z0-9_\-]+", "_", key)
+                # clip 槽位用 wav（IndexTTS / GPT-SoVITS / msedge 转过的都是 wav）
+                filename = f"{safe}_v{i}.wav"
+                try:
+                    (audio_dir / filename).write_bytes(base64.b64decode(sraw))
+                    s["file"] = filename
+                except Exception as e:
+                    print(f"[save_audio] persist {key} slot {i}: {e}", flush=True)
+                    s["data"] = sraw
+            new_slots.append(s)
+        cleaned["slots"] = new_slots
+    return cleaned
+
 
 @router.get("/{project_id}/audio")
 async def get_audio(project_id: str):
     _read_meta(project_id)
-    path = _project_dir(project_id) / "audio.json"
+    proj_dir = _project_dir(project_id)
+    path = proj_dir / "audio.json"
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    raw_data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(raw_data, dict):
+        return raw_data
+    audio_dir = _audio_dir(proj_dir)
+    return {k: _hydrate_audio_entry(v, audio_dir) if isinstance(v, dict) else v
+            for k, v in raw_data.items()}
 
 
 @router.put("/{project_id}/audio")
 async def save_audio(project_id: str, data: dict):
     meta = _read_meta(project_id)
     proj_dir = _project_dir(project_id)
+    audio_dir = _audio_dir(proj_dir)
+
+    # A3: 拆 base64 到磁盘，JSON 只存元数据
+    persisted: dict = {}
+    for key, entry in data.items():
+        if not isinstance(entry, dict):
+            persisted[key] = entry
+            continue
+        persisted[key] = _persist_audio_entry(key, entry, audio_dir)
+
     (proj_dir / "audio.json").write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(persisted, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    # Count clips that have at least one completed slot.
-    # MS-TTS reading mode stores {data, duration_ms} directly (no slots list),
-    # so check both v.get("data") and the slots array.
-    done = sum(
-        1 for v in data.values()
-        if v.get("data") or any(s.get("data") for s in (v.get("slots") or []))
-    )
+
+    # 进度统计：有 file 或 data 或 slots[*].file/data 之一即视为已完成
+    def _entry_has_audio(v: dict) -> bool:
+        if v.get("file") or v.get("data"):
+            return True
+        for s in (v.get("slots") or []):
+            if isinstance(s, dict) and (s.get("file") or s.get("data")):
+                return True
+        return False
+
+    done = sum(1 for v in persisted.values() if isinstance(v, dict) and _entry_has_audio(v))
     progress = meta.progress.model_dump()
     progress["audio"] = 100 if done else 0
     return await update_project(project_id, {"progress": progress})
+
+
+# A3 增量保存：仅追加/更新单个 entry（避免前端一次 PUT 全量 base64 占带宽）
+class AudioSlotPayload(BaseModel):
+    key:   str
+    entry: dict     # entry 内可包含 data（b64）或 slots[*].data
+
+
+@router.put("/{project_id}/audio/slot")
+async def put_audio_slot(project_id: str, payload: AudioSlotPayload):
+    _read_meta(project_id)
+    proj_dir = _project_dir(project_id)
+    audio_dir = _audio_dir(proj_dir)
+    path = proj_dir / "audio.json"
+    existing = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            existing = {}
+    existing[payload.key] = _persist_audio_entry(payload.key, payload.entry, audio_dir)
+    path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True, "key": payload.key, "file": existing[payload.key].get("file")}
 
 
 # ── Videos ─────────────────────────────────────────────────────────────────────
@@ -436,6 +600,30 @@ async def save_videos(project_id: str, data: list[VideoSlot]):
     return await update_project(project_id, {"progress": progress})
 
 
+# A3 增量：单镜视频保存，避免一次 PUT 携带 30+ 个 mp4 base64
+@router.put("/{project_id}/videos/slot")
+async def put_video_slot(project_id: str, slot: VideoSlot):
+    _read_meta(project_id)
+    proj_dir = _project_dir(project_id)
+    vid_dir = proj_dir / "video"
+    vid_dir.mkdir(exist_ok=True)
+
+    filename = f"{slot.scene_id}.mp4"
+    (vid_dir / filename).write_bytes(base64.b64decode(slot.data))
+
+    # 合并入 videos.json
+    meta_path = proj_dir / "videos.json"
+    metadata: dict = {}
+    if meta_path.exists():
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            metadata = {}
+    metadata[slot.scene_id] = filename
+    meta_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True, "scene_id": slot.scene_id, "file": filename}
+
+
 # ── Video prompts ───────────────────────────────────────────────────────────────
 
 @router.get("/{project_id}/video-prompts")
@@ -453,6 +641,79 @@ async def save_video_prompts(project_id: str, data: dict):
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return {"ok": True}
+
+
+# ── Last-run errors (A1: 让前端能看见/重试上次失败的镜次) ────────────────────
+# 文件 schema：
+#   { "stage": "images"|"audio"|"video"|"prompts",
+#     "ts":    "<ISO8601>",
+#     "errors": { "<scene_id>": "<error message>", ... } }
+# 前端在批量结束 SSE batch_done 后调 GET 查询；点重试时按 errors 的 scene_id
+# 重发批量请求。
+#
+# 后端 service 也可以 import write_last_run_errors() 把 SSE 期间收集的错误
+# 持久化下来（同步写入）。
+
+
+class LastRunErrors(BaseModel):
+    stage:  str = ""
+    ts:     str = ""
+    errors: dict = {}
+
+
+def _last_run_errors_path(project_id: str) -> Path:
+    return _project_dir(project_id) / "last_run_errors.json"
+
+
+def write_last_run_errors(project_id: str, stage: str, errors: dict) -> None:
+    """Service-layer 用：批量任务结束时写入失败 scene 集合。"""
+    proj_dir = _project_dir(project_id)
+    if not proj_dir.exists():
+        return
+    data = {
+        "stage":  stage,
+        "ts":     datetime.now(timezone.utc).isoformat(),
+        "errors": {str(k): str(v)[:500] for k, v in (errors or {}).items()},
+    }
+    _last_run_errors_path(project_id).write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+@router.get("/{project_id}/last-run-errors")
+async def get_last_run_errors(project_id: str):
+    _read_meta(project_id)
+    p = _last_run_errors_path(project_id)
+    if not p.exists():
+        return {"stage": "", "ts": "", "errors": {}}
+    try:
+        return json.loads(p.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {"stage": "", "ts": "", "errors": {}}
+
+
+@router.put("/{project_id}/last-run-errors")
+async def put_last_run_errors(project_id: str, data: LastRunErrors):
+    _read_meta(project_id)
+    payload = {
+        "stage":  data.stage,
+        "ts":     data.ts or datetime.now(timezone.utc).isoformat(),
+        "errors": {str(k): str(v)[:500] for k, v in (data.errors or {}).items()},
+    }
+    _last_run_errors_path(project_id).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return {"ok": True, "count": len(payload["errors"])}
+
+
+@router.delete("/{project_id}/last-run-errors", status_code=204)
+async def clear_last_run_errors(project_id: str):
+    _read_meta(project_id)
+    p = _last_run_errors_path(project_id)
+    if p.exists():
+        p.unlink()
 
 
 # ── Characters ─────────────────────────────────────────────────────────────────

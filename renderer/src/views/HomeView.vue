@@ -68,7 +68,21 @@
       <button v-if="!sidebarCollapsed" class="add-folder-btn" @click="openCreateFolderDialog">
         + 新建文件夹
       </button>
+
+      <!-- B3: 模板区 -->
+      <div v-if="!sidebarCollapsed && templates.length" class="templates-section">
+        <div class="templates-title">📦 项目模板</div>
+        <div v-for="t in templates" :key="t.id" class="template-pill">
+          <span class="template-name truncate" :title="t.description || t.name">{{ t.name }}</span>
+          <button class="template-btn" title="用此模板新建项目" @click="newFromTemplate(t)">＋</button>
+          <button class="template-btn danger" title="删除模板" @click="confirmDeleteTemplate(t)">✕</button>
+        </div>
+      </div>
       <div class="sidebar-footer">
+        <button v-if="!sidebarCollapsed" class="btn btn-ghost btn-sm" @click="taskHistoryOpen = true">
+          📊 任务历史
+        </button>
+        <button v-else class="sidebar-settings-icon" title="任务历史" @click="taskHistoryOpen = true">📊</button>
         <button v-if="!sidebarCollapsed" class="btn btn-ghost btn-sm" @click="$router.push('/settings')">
           ⚙ 引擎设置
         </button>
@@ -76,13 +90,26 @@
       </div>
     </aside>
 
+    <!-- E2: 任务历史弹层 -->
+    <TaskHistoryPanel v-if="taskHistoryOpen" @close="taskHistoryOpen = false" />
+
     <!-- Main content -->
     <main class="main-content">
       <!-- Toolbar -->
       <div class="toolbar">
-        <h2 class="toolbar-title">{{ currentFolder.emoji }} {{ currentFolder.name }}</h2>
+        <h2 class="toolbar-title">
+          {{ currentFolder.emoji }} {{ currentFolder.name }}
+          <span v-if="searchQuery" class="text-muted" style="font-size:13px;font-weight:normal;margin-left:8px">
+            · 全局搜索 "{{ searchQuery }}" · {{ filteredProjects.length }} 个结果
+          </span>
+        </h2>
         <div class="toolbar-actions">
-          <input v-model="searchQuery" class="input search-input" placeholder="搜索项目..." />
+          <input ref="searchInputEl" v-model="searchQuery" class="input search-input" placeholder="搜索项目 (Ctrl+F)" />
+          <select v-model="sortMode" class="input select-compact" style="width:120px" title="排序方式">
+            <option value="updated_desc">最近更新</option>
+            <option value="created_desc">最新创建</option>
+            <option value="name">按名字</option>
+          </select>
           <button class="btn btn-primary" @click="showCreateDialog = true">
             + 新建项目
           </button>
@@ -171,11 +198,19 @@
           </div>
           <div class="form-group">
             <label>复制配置（可选）</label>
-            <select v-model="copyFromProjectId" class="input">
+            <select v-model="copyFromProjectId" class="input" :disabled="!!fromTemplateId">
               <option value="">不复制，从空白开始</option>
               <option v-for="p in store.projects" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
             <p v-if="copyFromProjectId" class="field-hint" style="margin-top:4px;font-size:11px;color:var(--color-text-muted);opacity:0.7">将从该项目复制角色列表与文案配置（世界观、角色设定等），不复制文案内容和分镜。</p>
+          </div>
+          <div class="form-group">
+            <label>📦 从模板新建（可选，二选一）</label>
+            <select v-model="fromTemplateId" class="input" :disabled="!!copyFromProjectId">
+              <option value="">不使用模板</option>
+              <option v-for="t in templates" :key="t.id" :value="t.id">{{ t.name }}{{ t.description ? '（' + t.description + '）' : '' }}</option>
+            </select>
+            <p v-if="fromTemplateId" class="field-hint" style="margin-top:4px;font-size:11px;color:var(--color-text-muted);opacity:0.7">将拷贝模板的对白模式 + 角色卡（含 voice / appearance）；引擎设置仍使用全局值。</p>
           </div>
           <div class="dialog-actions">
             <button class="btn btn-primary" :disabled="!newName.trim()" @click="createProject">创建</button>
@@ -299,10 +334,15 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProjectStore } from '../stores/projects'
 import { useTabsStore } from '../stores/tabs'
+import TaskHistoryPanel from '../components/TaskHistoryPanel.vue'
 
 const router = useRouter()
 const store = useProjectStore()
 const tabsStore = useTabsStore()
+void router    // 模板里通过 $router 访问，避免编译器把 router 视为未用
+
+// E2: 任务历史弹层
+const taskHistoryOpen = ref(false)
 
 const STEPS = { manuscript: '文案', scenes: '分镜', images: '图片', audio: '音频', video: '视频' }
 
@@ -451,10 +491,35 @@ async function doDeleteFolder() {
 // ── Project state ──────────────────────────────────────────────────────────────
 
 const searchQuery = ref('')
+const searchInputEl = ref(null)
 const showCreateDialog = ref(false)
 const newName = ref('')
 const newDesc = ref('')
 const copyFromProjectId = ref('')
+const fromTemplateId    = ref('')
+const templates         = ref([])
+
+async function reloadTemplates() {
+  try {
+    const r = await fetch('http://127.0.0.1:18520/api/templates')
+    if (r.ok) templates.value = await r.json()
+  } catch {}
+}
+
+async function newFromTemplate(t) {
+  fromTemplateId.value = t.id
+  copyFromProjectId.value = ''
+  newName.value = t.name + ' - 新建'
+  showCreateDialog.value = true
+}
+
+async function confirmDeleteTemplate(t) {
+  if (!confirm(`删除模板「${t.name}」？项目本身不受影响。`)) return
+  try {
+    await fetch(`http://127.0.0.1:18520/api/templates/${t.id}`, { method: 'DELETE' })
+    await reloadTemplates()
+  } catch (e) { alert('删除模板失败: ' + e.message) }
+}
 const activeMenu = ref(null)
 const deleteTarget = ref(null)
 const projectsDir = ref('')
@@ -462,13 +527,35 @@ const moveTarget = ref(null)
 const renameTarget = ref(null)
 const renameName = ref('')
 
-const filteredProjects = computed(() =>
-  store.projects.filter(p => {
+const sortMode = ref('updated_desc')   // updated_desc | name | created_desc
+
+const filteredProjects = computed(() => {
+  const q = (searchQuery.value || '').trim().toLowerCase()
+  let list = store.projects.filter(p => {
     const fId = p.folder_id || 'default'
-    if (fId !== activeFolder.value) return false
-    return p.name.toLowerCase().includes(searchQuery.value.toLowerCase())
+    // 搜索非空时跨文件夹搜（点击侧栏文件夹仍想缩小范围 → 留个开关：仍按文件夹过滤）
+    if (!q && fId !== activeFolder.value) return false
+    if (q) {
+      const name = (p.name || '').toLowerCase()
+      const desc = (p.description || '').toLowerCase()
+      if (!name.includes(q) && !desc.includes(q)) return false
+    }
+    return true
   })
-)
+  // 排序
+  list = [...list]
+  switch (sortMode.value) {
+    case 'name':
+      list.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-CN'))
+      break
+    case 'created_desc':
+      list.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+      break
+    default:
+      list.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
+  }
+  return list
+})
 
 function formatDate(iso) {
   if (!iso) return '-'
@@ -524,11 +611,21 @@ async function createProject() {
         body: JSON.stringify({ source_project_id: copyFromProjectId.value }),
       })
     } catch {}
+  } else if (fromTemplateId.value) {
+    // B3: 应用模板（POST templates/{id}/apply）
+    try {
+      await fetch(`http://127.0.0.1:18520/api/templates/${fromTemplateId.value}/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: proj.id }),
+      })
+    } catch {}
   }
   showCreateDialog.value = false
   newName.value = ''
   newDesc.value = ''
   copyFromProjectId.value = ''
+  fromTemplateId.value = ''
   tabsStore.openTab(proj.id, proj.name)
 }
 
@@ -564,11 +661,33 @@ watch(sidebarCollapsed, val => {
 
 function onDocClick() { activeMenu.value = null }
 
+// B5: 主屏快捷键
+//   Ctrl+F   → 聚焦搜索框
+//   Ctrl+N   → 新建项目
+//   Esc      → 清空搜索 / 关闭对话框
+function onHomeKey(e) {
+  const tag = (e.target?.tagName || '').toLowerCase()
+  const inField = tag === 'input' || tag === 'textarea' || e.target?.isContentEditable
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault()
+    searchInputEl.value?.focus?.()
+    searchInputEl.value?.select?.()
+  } else if ((e.ctrlKey || e.metaKey) && e.key === 'n' && !inField) {
+    e.preventDefault()
+    showCreateDialog.value = true
+  } else if (e.key === 'Escape' && !inField) {
+    if (showCreateDialog.value) showCreateDialog.value = false
+    else if (searchQuery.value) searchQuery.value = ''
+  }
+}
+
 onMounted(async () => {
   loadFolders()
   await store.fetchProjects()
   syncFoldersFromProjects()
+  await reloadTemplates()
   document.addEventListener('click', onDocClick)
+  window.addEventListener('keydown', onHomeKey)
   window.electronAPI?.onMenuNewProject(() => { showCreateDialog.value = true })
   try {
     const res = await fetch('http://127.0.0.1:18520/api/settings')
@@ -578,6 +697,7 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick)
+  window.removeEventListener('keydown', onHomeKey)
   window.electronAPI?.removeAllListeners('menu:new-project')
 })
 </script>
@@ -696,6 +816,24 @@ onUnmounted(() => {
   transition: border-color var(--transition), color var(--transition);
 }
 .add-folder-btn:hover { border-color: var(--color-accent); color: var(--color-accent); }
+
+/* B3: 模板区 */
+.templates-section { padding: 8px 12px 12px; border-top: 1px solid var(--color-border); margin-top: 4px; }
+.templates-title { font-size: 11px; color: var(--color-text-muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.template-pill {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 6px; border-radius: 4px; font-size: 12px;
+  background: var(--color-surface-2);
+  margin-bottom: 4px;
+}
+.template-pill:hover { background: var(--color-border); }
+.template-name { flex: 1; min-width: 0; }
+.template-btn {
+  background: none; border: none; cursor: pointer; opacity: .5;
+  color: var(--color-text); font-size: 13px; padding: 0 4px;
+}
+.template-btn:hover { opacity: 1; }
+.template-btn.danger:hover { color: var(--color-error); }
 
 /* Main */
 .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }

@@ -152,10 +152,46 @@
               <option value="楷体">楷体</option>
             </select>
           </div>
-          <div class="cfg-row" style="margin-bottom:10px">
+          <div class="cfg-row" style="margin-bottom:6px">
             <label class="cfg-label">字体大小</label>
             <input v-model.number="fontSize" type="number" min="10" max="60"
               class="input input-sm" style="width:70px" />
+          </div>
+
+          <!-- D2: 颜色与描边 -->
+          <div class="cfg-row" style="margin-bottom:6px">
+            <label class="cfg-label">文字颜色</label>
+            <input v-model="primaryColour" type="color" class="input input-sm" style="width:70px;padding:0" />
+            <label class="cfg-label" style="margin-left:12px">描边色</label>
+            <input v-model="outlineColour" type="color" class="input input-sm" style="width:70px;padding:0" />
+          </div>
+          <div class="cfg-row" style="margin-bottom:6px">
+            <label class="cfg-label">描边粗细</label>
+            <input v-model.number="outlineWidth" type="number" min="0" max="6" step="0.5"
+              class="input input-sm" style="width:70px" />
+            <label class="cfg-label" style="margin-left:12px">阴影</label>
+            <input v-model.number="shadowDepth" type="number" min="0" max="6" step="0.5"
+              class="input input-sm" style="width:70px" />
+          </div>
+          <div class="cfg-row" style="margin-bottom:6px">
+            <label class="cfg-label">位置</label>
+            <select v-model="position" class="input select-sm" style="width:90px">
+              <option value="bottom">底部</option>
+              <option value="center">居中</option>
+              <option value="top">顶部</option>
+            </select>
+            <label class="cfg-label" style="margin-left:12px">边距 V</label>
+            <input v-model.number="marginV" type="number" min="0" max="500" step="5"
+              class="input input-sm" style="width:70px" />
+          </div>
+          <div class="cfg-row" style="margin-bottom:10px">
+            <label class="cfg-label">
+              <input type="checkbox" v-model="bold" /> 粗体
+            </label>
+            <label class="cfg-label" style="margin-left:12px">
+              <input type="checkbox" v-model="italic" /> 斜体
+            </label>
+            <button class="btn btn-ghost btn-xs" style="margin-left:auto" @click="resetStyle">↺ 重置样式</button>
           </div>
 
           <button
@@ -288,6 +324,26 @@ const manualAdvance = ref(0.0)
 // ── Font (embed) ──────────────────────────────────────────────────────────────
 const fontName = ref('等线 Bold')
 const fontSize = ref(18)
+// D2: 扩展样式
+const primaryColour = ref('#FFFFFF')
+const outlineColour = ref('#000000')
+const outlineWidth  = ref(2)
+const shadowDepth   = ref(0)
+const marginV       = ref(30)
+const position      = ref('bottom')
+const bold          = ref(true)
+const italic        = ref(false)
+
+function resetStyle() {
+  primaryColour.value = '#FFFFFF'
+  outlineColour.value = '#000000'
+  outlineWidth.value  = 2
+  shadowDepth.value   = 0
+  marginV.value       = 30
+  position.value      = 'bottom'
+  bold.value          = true
+  italic.value        = false
+}
 
 // ── Generate SRT ──────────────────────────────────────────────────────────────
 const GEN_STEPS = [
@@ -399,9 +455,17 @@ async function embedSubtitles() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        project_id: props.projectId,
-        font_name: fontName.value,
-        font_size: fontSize.value,
+        project_id:     props.projectId,
+        font_name:      fontName.value,
+        font_size:      fontSize.value,
+        primary_colour: primaryColour.value,
+        outline_colour: outlineColour.value,
+        outline_width:  outlineWidth.value,
+        shadow_depth:   shadowDepth.value,
+        margin_v:       marginV.value,
+        position:       position.value,
+        bold:           bold.value,
+        italic:         italic.value,
       }),
     })
     const reader = res.body.getReader()

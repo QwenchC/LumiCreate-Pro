@@ -3,7 +3,7 @@
     <div class="titlebar">
       <div class="titlebar-drag">
         <img src="/icon.png" class="titlebar-icon" alt="" />
-        <span class="titlebar-title">LumiCreate-Pro</span>
+        <span class="titlebar-title">{{ $t('app.title') }}</span>
       </div>
       <!-- Project tabs in the title bar -->
       <div class="project-tabs" v-if="tabsStore.tabs.length">
@@ -28,6 +28,21 @@
         </button>
       </div>
       <div class="titlebar-controls">
+        <!-- E1: 日志浮窗开关（隐藏后可重开） -->
+        <button class="ctrl-btn log-toggle" @click="toggleLogPanel"
+                :title="logPanelOn ? '隐藏后端日志浮窗' : '显示后端日志浮窗'">
+          📋
+        </button>
+        <!-- C2: ComfyUI 健康指示灯 -->
+        <button
+          class="comfy-pill"
+          :class="comfyStatus"
+          :title="comfyTitle"
+          @click="checkComfy(true)"
+        >
+          <span class="comfy-dot" />
+          <span class="comfy-text">ComfyUI</span>
+        </button>
         <button class="ctrl-btn theme-btn" @click="toggleTheme" :title="isDark ? '切换到浅色模式' : '切换到深色模式'">
           {{ isDark ? '☀' : '🌙' }}
         </button>
@@ -40,13 +55,57 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useTabsStore } from '../stores/tabs'
 
 defineEmits(['close-tab', 'go-home'])
 
 const tabsStore = useTabsStore()
 const isDark = ref(true)
+
+// E1: 日志浮窗开关 toggle
+const logPanelOn = ref(localStorage.getItem('lumi-log-panel') !== 'off')
+function toggleLogPanel() {
+  logPanelOn.value = !logPanelOn.value
+  window.dispatchEvent(new CustomEvent('lumi:toggle-log-panel'))
+}
+
+// C2: ComfyUI 健康指示灯
+const comfyStatus = ref('unknown')   // 'ok' | 'down' | 'unknown' | 'unset'
+const comfyMessage = ref('')
+const comfyLastCheck = ref(0)
+let   _comfyTimer = null
+
+const comfyTitle = computed(() => {
+  const sec = comfyLastCheck.value
+        ? Math.round((Date.now() - comfyLastCheck.value) / 1000)
+        : null
+  const when = sec != null ? ` · ${sec}s 前检测` : ''
+  if (comfyStatus.value === 'ok')      return `ComfyUI 在线${when}：${comfyMessage.value}（点击立即重检）`
+  if (comfyStatus.value === 'down')    return `ComfyUI 不可用${when}：${comfyMessage.value}（点击立即重检）`
+  if (comfyStatus.value === 'unset')   return `ComfyUI 地址未配置（点击去设置）`
+  return `ComfyUI 状态未知（点击立即检测）`
+})
+
+async function checkComfy(force = false) {
+  try {
+    const r = await fetch('http://127.0.0.1:18520/api/image-engine/test')
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    const d = await r.json()
+    if (d.success) {
+      comfyStatus.value = 'ok'
+      comfyMessage.value = d.message || '连接正常'
+    } else {
+      // 后端 200 + success:false 通常代表"已配置但连不上"
+      comfyStatus.value = 'down'
+      comfyMessage.value = d.message || '未知错误'
+    }
+  } catch (e) {
+    comfyStatus.value = 'down'
+    comfyMessage.value = e.message
+  }
+  comfyLastCheck.value = Date.now()
+}
 
 function applyTheme(dark) {
   document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
@@ -61,6 +120,12 @@ function toggleTheme() {
 onMounted(() => {
   const saved = localStorage.getItem('lumi-theme')
   applyTheme(saved !== 'light')
+  // C2: 启动时立即检查，之后每 60s 一次
+  checkComfy()
+  _comfyTimer = setInterval(checkComfy, 60_000)
+})
+onUnmounted(() => {
+  if (_comfyTimer) clearInterval(_comfyTimer)
 })
 
 function minimize() { window.electronAPI?.windowMinimize() }
@@ -126,7 +191,31 @@ function close()    { window.electronAPI?.windowClose() }
 .home-tab { font-size: 14px; opacity: 0.7; }
 .home-tab:hover { opacity: 1; }
 
-.titlebar-controls { display: flex; -webkit-app-region: no-drag; flex-shrink: 0; }
+.titlebar-controls { display: flex; -webkit-app-region: no-drag; flex-shrink: 0; align-items: center; }
+
+/* C2: ComfyUI 健康指示灯 */
+.comfy-pill {
+  display: flex; align-items: center; gap: 5px;
+  background: transparent; border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  padding: 2px 8px; margin-right: 6px; height: 22px;
+  border-radius: 10px; cursor: pointer;
+  font-size: 11px; line-height: 1;
+  -webkit-app-region: no-drag;
+  transition: background var(--transition), border-color var(--transition);
+}
+.comfy-pill:hover { background: var(--color-surface-2); }
+.comfy-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--color-text-muted);
+}
+.comfy-pill.ok    .comfy-dot { background: #4caf50; box-shadow: 0 0 4px rgba(76,175,80,.7); }
+.comfy-pill.ok    { border-color: rgba(76,175,80,.4); color: var(--color-text); }
+.comfy-pill.down  .comfy-dot { background: #e53935; }
+.comfy-pill.down  { border-color: rgba(229,57,53,.5); color: #f88; }
+.comfy-pill.unset .comfy-dot { background: #888; }
+.log-toggle { width: 32px; font-size: 13px; }
+.log-toggle:hover { background: var(--color-border); }
 .ctrl-btn {
   width: 46px;
   height: var(--titlebar-height);

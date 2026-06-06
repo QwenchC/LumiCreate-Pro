@@ -15,14 +15,21 @@ async def stream_chat(
     """
     Yield text chunks from the configured LLM engine.
     Handles: Ollama, LM Studio / DeepSeek / Bailian / other OpenAI-compat.
+
+    瞬态网络错误重试：仅在尚未产出 token 时重试，已经流过内容则不会重复。
     """
-    if cfg.engine_type == "ollama":
-        async for chunk in _stream_ollama(cfg, system_prompt, user_message):
-            yield chunk
-    else:
-        # LM Studio and all OpenAI-compatible endpoints use the same format
-        async for chunk in _stream_openai_compat(cfg, system_prompt, user_message):
-            yield chunk
+    from services.retry import async_retry_streaming
+
+    def factory():
+        if cfg.engine_type == "ollama":
+            return _stream_ollama(cfg, system_prompt, user_message)
+        # LM Studio / DeepSeek / Bailian / OpenAI-compat 走同一格式
+        return _stream_openai_compat(cfg, system_prompt, user_message)
+
+    async for chunk in async_retry_streaming(
+        factory, attempts=3, base_delay=0.5, label=f"llm:{cfg.engine_type}",
+    ):
+        yield chunk
 
 
 # ── Ollama ─────────────────────────────────────────────────────────────────────

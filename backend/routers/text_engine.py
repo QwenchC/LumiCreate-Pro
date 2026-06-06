@@ -60,6 +60,9 @@ class GenerateScenesRequest(BaseModel):
     manuscript:    str
     dialogue_mode: str  = "mixed"   # narration | dialogue | mixed | reading
     characters:    list = []         # [{name, role, traits}]
+    # AI 有机分镜：reading 模式默认走纯文本切（快速稳定）；
+    # 设为 True 时即使 reading 模式也调 LLM 做语义分镜（适合一键全流程"宁多不少"）
+    force_llm:     bool = False
 
 
 class GenerateFramePromptsRequest(BaseModel):
@@ -224,8 +227,8 @@ async def generate_scenes(req: GenerateScenesRequest):
     if not req.manuscript.strip():
         raise HTTPException(status_code=400, detail="文案内容不能为空")
 
-    # ── reading mode: pure text split, no LLM ─────────────────────────────────
-    if req.dialogue_mode == "reading":
+    # ── reading mode: pure text split, no LLM (除非 force_llm=True) ───────────
+    if req.dialogue_mode == "reading" and not req.force_llm:
         scenes = _split_reading_scenes(req.manuscript)
         return {"scenes": scenes, "total": len(scenes)}
 
@@ -264,16 +267,31 @@ async def generate_scenes(req: GenerateScenesRequest):
     if scenes_raw is None:
         raise HTTPException(status_code=502, detail=f"LLM 未返回有效 JSON:\n{full_text[:400]}")
 
+    # 出场角色启发式：扫描 description + dialogues.text，命中已知名字即填入 _scene_characters
+    known_names = [c.get("name", "") for c in chars if c.get("name")]
+    def _detect_chars(text: str) -> list[str]:
+        if not known_names:
+            return []
+        hits = []
+        for n in known_names:
+            if n and n in text:
+                hits.append(n)
+        return hits
+
     result = []
     for i, s in enumerate(scenes_raw):
+        desc = s.get("description", "")
+        dlgs = s.get("dialogues", []) or []
+        scan_text = desc + " " + " ".join((d.get("text") or "") + " " + (d.get("character") or "") for d in dlgs)
         result.append({
             "id": f"scene_{i + 1:03d}",
             "index": s.get("index", i + 1),
-            "description": s.get("description", ""),
+            "description": desc,
             "duration_estimate": float(s.get("duration_estimate", 8.0)),
             "start_frame_prompt": s.get("start_frame_prompt", ""),
             "end_frame_prompt": s.get("end_frame_prompt", ""),
-            "dialogues": s.get("dialogues", []),
+            "dialogues": dlgs,
+            "_scene_characters": _detect_chars(scan_text),
         })
     return {"scenes": result, "total": len(result)}
 

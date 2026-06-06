@@ -78,6 +78,15 @@ class EmbedRequest(BaseModel):
     project_id: str
     font_name: str = '等线 Bold'
     font_size: int = 18
+    # D2: 扩展样式
+    primary_colour:  str = "#FFFFFF"   # 文字主色（ASS BGR / RGB 都接受，前端给 #RRGGBB）
+    outline_colour:  str = "#000000"   # 描边颜色
+    outline_width:   float = 2.0       # 描边粗细（像素）
+    shadow_depth:    float = 0.0       # 阴影深度
+    margin_v:        int = 30          # 距底/顶的垂直边距（像素）
+    position:        str = "bottom"    # "bottom" | "top" | "center"
+    bold:            bool = True       # ASS Bold
+    italic:          bool = False
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -229,6 +238,31 @@ async def embed_subtitles_endpoint(req: EmbedRequest):
 
     q: Queue = Queue()
 
+    # D2: 转 ASS force_style：FFmpeg subtitles filter 接受 force_style 串
+    def _hex_to_ass_color(hex_str: str) -> str:
+        """#RRGGBB → &HBBGGRR&  （ASS 是 BGR + 透明）"""
+        h = (hex_str or "#FFFFFF").lstrip("#")
+        if len(h) != 6:
+            h = "FFFFFF"
+        r, g, b = h[0:2], h[2:4], h[4:6]
+        return f"&H00{b}{g}{r}".upper() + "&"
+
+    alignment = {"bottom": 2, "center": 5, "top": 8}.get(req.position, 2)
+    force_style_parts = [
+        f"FontName={req.font_name}",
+        f"FontSize={req.font_size}",
+        f"PrimaryColour={_hex_to_ass_color(req.primary_colour)}",
+        f"OutlineColour={_hex_to_ass_color(req.outline_colour)}",
+        f"Outline={req.outline_width}",
+        f"Shadow={req.shadow_depth}",
+        f"Bold={1 if req.bold else 0}",
+        f"Italic={1 if req.italic else 0}",
+        f"Alignment={alignment}",
+        f"MarginV={req.margin_v}",
+        "BorderStyle=1",
+    ]
+    force_style = ",".join(force_style_parts)
+
     def _run():
         try:
             for evt in embed_subtitles(
@@ -236,6 +270,7 @@ async def embed_subtitles_endpoint(req: EmbedRequest):
                 font_name=req.font_name,
                 font_size=req.font_size,
                 ffprobe=_find_ffprobe(ffmpeg),
+                force_style=force_style,
             ):
                 q.put(evt)
         except Exception as e:

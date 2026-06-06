@@ -381,10 +381,17 @@ onMounted(async () => {
       }))
     }
   } catch {}
+  _initHistory()    // B2: scenes 加载完成 → 建立撤销基线
 
   window.addEventListener('lumi:save-project', onGlobalSave)
+  window.addEventListener('lumi:undo', _onProjectUndo)
+  window.addEventListener('lumi:redo', _onProjectRedo)
 })
-onUnmounted(() => window.removeEventListener('lumi:save-project', onGlobalSave))
+onUnmounted(() => {
+  window.removeEventListener('lumi:save-project', onGlobalSave)
+  window.removeEventListener('lumi:undo', _onProjectUndo)
+  window.removeEventListener('lumi:redo', _onProjectRedo)
+})
 // Auto-save when navigating away (KeepAlive: onDeactivated fires on every tab switch)
 onDeactivated(async () => { if (isDirty.value) await save() })
 
@@ -767,10 +774,76 @@ function toggleExpand(idx) {
   expandedIdx.value = expandedIdx.value === idx ? null : idx
 }
 
+// ── B2: 撤销 / 重做 ─────────────────────────────────────────────────────────
+// 模型：_history 存"过去的稳定状态"；_lastStable 存"当前显示状态对应的稳定 snapshot"
+// 每次 markDirty 把 _lastStable 推入 _history，然后更新 _lastStable=当前 snapshot。
+// undo: _lastStable 推 _future，弹 _history 最顶应用 + 更新 _lastStable
+// redo: _lastStable 推 _history，弹 _future 最顶应用 + 更新 _lastStable
+const _history = []
+const _future  = []
+const HIST_MAX = 20
+let   _lastStable = null     // 初始化时填
+let   _suppressHist = false  // apply 时关闭防止递归
+
+function _snapshot() {
+  return JSON.parse(JSON.stringify(scenes.value))
+}
+function _applySnapshot(snap) {
+  _suppressHist = true
+  scenes.value = JSON.parse(JSON.stringify(snap))
+  _suppressHist = false
+}
+
+function _initHistory() {
+  // load 完后调一次：把"初始状态"作为基线
+  _lastStable = _snapshot()
+  _history.length = 0
+  _future.length  = 0
+}
+
+function _recordChange() {
+  if (_suppressHist) return
+  if (_lastStable == null) { _lastStable = _snapshot(); return }
+  _history.push(_lastStable)
+  if (_history.length > HIST_MAX) _history.shift()
+  _lastStable = _snapshot()
+  _future.length = 0
+}
+
+function undo() {
+  if (!_history.length) return
+  _future.push(_lastStable ?? _snapshot())
+  const prev = _history.pop()
+  _applySnapshot(prev)
+  _lastStable = prev
+  isDirty.value = true
+  emit('dirty')
+}
+
+function redo() {
+  if (!_future.length) return
+  _history.push(_lastStable ?? _snapshot())
+  const next = _future.pop()
+  _applySnapshot(next)
+  _lastStable = next
+  isDirty.value = true
+  emit('dirty')
+}
+
 function markDirty() {
+  _recordChange()
   isDirty.value = true
   window.__lumiUnsaved = true
   emit('dirty')
+}
+
+function _onProjectUndo(e) {
+  if (e?.detail?.tab && e.detail.tab !== 'scenes') return
+  undo()
+}
+function _onProjectRedo(e) {
+  if (e?.detail?.tab && e.detail.tab !== 'scenes') return
+  redo()
 }
 
 // ── Save ───────────────────────────────────────────────────────────────────────

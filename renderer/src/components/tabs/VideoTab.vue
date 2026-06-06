@@ -15,9 +15,9 @@
           <button
             class="btn btn-success btn-sm"
             :disabled="!allVideosReady || merging"
-            :title="!allVideosReady ? '所有分镜视频生成完毕后才能合并' : '合并所有分镜视频'"
-            @click="mergeVideos"
-          >{{ merging ? '合并中…' : '🎬 合并视频' }}</button>
+            :title="!allVideosReady ? '所有分镜视频生成完毕后才能合并' : '合并所有分镜视频（可设过渡 + BGM）'"
+            @click="openMergeOptions"
+          >{{ merging ? '合并中…' : '🎬 合并视频…' }}</button>
           <button
             class="btn btn-secondary btn-sm"
             :disabled="!selectedWorkflow || !readyCount"
@@ -49,6 +49,128 @@
       </div>
     </div>
 
+    <!-- D1/D3: 合并设置弹窗 -->
+    <Teleport to="body">
+      <div v-if="mergeOptionsOpen" class="overlay" @click.self="mergeOptionsOpen = false">
+        <div class="dialog card" style="width:520px;max-width:calc(100vw - 40px)">
+          <h3 class="dialog-title">🎬 合并设置</h3>
+
+          <div class="form-group">
+            <label>🎚 镜间过渡</label>
+            <div class="form-row">
+              <select v-model="mergeTransition" class="input select" style="flex:1">
+                <option value="cut">硬切（cut，无过渡 · 最快，与原版相同）</option>
+                <option value="fade">渐黑（fade）</option>
+                <option value="fadeblack">黑色淡入（fadeblack）</option>
+                <option value="dissolve">交叉溶解（dissolve）</option>
+                <option value="wipeleft">擦除-向左（wipeleft）</option>
+                <option value="wiperight">擦除-向右（wiperight）</option>
+                <option value="slideleft">滑动-向左（slideleft）</option>
+                <option value="slideright">滑动-向右（slideright）</option>
+                <option value="circleopen">圆形展开（circleopen）</option>
+                <option value="circleclose">圆形闭合（circleclose）</option>
+              </select>
+              <input type="number" min="50" max="2000" step="50"
+                     v-model.number="mergeTransitionMs" class="input"
+                     :disabled="mergeTransition === 'cut'"
+                     style="width:90px" title="过渡时长 (ms)" />
+              <span class="text-muted" style="font-size:12px;align-self:center">ms</span>
+            </div>
+            <p class="form-hint">
+              非 cut 时整片需要重新编码，会比硬切慢；推荐 200–500ms。
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label>🎵 背景音乐 (BGM)</label>
+            <div class="bgm-row">
+              <span v-if="bgmInfo.exists" class="bgm-pill">
+                ✓ {{ bgmInfo.filename }} · {{ (bgmInfo.size / 1024).toFixed(0) }} KB
+              </span>
+              <span v-else class="text-muted" style="font-size:12px">未上传</span>
+              <button class="btn btn-secondary btn-xs" :disabled="bgmUploading" @click="pickBgmFile">
+                {{ bgmUploading ? '上传中…' : (bgmInfo.exists ? '🔁 替换' : '⬆ 上传 BGM') }}
+              </button>
+              <button v-if="bgmInfo.exists" class="btn btn-ghost btn-xs" @click="deleteBgm">✕ 删除</button>
+            </div>
+            <div v-if="bgmInfo.exists" class="form-row" style="margin-top:6px;align-items:center">
+              <label style="font-size:12px;min-width:64px">音量 dB</label>
+              <input type="range" min="-40" max="0" step="1" v-model.number="mergeBgmVolDb" style="flex:1" />
+              <span style="font-size:12px;min-width:42px;text-align:right">{{ mergeBgmVolDb }} dB</span>
+            </div>
+            <div v-if="bgmInfo.exists" class="form-row" style="margin-top:6px">
+              <input type="number" min="0" max="5000" step="100"
+                     v-model.number="mergeBgmFadeIn" class="input" style="flex:1"
+                     placeholder="淡入 ms" title="BGM 淡入时长" />
+              <input type="number" min="0" max="5000" step="100"
+                     v-model.number="mergeBgmFadeOut" class="input" style="flex:1"
+                     placeholder="淡出 ms" title="BGM 淡出时长" />
+            </div>
+            <p class="form-hint" v-if="bgmInfo.exists">
+              BGM 会循环播放到视频结束。音量 -20 dB 通常作为人声背景音；-10 dB 接近人声前景。
+            </p>
+          </div>
+
+          <div class="dialog-actions">
+            <button class="btn btn-ghost" @click="mergeOptionsOpen = false">取消</button>
+            <button class="btn btn-primary" :disabled="merging" @click="confirmMerge">
+              {{ merging ? '合并中…' : '🎬 开始合并' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- C1: 工作流节点映射编辑器 -->
+    <Teleport to="body">
+      <div v-if="workflowMetaOpen" class="overlay" @click.self="workflowMetaOpen = false">
+        <div class="dialog card" style="width:560px;max-width:calc(100vw - 40px)">
+          <h3 class="dialog-title">⚙ 节点映射 · {{ selectedWorkflow }}</h3>
+          <p class="text-muted" style="font-size:12px;margin-bottom:10px">
+            填写该工作流里下列字段对应的 ComfyUI 节点 ID（LiteGraph 整数）。
+            没改过工作流就保持默认即可——这些值就是 <code>flfa2i-lumicreate</code> 的原生节点 ID。
+            遇到自定义工作流注入失败时，在 ComfyUI 右上角 Properties 里看节点 ID 填进来。
+          </p>
+          <div class="meta-grid">
+            <template v-for="f in META_FIELDS" :key="f.key">
+              <div class="meta-label" :title="f.desc">{{ f.label }}</div>
+              <input type="number" class="input meta-input"
+                     v-model.number="workflowMetaForm.node_map[f.key].node_id"
+                     :placeholder="`默认 ${f.defaultId}`" />
+              <input type="number" class="input meta-input meta-widget"
+                     v-model.number="workflowMetaForm.node_map[f.key].widget"
+                     placeholder="widget" title="widgets_values 下标，默认 0" />
+            </template>
+          </div>
+          <div class="form-group" style="margin-top:8px">
+            <label>备注</label>
+            <textarea v-model="workflowMetaForm.notes" class="input textarea" rows="2"
+                      placeholder="（可选）记录这个工作流的版本/来源等"></textarea>
+          </div>
+          <div class="dialog-actions">
+            <button class="btn btn-ghost" @click="workflowMetaOpen = false">取消</button>
+            <button class="btn btn-warning btn-sm" @click="resetWorkflowMeta">↺ 恢复默认</button>
+            <button class="btn btn-primary" :disabled="workflowMetaSaving" @click="saveWorkflowMeta">
+              {{ workflowMetaSaving ? '保存中...' : '保存' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- A1: 上次失败镜次提示 + 一键重试 -->
+    <div v-if="lastErrorCount && !running" class="last-errors-banner">
+      <span>⚠ 上次失败：{{ lastErrorCount }} 个视频分镜</span>
+      <button class="btn btn-warning btn-xs" :disabled="!selectedWorkflow" @click="retryFailedBatch">↻ 只重试失败镜</button>
+      <button class="btn btn-ghost btn-xs" @click="dismissLastErrors">✕ 忽略</button>
+      <details class="last-errors-detail">
+        <summary class="text-muted" style="font-size:11px;cursor:pointer">查看详情</summary>
+        <ul>
+          <li v-for="(msg, k) in lastErrors" :key="k"><code>{{ k }}</code>: {{ msg }}</li>
+        </ul>
+      </details>
+    </div>
+
     <!-- ── Config ── -->
     <div class="video-config card" v-if="!running">
       <div class="config-row">
@@ -58,6 +180,10 @@
             <option value="">— 选择工作流 —</option>
             <option v-for="wf in workflows" :key="wf" :value="wf">{{ wf }}</option>
           </select>
+          <button class="btn btn-ghost btn-xs"
+                  :disabled="!selectedWorkflow"
+                  title="编辑该工作流的节点 ID 映射；自定义工作流改了节点后必须在此更新，否则首末帧/音频/分辨率注入会落到错节点"
+                  @click="openWorkflowMeta">⚙ 节点映射</button>
         </div>
         <div class="config-group">
           <label class="cfg-label">分辨率（宽×高）</label>
@@ -224,6 +350,107 @@ const API = 'http://localhost:18520/api'
 
 // ── state ──────────────────────────────────────────────────────────────────────
 const scenes          = ref([])
+
+// C1: 工作流节点映射编辑器
+const META_FIELDS = [
+  { key: 'first_frame_image', label: '首帧图片节点',   desc: 'LoadImage FIRST FRAME',  defaultId: 45  },
+  { key: 'last_frame_image',  label: '末帧图片节点',   desc: 'LoadImage LAST FRAME',   defaultId: 47  },
+  { key: 'audio',             label: '音频节点',       desc: 'LoadAudio',              defaultId: 232 },
+  { key: 'width',             label: '宽度节点',       desc: 'INTConstant WIDTH',      defaultId: 166 },
+  { key: 'height',            label: '高度节点',       desc: 'INTConstant HEIGHT',     defaultId: 167 },
+  { key: 'duration_secs',     label: '时长节点（秒）', desc: 'INTConstant LENGTH',     defaultId: 169 },
+  { key: 'fps',               label: '帧率节点',       desc: 'PrimitiveFloat FPS',     defaultId: 164 },
+  { key: 'positive_prompt',   label: '正向提示词节点', desc: 'CLIPTextEncode pos',     defaultId: 16  },
+]
+const workflowMetaOpen   = ref(false)
+const workflowMetaForm   = ref({ node_map: {}, notes: '', type: 'video', version: 1 })
+const workflowMetaSaving = ref(false)
+
+function _emptyMetaForm() {
+  const nm = {}
+  for (const f of META_FIELDS) nm[f.key] = { node_id: f.defaultId, widget: 0 }
+  return { node_map: nm, notes: '', type: 'video', version: 1 }
+}
+
+async function openWorkflowMeta() {
+  if (!selectedWorkflow.value) return
+  workflowMetaForm.value = _emptyMetaForm()
+  try {
+    const r = await fetch(`${API}/image-engine/workflow-meta/${encodeURIComponent(selectedWorkflow.value)}?type=video`)
+    if (r.ok) {
+      const d = await r.json()
+      const nm = workflowMetaForm.value.node_map
+      for (const f of META_FIELDS) {
+        const v = d.node_map?.[f.key]
+        if (v && typeof v === 'object') {
+          nm[f.key] = { node_id: v.node_id ?? f.defaultId, widget: v.widget ?? 0 }
+        }
+      }
+      workflowMetaForm.value.notes = d.notes || ''
+    }
+  } catch {}
+  workflowMetaOpen.value = true
+}
+
+function resetWorkflowMeta() {
+  if (!confirm('恢复为内置默认节点映射？已填的值会被覆盖。')) return
+  workflowMetaForm.value = _emptyMetaForm()
+}
+
+async function saveWorkflowMeta() {
+  workflowMetaSaving.value = true
+  try {
+    const r = await fetch(`${API}/image-engine/workflow-meta/${encodeURIComponent(selectedWorkflow.value)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(workflowMetaForm.value),
+    })
+    if (!r.ok) throw new Error(await r.text())
+    workflowMetaOpen.value = false
+  } catch (e) {
+    alert('保存节点映射失败: ' + e.message)
+  } finally {
+    workflowMetaSaving.value = false
+  }
+}
+
+// A1: 上次批量失败的视频镜次
+const lastErrors      = ref({})
+const lastErrorCount  = computed(() => Object.keys(lastErrors.value || {}).length)
+
+async function reloadLastErrors() {
+  if (!props.projectId) return
+  try {
+    const r = await fetch(`${API}/projects/${props.projectId}/last-run-errors`)
+    if (!r.ok) return
+    const d = await r.json()
+    lastErrors.value = (d.stage === 'video' ? d.errors : null) || {}
+  } catch { lastErrors.value = {} }
+}
+
+async function dismissLastErrors() {
+  lastErrors.value = {}
+  try { await fetch(`${API}/projects/${props.projectId}/last-run-errors`, { method: 'DELETE' }) } catch {}
+}
+
+async function retryFailedBatch() {
+  if (!Object.keys(lastErrors.value).length) return
+  if (!selectedWorkflow.value) return
+  const failedSceneIds = new Set(Object.keys(lastErrors.value))
+  // 失败镜过滤后调用 _runGeneration（已有函数）批量重做
+  const failedScenes = scenes.value.filter(
+    s => failedSceneIds.has(String(s.id)) && sceneReady(s)
+  )
+  if (!failedScenes.length) return
+  running.value = true; genFinished.value = false; stopFlag.value = false; genError.value = ''
+  try {
+    await _runGeneration(failedScenes)
+  } finally {
+    running.value = false
+    genFinished.value = true
+    await reloadLastErrors()
+  }
+}
 const imagesData      = ref({})   // slot key → base64 PNG
 const imagesSelected  = ref({})   // "{scene_id}:start"|":end" → slot_index
 const audioData       = ref({})   // "__stitched__{sceneId}" → {data, duration_ms}
@@ -387,6 +614,8 @@ async function loadData() {
   } finally {
     loadingScenes.value = false
   }
+  await reloadLastErrors()   // A1
+  await reloadBgm()           // D1
 }
 
 onMounted(loadData)
@@ -648,6 +877,7 @@ async function _runGeneration(sceneList) {
         workflow_name: selectedWorkflow.value,
         resolution:    resolution.value,
         fps:           fps.value,
+        project_id:    props.projectId,    // A1
         scenes: [{
           scene_id:        String(s.id),
           scene_index:     s.index,
@@ -703,6 +933,7 @@ async function _runGeneration(sceneList) {
     running.value = false
     currentReader = null
     emit('dirty')
+    await reloadLastErrors()   // A1: 刷新失败横幅
   }
 }
 
@@ -716,8 +947,8 @@ function handleEvent(evt) {
     sceneState.value = { ...sceneState.value, [scene_id]: 'done' }
     if (evt.video) {
       sceneVideos.value = { ...sceneVideos.value, [scene_id]: evt.video }
-      // Persist all completed videos to project
-      _saveVideos()
+      // A3: 单镜增量保存（避免一次 PUT 30+ 个 mp4 base64）
+      _saveOneVideo(scene_id, evt.video)
     }
   } else if (event === 'scene_retrying') {
     // VRAM offload detected — backend is freeing memory and retrying; keep scene active
@@ -748,6 +979,16 @@ async function _saveVideos() {
   }
 }
 
+// A3: 单镜增量保存（每镜完成立刻落盘，不再每次重新 PUT 全量）
+async function _saveOneVideo(scene_id, b64) {
+  if (!props.projectId || !b64) return
+  try {
+    await axios.put(`${API}/projects/${props.projectId}/videos/slot`, { scene_id: String(scene_id), data: b64 })
+  } catch (e) {
+    console.warn('单镜视频保存失败:', e)
+  }
+}
+
 async function mergeVideos() {
   if (!allVideosReady.value || merging.value) return
   merging.value = true
@@ -757,6 +998,13 @@ async function mergeVideos() {
     const { data } = await axios.post(`${API}/video-engine/merge-project-video`, {
       project_id: props.projectId,
       scene_order,
+      // D3: 镜间过渡
+      transition: mergeTransition.value,
+      transition_duration_ms: mergeTransitionMs.value,
+      // D1: BGM 混音；-100 表示不启用 BGM
+      bgm_volume_db:   bgmInfo.value.exists ? mergeBgmVolDb.value : -100,
+      bgm_fade_in_ms:  mergeBgmFadeIn.value,
+      bgm_fade_out_ms: mergeBgmFadeOut.value,
     })
     mergeResult.value = data
   } catch (e) {
@@ -764,6 +1012,77 @@ async function mergeVideos() {
   } finally {
     merging.value = false
   }
+}
+
+// ── D1/D3: 合并设置 ──────────────────────────────────────────────────────
+const mergeOptionsOpen = ref(false)
+function openMergeOptions() {
+  if (!allVideosReady.value) return
+  reloadBgm()
+  mergeOptionsOpen.value = true
+}
+async function confirmMerge() {
+  mergeOptionsOpen.value = false
+  await mergeVideos()
+}
+
+// ── D1: BGM 上传/查询/删除 ─────────────────────────────────────────────────
+const bgmInfo        = ref({ exists: false, filename: '', size: 0 })
+const bgmUploading   = ref(false)
+const mergeBgmVolDb  = ref(-18)
+const mergeBgmFadeIn = ref(1000)
+const mergeBgmFadeOut = ref(1500)
+const mergeTransition   = ref('cut')
+const mergeTransitionMs = ref(300)
+
+async function reloadBgm() {
+  if (!props.projectId) return
+  try {
+    const r = await fetch(`${API}/video-engine/bgm/${props.projectId}`)
+    if (r.ok) bgmInfo.value = await r.json()
+  } catch {}
+}
+
+function pickBgmFile() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.mp3,.m4a,.wav,.aac,.ogg,.flac,audio/*'
+  input.onchange = async () => {
+    const f = input.files?.[0]
+    if (!f) return
+    bgmUploading.value = true
+    try {
+      const arrayBuf = await f.arrayBuffer()
+      // base64 编码大文件分块
+      const u8 = new Uint8Array(arrayBuf)
+      let bin = ''
+      const CHUNK = 0x8000
+      for (let i = 0; i < u8.length; i += CHUNK) {
+        bin += String.fromCharCode.apply(null, u8.subarray(i, i + CHUNK))
+      }
+      const b64 = btoa(bin)
+      const r = await fetch(`${API}/video-engine/bgm/${props.projectId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: f.name, data: b64 }),
+      })
+      if (!r.ok) throw new Error(await r.text())
+      await reloadBgm()
+    } catch (e) {
+      alert('BGM 上传失败: ' + e.message)
+    } finally {
+      bgmUploading.value = false
+    }
+  }
+  input.click()
+}
+
+async function deleteBgm() {
+  if (!confirm('删除当前 BGM？')) return
+  try {
+    await fetch(`${API}/video-engine/bgm/${props.projectId}`, { method: 'DELETE' })
+    await reloadBgm()
+  } catch (e) { alert('删除失败: ' + e.message) }
 }
 
 async function openMergedVideo() {
@@ -781,6 +1100,24 @@ async function showMergedInFolder() {
 
 <style scoped>
 .video-tab { display:flex; flex-direction:column; height:100%; overflow:hidden; }
+.last-errors-banner {
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:6px 16px; background:rgba(220,60,60,.08);
+  border-bottom:1px solid rgba(220,60,60,.4); font-size:12px; flex-shrink:0;
+}
+.last-errors-banner .last-errors-detail { width:100%; }
+.last-errors-banner ul { margin:4px 0 0 18px; padding:0; font-size:11px; line-height:1.5; }
+.last-errors-banner code { background:rgba(255,255,255,.08); padding:1px 4px; border-radius:3px; }
+.meta-grid {
+  display: grid;
+  grid-template-columns: 1fr 110px 80px;
+  gap: 6px 10px; align-items: center; font-size: 13px;
+}
+.meta-input { padding: 4px 6px; font-size: 12px; }
+.meta-widget { width: 80px; }
+.meta-label  { color: var(--color-text); }
+.bgm-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.bgm-pill { background:rgba(60,180,90,.15); border:1px solid rgba(60,180,90,.5); padding:3px 8px; border-radius:4px; font-size:12px; }
 .video-toolbar {
   display:flex; align-items:center; justify-content:space-between;
   padding:12px 16px 8px; flex-shrink:0;

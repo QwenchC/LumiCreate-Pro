@@ -1,0 +1,49 @@
+{
+  "app": {
+    "title": "LumiCreate-Pro"
+  },
+  "common": {
+    "save": "Save",
+    "saving": "Saving...",
+    "unsaved": "Unsaved",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "rename": "Rename",
+    "refresh": "Refresh",
+    "loading": "Loading…",
+    "ok": "OK",
+    "close": "Close",
+    "settings": "Settings"
+  },
+  "home": {
+    "newProject": "+ New Project",
+    "searchPlaceholder": "Search projects (Ctrl+F)",
+    "sortRecent": "Recently updated",
+    "sortCreated": "Newest first",
+    "sortName": "By name",
+    "globalSearchHint": "Global search \"{q}\" · {n} results",
+    "emptyProjects": "No projects yet — click \"New Project\" to start",
+    "newFolder": "+ New folder",
+    "engineSettings": "⚙ Engine settings",
+    "taskHistory": "📊 Task history",
+    "projectTemplates": "📦 Project templates"
+  },
+  "project": {
+    "tabs": {
+      "manuscript": "Manuscript",
+      "characters": "Characters",
+      "scenes":     "Scenes",
+      "images":     "Images",
+      "audio":      "Audio",
+      "video":      "Video",
+      "subtitle":   "Subtitle"
+    },
+    "saveAsTemplate": "📦 Save as template",
+    "orchestrator": "🚀 Run pipeline"
+  },
+  "log": {
+    "title": "📋 Backend log",
+    "empty": "(No logs yet — anything the backend prints will show up here)"
+  }
+}

@@ -61,6 +61,15 @@ async def synthesise(text: str, voice: str, rate: str = "+0%"):
     }
 
 
+async def _synthesise_mp3_once(text: str, voice: str, rate: str) -> bytes:
+    communicate = edge_tts.Communicate(text, voice, rate=rate)
+    chunks: list[bytes] = []
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            chunks.append(chunk["data"])
+    return b"".join(chunks)
+
+
 async def synthesise_mp3(text: str, voice: str, rate: str = "+0%") -> bytes:
     """
     Generate speech using a Microsoft Edge neural voice.
@@ -73,9 +82,9 @@ async def synthesise_mp3(text: str, voice: str, rate: str = "+0%") -> bytes:
     Returns:
         Raw MP3 bytes.
     """
-    communicate = edge_tts.Communicate(text, voice, rate=rate)
-    chunks: list[bytes] = []
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            chunks.append(chunk["data"])
-    return b"".join(chunks)
+    # 完全幂等 → 直接 retry 包一层
+    from services.retry import async_retry
+    return await async_retry(
+        lambda: _synthesise_mp3_once(text, voice, rate),
+        attempts=3, base_delay=0.5, label=f"msedge:{voice}",
+    )

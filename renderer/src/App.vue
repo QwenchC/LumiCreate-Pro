@@ -30,6 +30,9 @@
       @discard="handleCloseDialogDiscard"
       @cancel="closeConfirm.show = false"
     />
+
+    <!-- E1: 后端日志浮窗（全局），右键 / ✕ 隐藏后可在标题栏点 📋 重开 -->
+    <LogPanel v-if="logPanelEnabled" @hide="logPanelEnabled = false" />
   </div>
 </template>
 
@@ -39,7 +42,17 @@ import { useRouter } from 'vue-router'
 import TitleBar from './components/TitleBar.vue'
 import UnsavedDialog from './components/UnsavedDialog.vue'
 import ProjectView from './views/ProjectView.vue'
+import LogPanel from './components/LogPanel.vue'
 import { useTabsStore } from './stores/tabs'
+
+// E1: 全局开关。默认开。可通过 localStorage.lumi-log-panel='off' 隐藏
+const logPanelEnabled = ref(localStorage.getItem('lumi-log-panel') !== 'off')
+
+function _onLogPanelToggle() {
+  logPanelEnabled.value = !logPanelEnabled.value
+  localStorage.setItem('lumi-log-panel', logPanelEnabled.value ? 'on' : 'off')
+}
+window.addEventListener('lumi:toggle-log-panel', _onLogPanelToggle)
 
 const router = useRouter()
 const tabsStore = useTabsStore()

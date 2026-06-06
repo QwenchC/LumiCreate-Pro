@@ -1,0 +1,49 @@
+{
+  "app": {
+    "title": "LumiCreate-Pro"
+  },
+  "common": {
+    "save": "保存",
+    "saving": "保存中...",
+    "unsaved": "未保存",
+    "cancel": "取消",
+    "confirm": "确定",
+    "delete": "删除",
+    "rename": "重命名",
+    "refresh": "刷新",
+    "loading": "加载中…",
+    "ok": "确定",
+    "close": "关闭",
+    "settings": "设置"
+  },
+  "home": {
+    "newProject": "+ 新建项目",
+    "searchPlaceholder": "搜索项目 (Ctrl+F)",
+    "sortRecent": "最近更新",
+    "sortCreated": "最新创建",
+    "sortName": "按名字",
+    "globalSearchHint": "全局搜索 \"{q}\" · {n} 个结果",
+    "emptyProjects": "暂无项目，点击「新建项目」开始创作",
+    "newFolder": "+ 新建文件夹",
+    "engineSettings": "⚙ 引擎设置",
+    "taskHistory": "📊 任务历史",
+    "projectTemplates": "📦 项目模板"
+  },
+  "project": {
+    "tabs": {
+      "manuscript": "文案创建",
+      "characters": "角色管理",
+      "scenes":     "分镜设计",
+      "images":     "图片生成",
+      "audio":      "音频生成",
+      "video":      "视频生成",
+      "subtitle":   "字幕生成"
+    },
+    "saveAsTemplate": "📦 另存为模板",
+    "orchestrator": "🚀 一键全流程"
+  },
+  "log": {
+    "title": "📋 后端日志",
+    "empty": "（还没有日志…后端任何 print/stderr 都会显示在这里）"
+  }
+}

@@ -112,8 +112,12 @@ def embed_subtitles(
     font_name: str = '等线 Bold',
     font_size: int = 18,
     ffprobe: str = None,
+    force_style: str = "",
 ) -> Generator[dict, None, None]:
-    """Burn SRT subtitles into video, streaming ffmpeg progress events."""
+    """Burn SRT subtitles into video, streaming ffmpeg progress events.
+
+    D2: 调用方可传入完整的 force_style 字符串（来自 router）。若为空则用旧的默认样式
+    （保留对外行为）。"""
     import threading
 
     # Get total duration for percentage calculation
@@ -124,16 +128,30 @@ def embed_subtitles(
         except Exception:
             pass
 
-    # Translate display name to libass-compatible English name
-    libass_name, bold = _FONT_MAP.get(font_name, (font_name, False))
-    bold_val = '1' if bold else '0'
-
     srt_escaped = srt_path.replace('\\', '/').replace(':', '\\:')
-    style = (
-        f"Fontname={libass_name},Fontsize={font_size},Bold={bold_val},"
-        "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-        "Outline=1,Shadow=0,Alignment=2,MarginV=20"
-    )
+
+    if force_style:
+        # 调用方已经构造好完整样式串（含 FontName 等），直接用
+        # 但 FontName 可能是中文显示名，转成 libass 兼容名
+        libass_name, bold = _FONT_MAP.get(font_name, (font_name, False))
+        # 把 FontName= 替换成 libass 名
+        style_parts = [seg for seg in force_style.split(",") if seg]
+        new_parts = []
+        for seg in style_parts:
+            if seg.startswith("FontName="):
+                new_parts.append(f"FontName={libass_name}")
+            else:
+                new_parts.append(seg)
+        style = ",".join(new_parts)
+    else:
+        # 旧默认样式
+        libass_name, bold = _FONT_MAP.get(font_name, (font_name, False))
+        bold_val = '1' if bold else '0'
+        style = (
+            f"Fontname={libass_name},Fontsize={font_size},Bold={bold_val},"
+            "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+            "Outline=1,Shadow=0,Alignment=2,MarginV=20"
+        )
     cmd = [
         ffmpeg, '-i', video_path,
         '-vf', f"subtitles='{srt_escaped}':force_style='{style}'",
