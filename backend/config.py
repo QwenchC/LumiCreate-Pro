@@ -16,6 +16,9 @@ class TextEngineConfig(BaseModel):
     model: str = ""
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     top_p: float = Field(default=0.9, ge=0.0, le=1.0)
+    # 批量任务（角色检测 / 帧 prompt / 视频 prompt 等）的最大并发数。
+    # 本地模型(ollama/lmstudio)通常 1~4；deepseek-v4-flash 等云端模型可设到几百~2500。
+    concurrency: int = Field(default=4, ge=1, le=2500)
 
 
 class ImageEngineConfig(BaseModel):
@@ -30,7 +33,7 @@ class ImageEngineConfig(BaseModel):
 
 
 class AudioEngineConfig(BaseModel):
-    engine_type: Literal["gptsovits", "indextts", "manual"] = "indextts"
+    engine_type: Literal["gptsovits", "indextts", "msedge", "manual"] = "indextts"
     api_url: str = "http://localhost:7860"
     default_gen_count: int = Field(default=3, ge=1, le=10)
     # IndexTTS reference audio settings
@@ -38,6 +41,12 @@ class AudioEngineConfig(BaseModel):
     emotion_ref_dir: str = ""     # folder containing emotion reference .wav files
     default_voice_ref: str = ""   # default voice reference filename (relative to voice_ref_dir)
     default_emo_weight: float = Field(default=0.8, ge=0.0, le=1.6)
+    # Microsoft Edge TTS (used when engine_type == "msedge", works for ALL dialogue_modes)
+    msedge_voice: str = "zh-CN-XiaoxiaoNeural"
+    msedge_rate:  str = "+25%"    # "-100%" ~ "+100%"
+    # 经"全部音色测试"通过的音色列表；非空时前端各处下拉只显示这些。
+    # 空 = 未跑测试，不过滤（首次使用时各音色都可见）。
+    msedge_available_voices: list[str] = Field(default_factory=list)
 
 
 class VideoEngineConfig(BaseModel):

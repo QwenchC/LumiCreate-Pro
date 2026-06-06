@@ -390,6 +390,17 @@ async def cmd_characters_auto_build(args):
 
 # ── Prompts (frame / video) ───────────────────────────────────────────────────
 
+async def _resolve_concurrency(cli_value: int | None) -> int:
+    """CLI 显式值优先；否则读 settings.text_engine.concurrency；fallback 1。"""
+    if cli_value and cli_value > 0:
+        return cli_value
+    try:
+        s = await _get("/api/settings")
+        return int((s.get("text_engine") or {}).get("concurrency", 1)) or 1
+    except Exception:
+        return 1
+
+
 async def cmd_prompts_frame_batch(args):
     """对项目所有分镜批量生成 start/end frame prompts，并 hydrate 出镜角色为完整对象。"""
     scenes = (await _get(f"/api/projects/{args.id}/scenes")).get("scenes", [])
@@ -399,6 +410,8 @@ async def cmd_prompts_frame_batch(args):
     chars_by_name = {c["name"]: c for c in chars}
     ms = await _get(f"/api/projects/{args.id}/manuscript")
     ms_text = ms.get("content", "")
+    concurrency = await _resolve_concurrency(args.concurrency)
+    print(f"  concurrency = {concurrency}")
 
     # 出场角色 appearance 非空校验
     needed = {n for s in scenes for n in (s.get("_scene_characters") or [])}
@@ -415,29 +428,33 @@ async def cmd_prompts_frame_batch(args):
         print(f"⚠ 分镜引用但 characters.json 中找不到的角色：{missing_chars}", file=sys.stderr)
 
     total = len(scenes)
-    for i, s in enumerate(scenes):
+    sem = asyncio.Semaphore(concurrency)
+
+    async def gen_one(i: int, s: dict):
         if not args.force and s.get("start_frame_prompt") and s.get("end_frame_prompt"):
-            print(f"  [{i+1}/{total}] {s['id']}: skip (already has prompts; --force 重生成)")
-            continue
+            print(f"  [{i+1}/{total}] {s['id']}: skip (--force 重生成)")
+            return
         selected = set(s.get("_scene_characters") or [])
         scene_chars = [chars_by_name[n] for n in selected if n in chars_by_name]
-        try:
-            r = await _post("/api/text-engine/generate-frame-prompts", {
-                "description":  s.get("description", ""),
-                "dialogues":    s.get("dialogues", []),
-                "characters":   scene_chars,
-                "manuscript":   ms_text,
-                "scene_index":  i + 1,
-                "total_scenes": total,
-            })
-        except Exception as e:
-            print(f"  [{i+1}/{total}] {s['id']}: error {e}", file=sys.stderr)
-            continue
+        async with sem:
+            try:
+                r = await _post("/api/text-engine/generate-frame-prompts", {
+                    "description":  s.get("description", ""),
+                    "dialogues":    s.get("dialogues", []),
+                    "characters":   scene_chars,
+                    "manuscript":   ms_text,
+                    "scene_index":  i + 1,
+                    "total_scenes": total,
+                })
+            except Exception as e:
+                print(f"  [{i+1}/{total}] {s['id']}: error {e}", file=sys.stderr)
+                return
         s["start_frame_prompt"] = r.get("start_frame_prompt", "")
         s["end_frame_prompt"]   = r.get("end_frame_prompt", "")
         print(f"  [{i+1}/{total}] {s['id']} chars={list(selected)}: "
               f"{s['start_frame_prompt'][:60]}…")
 
+    await asyncio.gather(*(gen_one(i, s) for i, s in enumerate(scenes)))
     await _put(f"/api/projects/{args.id}/scenes", {"scenes": scenes})
     print(f"saved {total} scenes")
 
@@ -457,29 +474,35 @@ async def cmd_prompts_video_batch(args):
         existing = {}
 
     total = len(scenes)
-    for i, s in enumerate(scenes):
+    concurrency = await _resolve_concurrency(args.concurrency)
+    print(f"  concurrency = {concurrency}")
+    sem = asyncio.Semaphore(concurrency)
+
+    async def gen_one(i: int, s: dict):
         sid = s["id"]
         if not args.force and existing.get(sid):
             print(f"  [{i+1}/{total}] {sid}: skip (--force 重生成)")
-            continue
+            return
         selected = set(s.get("_scene_characters") or [])
         scene_chars = [chars_by_name[n] for n in selected if n in chars_by_name]
-        parts = []
-        async for evt in _sse("/api/text-engine/generate-video-prompt", {
-            "description":        s.get("description", ""),
-            "dialogues":          s.get("dialogues", []),
-            "characters":         scene_chars,
-            "start_frame_prompt": s.get("start_frame_prompt", ""),
-            "end_frame_prompt":   s.get("end_frame_prompt", ""),
-            "manuscript":         ms_text,
-            "scene_index":        i + 1,
-            "total_scenes":       total,
-        }):
-            if "text" in evt:
-                parts.append(evt["text"])
-        existing[sid] = "".join(parts).strip()
+        async with sem:
+            parts = []
+            async for evt in _sse("/api/text-engine/generate-video-prompt", {
+                "description":        s.get("description", ""),
+                "dialogues":          s.get("dialogues", []),
+                "characters":         scene_chars,
+                "start_frame_prompt": s.get("start_frame_prompt", ""),
+                "end_frame_prompt":   s.get("end_frame_prompt", ""),
+                "manuscript":         ms_text,
+                "scene_index":        i + 1,
+                "total_scenes":       total,
+            }):
+                if "text" in evt:
+                    parts.append(evt["text"])
+            existing[sid] = "".join(parts).strip()
         print(f"  [{i+1}/{total}] {sid}: {existing[sid][:60]}…")
 
+    await asyncio.gather(*(gen_one(i, s) for i, s in enumerate(scenes)))
     await _put(f"/api/projects/{args.id}/video-prompts", existing)
     print(f"saved {len(existing)} video prompts")
 
@@ -781,10 +804,12 @@ def _build_parser() -> argparse.ArgumentParser:
     a.add_argument("id")
     a.add_argument("--force", action="store_true", help="覆盖已有 prompt")
     a.add_argument("--allow-empty-appearance", action="store_true", help="允许角色 appearance 为空（仅调试）")
+    a.add_argument("--concurrency", type=int, default=0, help="并发数；默认读 settings.text_engine.concurrency")
     a.set_defaults(func=cmd_prompts_frame_batch)
     a = pmp.add_parser("video-batch", help="批量生成视频 positive_prompt，写入 video_prompts.json")
     a.add_argument("id")
     a.add_argument("--force", action="store_true")
+    a.add_argument("--concurrency", type=int, default=0, help="并发数；默认读 settings.text_engine.concurrency")
     a.set_defaults(func=cmd_prompts_video_batch)
 
     # images

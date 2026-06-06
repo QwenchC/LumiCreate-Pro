@@ -47,6 +47,10 @@ class SingleGenerateRequest(BaseModel):
     scene_id:    str = ""
     dialogue_id: str = ""
     slot_index:  int = 0
+    # Microsoft Edge TTS overrides (used when engine_type == "msedge"):
+    # 前端按角色填好后传过来；为空则用 settings.audio_engine.msedge_voice/rate
+    msedge_voice: Optional[str] = None
+    msedge_rate:  Optional[str] = None
 
 
 class BatchDialogue(BaseModel):
@@ -58,6 +62,9 @@ class BatchDialogue(BaseModel):
     emo_weight:  float = 0.8
     lang:        str = "zh"
     speaker:     Optional[str] = None
+    # Microsoft Edge TTS per-dialogue override（按角色音色 / 双音色朗读时使用）
+    msedge_voice: Optional[str] = None
+    msedge_rate:  Optional[str] = None
 
 
 class BatchGenerateRequest(BaseModel):
@@ -96,6 +103,14 @@ async def test_connection():
     cfg = load_settings().audio_engine
     if cfg.engine_type == "manual":
         return ConnectionTestResult(success=True, message="手动导入模式，无需连接")
+    if cfg.engine_type == "msedge":
+        # Edge TTS 走 azure 公网域，做一次极短探活
+        try:
+            from services.msedge_tts import synthesise_mp3
+            await synthesise_mp3("测试", cfg.msedge_voice, cfg.msedge_rate)
+            return ConnectionTestResult(success=True, message="微软神经语音 (edge-tts) 连接成功")
+        except Exception as e:
+            return ConnectionTestResult(success=False, message=f"edge-tts: {e}")
     try:
         async with httpx.AsyncClient(timeout=8) as client:
             await client.get(f"{cfg.api_url}/")
@@ -146,6 +161,13 @@ async def generate_single_stream(req: SingleGenerateRequest):
             ):
                 yield _sse({**event, **meta})
 
+        elif cfg.engine_type == "msedge":
+            from services.msedge_tts import synthesise as msedge_synthesise
+            voice = req.msedge_voice or cfg.msedge_voice
+            rate  = req.msedge_rate  or cfg.msedge_rate
+            async for event in msedge_synthesise(req.text, voice, rate):
+                yield _sse({**event, **meta})
+
         else:
             yield _sse({**meta, "event": "error", "message": "manual 模式不支持自动生成"})
 
@@ -188,6 +210,13 @@ async def generate_batch_stream(req: BatchGenerateRequest):
             async for event in synthesise(
                 cfg, dlg.text, dlg.lang, dlg.speaker, dlg.voice_ref, None, speed=req.speed
             ):
+                await queue.put({**event, **meta})
+
+        elif cfg.engine_type == "msedge":
+            from services.msedge_tts import synthesise as msedge_synthesise
+            voice = dlg.msedge_voice or cfg.msedge_voice
+            rate  = dlg.msedge_rate  or cfg.msedge_rate
+            async for event in msedge_synthesise(dlg.text, voice, rate):
                 await queue.put({**event, **meta})
 
         else:
@@ -287,14 +316,30 @@ class MsTtsRequest(BaseModel):
     text:  str
     voice: str = "zh-CN-XiaoxiaoNeural"
     rate:  str = "+0%"   # e.g. "-25%", "+0%", "+50%"
+    # 可选：MP3（直读模式，前端 <audio> 直接播）或 WAV（双音色朗读需要拼接，必须 WAV）
+    format: str = "mp3"  # "mp3" | "wav"
 
 
 @router.post("/ms-tts")
 async def ms_tts(req: MsTtsRequest):
-    """Generate a single TTS clip with Microsoft Edge neural voices. Returns base64 MP3."""
+    """Generate a single TTS clip with Microsoft Edge neural voices.
+    Returns base64 MP3 by default; pass format="wav" for stitch-scene compatible WAV."""
     try:
-        from services.msedge_tts import synthesise_mp3
+        from services.msedge_tts import synthesise_mp3, _mp3_to_wav
         mp3_bytes = await synthesise_mp3(req.text.strip(), req.voice, req.rate)
+        if (req.format or "mp3").lower() == "wav":
+            loop = asyncio.get_event_loop()
+            wav_bytes = await loop.run_in_executor(None, _mp3_to_wav, mp3_bytes)
+            # 若 ffmpeg 不存在 _mp3_to_wav 会原样返回 mp3 —— 这种情况下
+            # 报错给前端，避免后续 stitch 失败。
+            if wav_bytes is mp3_bytes:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=503, detail="ffmpeg not found, cannot transcode to wav")
+            # 用 wave 算实际时长
+            with wave.open(io.BytesIO(wav_bytes)) as wf:
+                duration_ms = int(wf.getnframes() / wf.getframerate() * 1000)
+            return {"data": base64.b64encode(wav_bytes).decode(),
+                    "duration_ms": duration_ms, "format": "wav"}
         b64 = base64.b64encode(mp3_bytes).decode()
         # Rough estimate: Chinese neural TTS ~3.5 chars/sec
         duration_ms = max(1000, int(len(req.text) / 3.5 * 1000))
@@ -302,3 +347,59 @@ async def ms_tts(req: MsTtsRequest):
     except Exception as e:
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# 内置可选音色清单（与前端 SettingsView / CharactersTab / AudioTab 一致）
+MSEDGE_BUILTIN_VOICES = [
+    "zh-CN-XiaoxiaoNeural", "zh-CN-XiaoyiNeural",
+    "zh-CN-XiaohanNeural",  "zh-CN-XiaomengNeural", "zh-CN-XiaomoNeural",
+    "zh-CN-XiaoqiuNeural",  "zh-CN-XiaoruiNeural",  "zh-CN-XiaoxuanNeural",
+    "zh-CN-YunxiNeural",    "zh-CN-YunjianNeural",  "zh-CN-YunyangNeural",
+    "zh-CN-YunfengNeural",  "zh-CN-YunhaoNeural",   "zh-CN-YunxiaNeural",
+]
+
+
+class TestAllRequest(BaseModel):
+    voices: Optional[list[str]] = None     # 不传 = 跑全部内置
+    text:   str = "测试"
+    save:   bool = True                    # 跑完写入 settings.audio_engine.msedge_available_voices
+
+
+@router.post("/ms-tts/test-all")
+async def ms_tts_test_all(req: TestAllRequest):
+    """逐一测试 Microsoft Edge neural voices；返回 {voice: ok/err}，
+    并将通过的 voice 列表写入 settings.audio_engine.msedge_available_voices。"""
+    from services.msedge_tts import synthesise_mp3
+    voices = req.voices or MSEDGE_BUILTIN_VOICES
+    sem = asyncio.Semaphore(4)   # 并发 4，避免 edge-tts 公网被限速
+
+    async def probe(v: str):
+        async with sem:
+            try:
+                # 短文本 + 默认 rate，最小代价探活
+                mp3 = await synthesise_mp3(req.text or "测试", v, "+0%")
+                return v, {"ok": len(mp3) > 0, "size": len(mp3), "error": ""}
+            except Exception as e:
+                return v, {"ok": False, "size": 0, "error": str(e)[:200]}
+
+    results = dict(await asyncio.gather(*(probe(v) for v in voices)))
+    available = [v for v, r in results.items() if r["ok"]]
+
+    if req.save:
+        from config import load_settings, SETTINGS_PATH
+        import json
+        s = load_settings()
+        # 仅更新通过名单；若用户曾跑过部分音色，本次未测试的保留
+        prev = set(s.audio_engine.msedge_available_voices or [])
+        tested = set(voices)
+        new_available = (prev - tested) | set(available)
+        s.audio_engine.msedge_available_voices = sorted(new_available)
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_PATH.write_text(s.model_dump_json(indent=2), encoding="utf-8")
+
+    return {
+        "tested":    len(voices),
+        "passed":    len(available),
+        "results":   results,        # {voice: {ok, size, error}}
+        "available": available,
+    }

@@ -84,14 +84,16 @@ function close()    { window.electronAPI?.windowClose() }
 .titlebar-icon { width: 16px; height: 16px; }
 .titlebar-title { font-size: 13px; font-weight: 600; color: var(--color-text); white-space: nowrap; }
 
-/* Project tabs strip */
+/* Project tabs strip
+ * NOTE: 容器本身保持 drag（继承自 .titlebar），只有 .proj-tab / 关闭按钮等子元素 no-drag。
+ * padding-right 留一段空白拖动带，避免 tabs 占满后整条中间无处可按。 */
 .project-tabs {
   flex: 1; min-width: 0;
   display: flex; align-items: stretch;
   overflow-x: auto; overflow-y: hidden;
   scrollbar-width: none;
-  -webkit-app-region: no-drag;
   margin: 0 8px;
+  padding-right: 80px;
   gap: 2px;
 }
 .project-tabs::-webkit-scrollbar { display: none; }

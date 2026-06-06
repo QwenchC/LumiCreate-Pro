@@ -102,6 +102,27 @@
               @input="markDirty"
             />
           </div>
+          <div class="form-group" v-if="audioEngine === 'msedge'">
+            <label>
+              微软神经语音
+              <span class="text-muted" style="font-size:11px">（仅 Edge TTS 引擎下生效）</span>
+            </label>
+            <select v-model="char.voice" class="input select-compact" @change="markDirty">
+              <option value="">— 跟随设置默认 —</option>
+              <optgroup v-for="g in voiceGroupsFor(char.voice)" :key="g.gender" :label="g.label">
+                <option v-for="v in g.items" :key="v.value" :value="v.value">{{ v.label }}</option>
+              </optgroup>
+            </select>
+            <p class="field-hint">
+              不同角色配不同音色（按性别 / 年龄选）；留空则用设置里的默认音色。
+              <span v-if="availableVoiceList.length">
+                已按"全部测试"通过名单过滤（{{ availableVoiceList.length }} 个可用，不通过的不会出现）。
+              </span>
+              <span v-else style="color:var(--color-warning, #fa3)">
+                还没在设置里跑过音色测试，可先到设置 → 语音引擎 → 微软神经语音 点「测试全部音色」。
+              </span>
+            </p>
+          </div>
         </div>
       </div>
 
@@ -169,6 +190,7 @@
 
 <script setup>
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { filterVoices, groupByGender } from '../../data/msedgeVoices'
 
 const props = defineProps({ projectId: String })
 const emit  = defineEmits(['dirty', 'saved'])
@@ -181,6 +203,13 @@ const saving   = ref(false)
 const syncing  = ref(false)
 const statusMsg  = ref('')
 const statusType = ref('')
+const audioEngine = ref('indextts')  // 'indextts' | 'gptsovits' | 'msedge' | 'manual'
+const availableVoiceList = ref([])    // settings.audio_engine.msedge_available_voices
+
+function voiceGroupsFor(currentValue) {
+  // 当前角色已选的 voice 即使不在通过名单里也要保留显示，避免"看上去丢了"
+  return groupByGender(filterVoices(availableVoiceList.value, [currentValue]))
+}
 
 // ── Import from other project dialog state ────────────────────────────────────
 const importProjectDialog = reactive({
@@ -214,7 +243,7 @@ async function loadImportProjectChars() {
     const d = res.ok ? await res.json() : { characters: [] }
     importProjectDialog.sourceChars = (d.characters || []).map(c => ({
       name: c.name || '', role: c.role || '', traits: c.traits || '',
-      appearance: c.appearance || '', negative: c.negative || '',
+      appearance: c.appearance || '', negative: c.negative || '', voice: c.voice || '',
     }))
     importProjectDialog.selectedIndices = importProjectDialog.sourceChars.map((_, i) => i)
   } catch {
@@ -260,7 +289,7 @@ async function doImportFromProject() {
 
 function emptyChar() {
   return {
-    name: '', role: '', traits: '', appearance: '', negative: '',
+    name: '', role: '', traits: '', appearance: '', negative: '', voice: '',
     _generating: false, _finding: false, _profiling: false
   }
 }
@@ -294,10 +323,20 @@ onMounted(async () => {
         traits: c.traits || '',
         appearance: c.appearance || '',
         negative: c.negative || '',
+        voice: c.voice || '',
         _generating: false,
         _finding: false,
         _profiling: false,
       }))
+    }
+  } catch {}
+  // 同时拉一次 settings 决定要不要显示音色字段
+  try {
+    const sr = await fetch(`${API}/settings`)
+    if (sr.ok) {
+      const s = await sr.json()
+      audioEngine.value = s.audio_engine?.engine_type || 'indextts'
+      availableVoiceList.value = s.audio_engine?.msedge_available_voices || []
     }
   } catch {}
   window.addEventListener('lumi:save-project', onGlobalSave)
@@ -501,6 +540,7 @@ async function importFromManuscript() {
         traits: c.traits || '',
         appearance: c.appearance || '',
         negative: c.negative || '',
+        voice: c.voice || '',
         _generating: false,
       })
     }

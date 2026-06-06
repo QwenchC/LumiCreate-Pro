@@ -9,7 +9,7 @@
           📖 朗读模式 · 微软神经语音 · {{ readingScenes.length }} 段
         </span>
         <span class="text-muted" style="font-size:13px" v-else-if="allClips.length">
-          {{ allClips.length }} 个音频片段 · 每段 {{ genCount }} 个版本
+          {{ allClips.length }} 个音频片段 · 引擎: {{ engineLabel }} · 每段 {{ genCount }} 个版本
         </span>
       </div>
       <div class="toolbar-right">
@@ -55,7 +55,7 @@
     <!-- ── Reading mode: voice controls ── -->
     <div v-if="isReadingMode && readingScenes.length" class="reading-controls">
       <div class="reading-ctrl-group">
-        <label class="dlg-label">微软语音</label>
+        <label class="dlg-label">叙述音色</label>
         <select v-model="msVoice" class="input select-compact ms-voice-select" :disabled="running">
           <option v-for="v in MS_VOICES" :key="v.value" :value="v.value">{{ v.label }}</option>
         </select>
@@ -69,6 +69,65 @@
           <option value="+25%">快</option>
           <option value="+50%">很快</option>
         </select>
+      </div>
+      <!-- 双音色模式：对话/心理活动单独音色 -->
+      <div class="reading-ctrl-group" title="打开后：引号「」“”‘’里的对话/心理活动优先按角色 voice 取音色（在「角色管理」里给每个角色配男/女声），未识别到说话人时用下方的「对话音色」作为默认；其余叙述用上面的「叙述音色」">
+        <label class="dlg-label" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" v-model="dualVoiceEnabled" :disabled="running" />
+          区分音色
+        </label>
+      </div>
+      <div class="reading-ctrl-group" v-if="dualVoiceEnabled">
+        <label class="dlg-label">对话音色（fallback）</label>
+        <select v-model="msDialogueVoice" class="input select-compact ms-voice-select" :disabled="running">
+          <option v-for="v in MS_VOICES" :key="v.value" :value="v.value">{{ v.label }}</option>
+        </select>
+        <span class="text-muted" style="font-size:11px;margin-left:8px">
+          ⓘ 未识别到说话人时使用
+        </span>
+      </div>
+    </div>
+
+    <!-- ── Reading mode: per-character voice matrix（双音色才显示） ── -->
+    <!-- 真正的"按性别区分"靠这里：每个角色一个音色下拉 + 试听 -->
+    <div v-if="isReadingMode && readingScenes.length && dualVoiceEnabled"
+         class="char-voice-matrix card"
+         style="margin:8px 12px;padding:10px 12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <strong style="font-size:13px">👥 角色音色（男女区分核心）</strong>
+        <span class="text-muted" style="font-size:11px">
+          每个角色单独配音色 → 男声 / 女声 / 童声分明。改完保存到角色管理。
+        </span>
+        <button class="btn btn-ghost btn-xs" @click="reloadCharacters" style="margin-left:auto">↻ 刷新</button>
+        <button class="btn btn-secondary btn-xs" :disabled="charsSaving" @click="saveCharVoices">
+          {{ charsSaving ? '保存中…' : '💾 保存' }}
+        </button>
+      </div>
+      <div v-if="!projectCharacters.length" class="text-muted" style="font-size:12px">
+        当前项目没有角色 — 先去「角色管理」添加角色再回来
+      </div>
+      <div v-else class="char-voice-rows">
+        <div v-for="(c, i) in projectCharacters" :key="c.name + i" class="char-voice-row">
+          <span class="char-voice-name">
+            {{ c.name }}
+            <span v-if="c.role" class="text-muted" style="font-size:11px">（{{ c.role }}）</span>
+          </span>
+          <select v-model="c.voice" class="input select-compact ms-voice-select" :disabled="running"
+                  @change="onCharVoiceChanged(c)">
+            <option value="">— 用对话音色 —</option>
+            <optgroup v-for="g in charVoiceGroups(c.voice)" :key="g.gender" :label="g.label">
+              <option v-for="v in g.items" :key="v.value" :value="v.value">{{ v.label }}</option>
+            </optgroup>
+          </select>
+          <button class="btn btn-ghost btn-xs" :disabled="!c.voice || charTesting === c.name"
+                  @click="testCharVoice(c)" :title="'试听该角色音色'">
+            {{ charTesting === c.name ? '…' : '▶ 试听' }}
+          </button>
+          <audio v-if="c._testData" :key="c._testRev"
+                 :src="`data:audio/mpeg;base64,${c._testData}`"
+                 autoplay
+                 style="display:none" />
+        </div>
       </div>
     </div>
 
@@ -92,7 +151,7 @@
         <audio
           v-else-if="scene.data"
           :key="scene._rev"
-          :src="'data:audio/mpeg;base64,' + scene.data"
+          :src="`data:audio/${scene._format === 'wav' ? 'wav' : 'mpeg'};base64,${scene.data}`"
           controls
           class="reading-player"
           @loadedmetadata="e => onReadingAudioLoaded(scene, e)"
@@ -156,8 +215,9 @@
           <!-- Dialogue text -->
           <div class="dlg-text">"{{ clip.text }}"</div>
 
-          <!-- Voice settings -->
-          <div class="dlg-settings">
+          <!-- Voice settings (engine-aware) -->
+          <!-- IndexTTS 引擎专属：音色参考 / 情感参考 / 情感权重 -->
+          <div class="dlg-settings" v-if="engineType === 'indextts'">
             <div class="dlg-setting-group">
               <label class="dlg-label">音色参考</label>
               <select class="input select-compact" v-model="clip._voiceRef" :disabled="running">
@@ -183,6 +243,18 @@
               <label class="dlg-label">情感权重 {{ clip._emoWeight.toFixed(1) }}</label>
               <input type="range" min="0" max="1.6" step="0.1"
                 v-model.number="clip._emoWeight" :disabled="running" class="slider-compact" />
+            </div>
+          </div>
+          <!-- 微软神经语音：每段按角色自动取音色，不需要音色参考 / 情感控制 -->
+          <div class="dlg-settings" v-else-if="engineType === 'msedge'">
+            <div class="dlg-setting-group" style="flex:1">
+              <label class="dlg-label">微软音色</label>
+              <span class="text-muted" style="font-size:12px">
+                {{ msedgeVoiceForClip(clip) }}
+                <span v-if="!charsVoiceMap[clip.character]" style="opacity:.7">
+                  （未指定，使用默认。可在角色管理给「{{ clip.character || '该角色' }}」设置专属音色）
+                </span>
+              </span>
             </div>
           </div>
 
@@ -218,18 +290,21 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 const props = defineProps({ projectId: String })
 const emit  = defineEmits(['dirty', 'saved'])
 // ── state ──────────────────────────────────────────────────────────────────
-const MS_VOICES = [
-  { value: 'zh-CN-XiaoxiaoNeural', label: '晓晓（女·亲切温柔）' },
-  { value: 'zh-CN-XiaoyiNeural',   label: '晓伊（女·活泼下馆）' },
-  { value: 'zh-CN-XiaohanNeural',  label: '晓涵（女·沉稳大气）' },
-  { value: 'zh-CN-XiaomoNeural',   label: '晓墨（女·多情感）' },
-  { value: 'zh-CN-XiaoruiNeural',  label: '晓瑞（女·温和柔和）' },
-  { value: 'zh-CN-XiaoyanNeural',  label: '晓颜（女·专业主播）' },
-  { value: 'zh-CN-YunxiNeural',    label: '云希（男·活泼）' },
-  { value: 'zh-CN-YunyangNeural',  label: '云扬（男·新闻播报）' },
-  { value: 'zh-CN-YunyeNeural',    label: '云野（男·悠闲）' },
-  { value: 'zh-CN-YunjianNeural',  label: '云健（男·劲岁运动）' },
-]
+import { filterVoices, groupByGender } from '../../data/msedgeVoices'
+
+// settings.audio_engine.msedge_available_voices；空 = 未测过，不过滤
+const availableVoiceList = ref([])
+
+// 顶部"叙述音色 / 对话音色"两个下拉用的扁平列表
+// （连同当前已选 voice 一起允许，避免被过滤后下拉里看不到自己的项）
+const MS_VOICES = computed(() => filterVoices(availableVoiceList.value, [
+  msVoice?.value, msDialogueVoice?.value,
+]))
+
+// 角色音色矩阵下拉用的分组列表 helper
+function charVoiceGroups(currentValue) {
+  return groupByGender(filterVoices(availableVoiceList.value, [currentValue]))
+}
 
 const loadingScenes = ref(false)
 const loadError     = ref('')
@@ -247,9 +322,109 @@ const audioRefs       = {}  // { "clipId:slotIndex": HTMLAudioElement }
 // ── Reading mode state ───────────────────────────────────────────────────────────
 const isReadingMode  = ref(false)
 const readingScenes  = ref([])   // [{ sceneId, sceneIndex, description, text, generating, data, duration_ms }]
-const msVoice        = ref('zh-CN-XiaoxiaoNeural')
+const msVoice        = ref('zh-CN-XiaoxiaoNeural')  // 叙述音色
 const msRate         = ref('+0%')
+// 双音色：对话 / 心理活动用第二音色（默认男声沉稳；引号包围的内容会被识别）
+const dualVoiceEnabled = ref(false)
+const msDialogueVoice  = ref('zh-CN-YunxiNeural')
 let   _stopReading   = false
+
+// ── Current audio engine (for toolbar hint; non-reading modes use settings.audio_engine.engine_type) ──
+const engineType     = ref('indextts')
+const engineLabel    = computed(() => ({
+  indextts:  'IndexTTS-2.0',
+  gptsovits: 'GPT-SoVITS',
+  msedge:    '微软神经语音 (Edge TTS)',
+  manual:    '手动导入',
+}[engineType.value] || engineType.value))
+
+// 角色 → msedge voice 的映射（来自 characters.json 的 voice 字段；msedge 引擎才有意义）
+const charsVoiceMap  = ref({})
+// 朗读模式双音色面板用：完整角色列表 [{name, role, voice, _testData?, _testRev?}]
+const projectCharacters = ref([])
+const charsSaving       = ref(false)
+const charTesting       = ref('')
+// 默认 voice（来自 settings；msedge 引擎下角色没填时退回到它）
+const defaultMsVoice = computed(() => msVoice.value || 'zh-CN-XiaoxiaoNeural')
+
+function msedgeVoiceForClip(clip) {
+  return charsVoiceMap.value[clip?.character || ''] || defaultMsVoice.value
+}
+
+async function reloadCharacters() {
+  try {
+    const r = await fetch(`http://localhost:18520/api/projects/${props.projectId}/characters`)
+    if (!r.ok) return
+    const d = await r.json()
+    projectCharacters.value = (d.characters || []).map(c => ({
+      name: c.name || '', role: c.role || '', voice: c.voice || '',
+      _raw: c, _testData: '', _testRev: 0,
+    }))
+    // 同步 voice 映射给生成逻辑用
+    const map = {}
+    for (const c of projectCharacters.value) {
+      if (c.name && c.voice) map[c.name] = c.voice
+    }
+    charsVoiceMap.value = map
+  } catch { /* ignore */ }
+}
+
+function onCharVoiceChanged(c) {
+  // 即时更新内存中的映射，保存按钮按下时统一 PUT
+  if (c.name) {
+    if (c.voice) charsVoiceMap.value[c.name] = c.voice
+    else delete charsVoiceMap.value[c.name]
+  }
+}
+
+async function saveCharVoices() {
+  charsSaving.value = true
+  try {
+    // 拉最新一次保留其它字段，把当前面板的 voice 覆盖回去
+    const r = await fetch(`http://localhost:18520/api/projects/${props.projectId}/characters`)
+    const d = r.ok ? await r.json() : { characters: [] }
+    const byName = new Map((d.characters || []).map(c => [c.name, c]))
+    for (const pc of projectCharacters.value) {
+      const existing = byName.get(pc.name) || { name: pc.name, role: pc.role }
+      existing.voice = pc.voice || ''
+      byName.set(pc.name, existing)
+    }
+    const payload = { characters: Array.from(byName.values()) }
+    const wr = await fetch(`http://localhost:18520/api/projects/${props.projectId}/characters`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    })
+    if (!wr.ok) throw new Error(`HTTP ${wr.status}`)
+  } catch (e) {
+    alert('角色音色保存失败：' + e.message)
+  } finally {
+    charsSaving.value = false
+  }
+}
+
+async function testCharVoice(c) {
+  if (!c.voice) return
+  charTesting.value = c.name
+  c._testData = ''
+  try {
+    const res = await fetch('http://localhost:18520/api/audio-engine/ms-tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text:  `${c.name}，${c.role || '角色'}试音。这是一段测试音频。`,
+        voice: c.voice,
+        rate:  msRate.value || '+0%',
+      }),
+    })
+    if (!res.ok) throw new Error(await res.text())
+    const r = await res.json()
+    c._testData = r.data
+    c._testRev  = (c._testRev || 0) + 1
+  } catch (e) {
+    alert(`${c.name} 试听失败：${e.message}`)
+  } finally {
+    charTesting.value = ''
+  }
+}
 
 // ── derived ─────────────────────────────────────────────────────────────────
 const allClips = computed(() => scenesWithClips.value.flatMap(s => s.clips))
@@ -303,8 +478,23 @@ async function loadData() {
       if (sr.ok) {
         const s = await sr.json()
         genCount.value = s.audio_engine?.default_gen_count ?? 3
+        engineType.value = s.audio_engine?.engine_type || 'indextts'
+        availableVoiceList.value = s.audio_engine?.msedge_available_voices || []
+        // msedge engine: 顶部 ms 选择器只在 reading 模式可见；非 reading 模式
+        // 走 batch-stream，后端按 settings.msedge_voice/rate 处理
+        if (engineType.value === 'msedge') {
+          msVoice.value = s.audio_engine?.msedge_voice || msVoice.value
+          msRate.value  = s.audio_engine?.msedge_rate  || msRate.value
+        }
       }
     } catch { /* ignore */ }
+
+    // 加载 characters.json 拿到 name → voice 映射 + 完整角色列表（reading 双音色面板用）：
+    //   - msedge 引擎：非朗读模式按角色配音色
+    //   - 朗读模式：双音色开关下，按角色识别说话人 → 用角色 voice
+    if (engineType.value === 'msedge' || isReadingMode.value) {
+      await reloadCharacters()
+    }
 
     // Load ref file lists
     try {
@@ -333,6 +523,7 @@ async function loadData() {
             generating:  false,
             data:        saved.data        || null,
             duration_ms: saved.duration_ms || 0,
+            _format:     saved.format      || 'mp3',  // 区分单/双音色（决定 <audio> mime）
             _rev:        0,   // bump on each (re)generate to force <audio> re-render
           }
         })
@@ -423,6 +614,7 @@ async function saveAudio() {
         payload[`__ms_reading__${scene.sceneId}`] = {
           data:        scene.data,
           duration_ms: scene.duration_ms,
+          format:      scene._format || 'mp3',   // 单音色 mp3 / 双音色 wav
         }
       }
     }
@@ -473,6 +665,8 @@ async function runBatch() {
       emo_ref:     c._emoRef   || null,
       emo_weight:  c._emoWeight,
       lang:        'zh',
+      // msedge 引擎下按角色填音色；其它引擎忽略此字段
+      msedge_voice: engineType.value === 'msedge' ? msedgeVoiceForClip(c) : null,
     })),
   }
 
@@ -550,6 +744,7 @@ async function regenClip(clip) {
       emo_ref:     clip._emoRef   || null,
       emo_weight:  clip._emoWeight,
       lang:        'zh',
+      msedge_voice: engineType.value === 'msedge' ? msedgeVoiceForClip(clip) : null,
     }],
   }
   try {
@@ -585,11 +780,96 @@ function stopBatch() {
 }
 
 // ── Microsoft Edge TTS ───────────────────────────────────────────────────────────
+// 把整段文本按 「」“”‘’ "" '' 引号分组为
+// [{kind:'narration'|'dialogue', text, character?}]
+//   - narration：引号外的叙述
+//   - dialogue ：引号内的对话/心理活动；character 字段尽力识别"说话人"
+//     识别策略：取该引号之前最近的 ~40 个字符窗口，扫描已知角色名做 substring 匹配，
+//     命中最后一个 → 该说话者；没命中 → character=''（生成时按"对话音色"fallback）
+function _segmentForDualVoice(text, knownNames = []) {
+  const segs = []
+  const re = /[「“‘"'](.+?)[」”’"']/gs
+  let cursor = 0
+  let m
+  const findSpeaker = (window) => {
+    if (!knownNames.length || !window) return ''
+    let best = { name: '', pos: -1 }
+    for (const n of knownNames) {
+      if (!n) continue
+      const i = window.lastIndexOf(n)
+      if (i > best.pos) best = { name: n, pos: i }
+    }
+    return best.name
+  }
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > cursor) {
+      const lead = text.slice(cursor, m.index).trim()
+      if (lead) segs.push({ kind: 'narration', text: lead })
+    }
+    const inside = (m[1] || '').trim()
+    if (inside) {
+      // 取引号前最近 ~40 个字符 + 之前一段叙述里最后的角色名
+      const window = text.slice(Math.max(0, m.index - 40), m.index)
+      const speaker = findSpeaker(window)
+      segs.push({ kind: 'dialogue', text: inside, character: speaker })
+    }
+    cursor = m.index + m[0].length
+  }
+  const tail = text.slice(cursor).trim()
+  if (tail) segs.push({ kind: 'narration', text: tail })
+  if (!segs.length) segs.push({ kind: 'narration', text: text.trim() })
+  return segs
+}
+
+async function _msTtsClipWav(text, voice) {
+  const res = await fetch('http://localhost:18520/api/audio-engine/ms-tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, voice, rate: msRate.value, format: 'wav' }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`)
+  return res.json()  // {data: <b64 wav>, duration_ms, format:'wav'}
+}
+
 async function generateMsTts(scene) {
   scene.generating = true
-  scene.data = null      // clear old audio so the player disappears immediately
+  scene.data = null
   scene._rev = (scene._rev || 0) + 1
   try {
+    // 双音色模式：按引号拆段 → 每段 ms-tts(WAV) → stitch-scene 合成
+    // 对话段优先按"说话角色的 voice"取音色，没填则退回"对话音色"，再退回叙述音色
+    if (dualVoiceEnabled.value) {
+      const knownNames = Object.keys(charsVoiceMap.value || {})
+      const segs = _segmentForDualVoice(scene.text, knownNames)
+      const clips = []
+      for (const seg of segs) {
+        let v
+        if (seg.kind === 'dialogue') {
+          v = (seg.character && charsVoiceMap.value[seg.character])
+            || msDialogueVoice.value
+            || msVoice.value
+        } else {
+          v = msVoice.value
+        }
+        const r = await _msTtsClipWav(seg.text, v)
+        clips.push({ data: r.data, pre_silence_ms: 0, post_silence_ms: 80 })
+      }
+      const stitched = await fetch('http://localhost:18520/api/audio-engine/stitch-scene', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clips }),
+      })
+      if (!stitched.ok) throw new Error(`stitch HTTP ${stitched.status}: ${await stitched.text()}`)
+      const result = await stitched.json()
+      scene.data        = result.data
+      scene._rev        = (scene._rev || 0) + 1
+      scene.duration_ms = result.duration_ms
+      scene._format     = 'wav'
+      emit('dirty')
+      await saveAudio()
+      return
+    }
+    // 单音色（原行为）：直接 ms-tts MP3
     const res = await fetch('http://localhost:18520/api/audio-engine/ms-tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -600,6 +880,7 @@ async function generateMsTts(scene) {
     scene.data        = result.data
     scene._rev        = (scene._rev || 0) + 1   // bump again so :key changes
     scene.duration_ms = result.duration_ms       // will be updated from metadata below
+    scene._format     = 'mp3'
     emit('dirty')
     await saveAudio()
   } catch (e) {
@@ -706,6 +987,14 @@ onUnmounted(() => {
   background:var(--bg-secondary);
 }
 .reading-ctrl-group { display:flex; align-items:center; gap:6px; }
+.char-voice-matrix .char-voice-rows {
+  display:grid; grid-template-columns: minmax(120px, 1fr) minmax(180px, 1.4fr) auto;
+  gap:6px 10px; align-items:center;
+}
+.char-voice-matrix .char-voice-row {
+  display:contents;
+}
+.char-voice-matrix .char-voice-name { font-size:13px; padding:2px 0; }
 .ms-voice-select    { min-width:180px; }
 .reading-text {
   font-size:13px; color:var(--text-secondary); line-height:1.6;

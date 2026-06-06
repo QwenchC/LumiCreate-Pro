@@ -78,6 +78,17 @@
             <input type="range" min="0" max="1" step="0.05" v-model.number="settings.text_engine.top_p" class="slider" />
           </div>
         </div>
+        <div class="form-group">
+          <label>批量并发数</label>
+          <input type="number" min="1" max="2500" step="1"
+                 v-model.number="settings.text_engine.concurrency" class="input" style="width:120px" />
+          <p class="form-hint">
+            角色自动检测 / 图片提示词 / 视频提示词等批量任务的最大并发请求数。
+            本地模型（Ollama、LM Studio）通常 <b>1–4</b>；
+            云端高并发模型（DeepSeek v4-flash 限 2500、Bailian 等）可调到 <b>50–500</b> 大幅缩短全片生成时间。
+            过高会触发供应商的速率限制并报错，按所购模型的并发上限设置即可。
+          </p>
+        </div>
       </section>
 
       <!-- Image engine -->
@@ -143,6 +154,10 @@
               GPT-SoVITS（本地 API）
             </label>
             <label class="radio-item">
+              <input type="radio" value="msedge" v-model="settings.audio_engine.engine_type" />
+              微软神经语音（Edge TTS，在线，免音色参考，支持全部对白模式）
+            </label>
+            <label class="radio-item">
               <input type="radio" value="manual" v-model="settings.audio_engine.engine_type" />
               手动导入音频
             </label>
@@ -184,6 +199,93 @@
         <div class="form-group" v-if="settings.audio_engine.engine_type === 'gptsovits'">
           <label>API 地址</label>
           <input v-model="settings.audio_engine.api_url" class="input" placeholder="http://localhost:9880" />
+        </div>
+
+        <!-- Microsoft Edge TTS settings -->
+        <template v-if="settings.audio_engine.engine_type === 'msedge'">
+          <div class="form-group">
+            <label>默认音色（Voice）</label>
+            <select v-model="settings.audio_engine.msedge_voice" class="input select">
+              <optgroup v-for="g in groupedAvailableVoices" :key="g.gender" :label="g.label">
+                <option v-for="v in g.items" :key="v.value" :value="v.value">{{ v.label }}</option>
+              </optgroup>
+            </select>
+            <p class="form-hint">
+              edge-tts 内置中文神经语音；可手动改成其他语言/地区代码（如 en-US-AriaNeural）。
+              <span v-if="msedgeAvailableVoices.length">
+                当前下拉已按"全部测试"通过名单过滤（{{ msedgeAvailableVoices.length }} 个可用）。
+              </span>
+              <span v-else style="color:var(--color-warning, #fa3)">
+                还未运行过音色测试，下方按钮一键检测全部 14 个音色，跑过后下拉会自动只显示能用的。
+              </span>
+            </p>
+          </div>
+          <div class="form-group">
+            <label>默认语速</label>
+            <select v-model="settings.audio_engine.msedge_rate" class="input select">
+              <option value="-25%">慢</option>
+              <option value="+0%">正常</option>
+              <option value="+25%">快（漫剧默认）</option>
+              <option value="+50%">很快</option>
+            </select>
+            <p class="form-hint">非朗读模式（对白 / 旁白 / 混合）下，每段对白也会按这个语速合成。</p>
+          </div>
+          <div class="form-group">
+            <label>🧪 全部音色测试（一次性筛掉不可用的）</label>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button class="btn btn-primary btn-sm" :disabled="msTestAllRunning" @click="testAllMsVoices">
+                {{ msTestAllRunning ? `测试中… ${msTestAllProgress}/${msTestAllTotal}` : '🧪 测试全部 14 个音色' }}
+              </button>
+              <span v-if="msTestAllSummary" class="text-muted" style="font-size:12px">
+                {{ msTestAllSummary }}
+              </span>
+            </div>
+            <div v-if="msTestAllResults.length" class="ms-test-grid" style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px">
+              <div v-for="r in msTestAllResults" :key="r.value"
+                   :class="['ms-test-row', r.ok === true ? 'ok' : r.ok === false ? 'bad' : 'pending']"
+                   :title="r.error || ''">
+                <span class="ms-test-icon">{{ r.ok === true ? '✓' : r.ok === false ? '✗' : '…' }}</span>
+                <span class="ms-test-label">{{ r.label }}</span>
+              </div>
+            </div>
+            <p class="form-hint">
+              通过的音色会写入 settings；之后在「角色管理」「音频生成」等下拉里，不通过的音色不会再出现，
+              避免你不小心选了一个临时挂掉的音色导致整片生成失败。
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label>试听（验证当前音色是否可用）</label>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input v-model="msTestText" class="input" style="flex:1;min-width:200px"
+                     placeholder="试听文本，例：你好，这是一段测试" />
+              <button class="btn btn-secondary btn-sm" :disabled="msTesting"
+                      @click="testMsVoice(settings.audio_engine.msedge_voice, settings.audio_engine.msedge_rate)">
+                {{ msTesting ? '生成中…' : '▶ 试听' }}
+              </button>
+            </div>
+            <audio v-if="msTestAudio" :key="msTestRev"
+                   :src="`data:audio/mpeg;base64,${msTestAudio}`" controls
+                   style="width:100%;margin-top:8px;height:36px" />
+            <p v-if="msTestError" class="form-hint" style="color:var(--color-error)">
+              ⚠ 试听失败：{{ msTestError }}（该音色当前可能临时不可用，请改选其他音色）
+            </p>
+            <p v-else class="form-hint">
+              edge-tts 由微软公网服务提供，偶尔会有个别音色短时不可用——批量生成前**先点试听**，
+              出图问题更省事。失败时换一个音色即可。
+            </p>
+          </div>
+        </template>
+
+        <!-- IndexTTS / GPT-SoVITS 也提供一个简单的连接测试 -->
+        <div class="form-group" v-if="settings.audio_engine.engine_type !== 'msedge' && settings.audio_engine.engine_type !== 'manual'">
+          <label>引擎连接测试</label>
+          <button class="btn btn-secondary btn-sm" :disabled="ttsTesting" @click="testAudioConnection">
+            {{ ttsTesting ? '测试中…' : '🔌 测试连接' }}
+          </button>
+          <p v-if="ttsTestMsg" class="form-hint" :style="{color: ttsTestOk ? 'var(--color-success, #6cf)' : 'var(--color-error)'}">
+            {{ ttsTestMsg }}
+          </p>
         </div>
 
         <div class="form-group">
@@ -268,7 +370,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted, computed } from 'vue'
 import { useSettingsStore } from '../stores/settings'
 import axios from 'axios'
 
@@ -282,6 +384,103 @@ const testing = ref(false)
 const testResult = ref(null)
 const modelList = ref([])
 const testStatus = ref({ text: '', image: '', audio: '', video: '' })
+
+// ── MS Edge 试听 ──────────────────────────────────────────────────────────────
+import { MSEDGE_VOICES, filterVoices, groupByGender } from '../data/msedgeVoices'
+
+const msTestText  = ref('你好，这是一段测试。')
+const msTesting   = ref(false)
+const msTestAudio = ref('')
+const msTestRev   = ref(0)
+const msTestError = ref('')
+
+// 已通过音色测试的列表（来自 settings.audio_engine.msedge_available_voices）
+const msedgeAvailableVoices = computed(
+  () => settings.value?.audio_engine?.msedge_available_voices || []
+)
+// 设置页"默认音色"下拉用的过滤列表（保留当前选中以免被过滤掉）
+const groupedAvailableVoices = computed(() => {
+  const allowed = msedgeAvailableVoices.value
+  const current = settings.value?.audio_engine?.msedge_voice
+  return groupByGender(filterVoices(allowed, [current]))
+})
+
+// 全部音色测试
+const msTestAllRunning  = ref(false)
+const msTestAllResults  = ref([])     // [{value, label, ok:true|false|null, error}]
+const msTestAllProgress = ref(0)
+const msTestAllTotal    = ref(MSEDGE_VOICES.length)
+const msTestAllSummary  = ref('')
+
+async function testAllMsVoices() {
+  msTestAllRunning.value  = true
+  msTestAllSummary.value  = ''
+  msTestAllProgress.value = 0
+  msTestAllTotal.value    = MSEDGE_VOICES.length
+  // 初始化结果矩阵（pending）
+  msTestAllResults.value = MSEDGE_VOICES.map(v => ({ ...v, ok: null, error: '' }))
+  try {
+    const { data } = await api.post('/audio-engine/ms-tts/test-all', {
+      voices: MSEDGE_VOICES.map(v => v.value),
+      text: '测试',
+      save: true,
+    })
+    // 把后端返回的 results 映射回 UI
+    msTestAllResults.value = MSEDGE_VOICES.map(v => {
+      const r = data.results?.[v.value] || { ok: false, error: 'no result' }
+      return { ...v, ok: !!r.ok, error: r.error || '' }
+    })
+    msTestAllProgress.value = data.tested || msTestAllTotal.value
+    // 同步 settings 内存以便下拉立即过滤（也已在后端持久化）
+    if (settings.value?.audio_engine) {
+      settings.value.audio_engine.msedge_available_voices = data.available || []
+    }
+    msTestAllSummary.value = `共测试 ${data.tested} 个，通过 ${data.passed} 个；已写入设置。`
+  } catch (e) {
+    msTestAllSummary.value = '测试失败：' + (e?.response?.data?.detail || e.message || '请求异常')
+  } finally {
+    msTestAllRunning.value = false
+  }
+}
+
+async function testMsVoice(voice, rate) {
+  if (!voice) { msTestError.value = '请先选择音色'; return }
+  msTesting.value = true
+  msTestError.value = ''
+  msTestAudio.value = ''
+  try {
+    const { data } = await api.post('/audio-engine/ms-tts', {
+      text: msTestText.value || '你好，这是一段测试。',
+      voice, rate: rate || '+0%',
+    })
+    msTestAudio.value = data.data
+    msTestRev.value++
+  } catch (e) {
+    msTestError.value = e?.response?.data?.detail || e.message || '请求失败'
+  } finally {
+    msTesting.value = false
+  }
+}
+
+// ── IndexTTS / GPT-SoVITS 连接测试 ────────────────────────────────────────────
+const ttsTesting = ref(false)
+const ttsTestOk  = ref(false)
+const ttsTestMsg = ref('')
+
+async function testAudioConnection() {
+  ttsTesting.value = true
+  ttsTestMsg.value = ''
+  try {
+    const { data } = await api.get('/audio-engine/test')
+    ttsTestOk.value  = !!data.success
+    ttsTestMsg.value = (data.success ? '✓ ' : '✗ ') + (data.message || '')
+  } catch (e) {
+    ttsTestOk.value  = false
+    ttsTestMsg.value = '✗ ' + (e?.response?.data?.detail || e.message || '请求失败')
+  } finally {
+    ttsTesting.value = false
+  }
+}
 
 const tabs = [
   { key: 'general', label: '通用',     icon: '⚙' },
@@ -429,6 +628,16 @@ async function chooseDir() {
 .input-with-btn { display: flex; gap: 8px; }
 .hint { font-size: 11px; color: var(--color-text-muted); margin-top: 5px; }
 .form-hint { font-size: 11px; color: var(--color-text-muted); margin-top: 5px; }
+.ms-test-row {
+  display:flex; align-items:center; gap:6px;
+  padding:4px 8px; border-radius:4px; font-size:12px;
+  border:1px solid var(--color-border);
+}
+.ms-test-row.ok      { background:rgba(64,180,90,.12);  border-color:rgba(64,180,90,.5);  }
+.ms-test-row.bad     { background:rgba(220,60,60,.10);  border-color:rgba(220,60,60,.55); opacity:.7; }
+.ms-test-row.pending { background:rgba(180,180,180,.10);}
+.ms-test-icon  { font-weight:700; width:14px; text-align:center; }
+.ms-test-label { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .form-hint-inline { font-size: 11px; color: var(--color-text-muted); font-weight: 400; }
 .preset-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
 

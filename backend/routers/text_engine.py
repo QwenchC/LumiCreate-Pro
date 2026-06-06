@@ -303,11 +303,19 @@ def _extract_json_array(text: str) -> Optional[list]:
 async def generate_frame_prompts(req: GenerateFramePromptsRequest):
     dialogue_lines = ""
     if req.dialogues:
-        lines = "\n".join(
-            f"  [{d.get('character','?')}]: {d.get('text','')}"
-            for d in req.dialogues
-        )
-        dialogue_lines = f"Dialogues:\n{lines}\n"
+        line_parts = []
+        for d in req.dialogues:
+            text = (d.get("text") or "").strip()
+            if not text:
+                continue
+            speaker = (d.get("character") or "").strip()
+            # 漫剧/朗读模式：speaker 为空 → 旁白；标注 Narration 让 LLM 知道是叙述而非台词
+            if speaker:
+                line_parts.append(f"  [{speaker}]: {text}")
+            else:
+                line_parts.append(f"  [Narration]: {text}")
+        if line_parts:
+            dialogue_lines = "Dialogues / narration (read in narrative order — earlier lines correspond to the start frame, later lines to the end frame):\n" + "\n".join(line_parts) + "\n"
 
     # Build per-character appearance block — STRICT: each appearance stays with its owner
     char_parts = []

@@ -237,22 +237,30 @@ async def run(args):
     await api.put(f"/api/projects/{pid}/scenes", {"scenes": scenes})
 
     # 5) 为每镜生成首/末帧 prompt — 只传该镜出镜的角色（避免多人物干扰）
-    print("[5/9] generate frame prompts (per scene)")
+    # 并发数取自 settings.text_engine.concurrency；本地模型 1~4，云端 deepseek-v4-flash 等可设几百
+    settings_now = await api.get("/api/settings")
+    text_concurrency = int(settings_now.get("text_engine", {}).get("concurrency", 1)) or 1
+    print(f"[5/9] generate frame prompts (concurrency={text_concurrency})")
     chars_by_name = {c["name"]: c for c in project_chars}
-    for i, s in enumerate(scenes):
+    frame_sem = asyncio.Semaphore(text_concurrency)
+
+    async def gen_frame(i: int, s: dict):
         selected = set(s.get("_scene_characters") or [])
         scene_chars = [chars_by_name[n] for n in selected if n in chars_by_name]
-        r = await api.post("/api/text-engine/generate-frame-prompts", {
-            "description": s["description"],
-            "dialogues": s.get("dialogues", []),
-            "characters": scene_chars,                # 0 或 1 个
-            "manuscript": manuscript,
-            "scene_index": i + 1,
-            "total_scenes": len(scenes),
-        })
+        async with frame_sem:
+            r = await api.post("/api/text-engine/generate-frame-prompts", {
+                "description": s["description"],
+                "dialogues":   s.get("dialogues", []),
+                "characters":  scene_chars,            # 0 或 1 个
+                "manuscript":  manuscript,
+                "scene_index": i + 1,
+                "total_scenes": len(scenes),
+            })
         s["start_frame_prompt"] = r.get("start_frame_prompt", "")
         s["end_frame_prompt"]   = r.get("end_frame_prompt", "")
         print(f"     scene {i+1} chars={list(selected)}: {s['start_frame_prompt'][:50]}…")
+
+    await asyncio.gather(*(gen_frame(i, s) for i, s in enumerate(scenes)))
     await api.put(f"/api/projects/{pid}/scenes", {"scenes": scenes})
 
     # 6) 图片批量生成（需要 workflow_name & ComfyUI）
@@ -351,26 +359,31 @@ async def run(args):
     # 8) 视频（需要 LTX workflow 与全套 start/end/audio）
     if args.video_workflow and args.image_workflow:
         # 8a) 视频提示词批量生成（关注运动 / 表情 / 镜头，不重复 appearance 标签）
-        print("[8a/9] generate video prompts (per scene)")
+        print(f"[8a/9] generate video prompts (concurrency={text_concurrency})")
         video_prompts: dict[str, str] = {}
-        for i, s in enumerate(scenes):
+        vp_sem = asyncio.Semaphore(text_concurrency)
+
+        async def gen_video_prompt(i: int, s: dict):
             selected_names = set(s.get("_scene_characters") or [])
             scene_chars = [chars_by_name[n] for n in selected_names if n in chars_by_name]
-            parts = []
-            async for evt in api.sse("/api/text-engine/generate-video-prompt", {
-                "description":        s.get("description", ""),
-                "dialogues":          s.get("dialogues", []),
-                "characters":         scene_chars,
-                "start_frame_prompt": s.get("start_frame_prompt", ""),
-                "end_frame_prompt":   s.get("end_frame_prompt", ""),
-                "manuscript":         manuscript,
-                "scene_index":        i + 1,
-                "total_scenes":       len(scenes),
-            }):
-                if "text" in evt:
-                    parts.append(evt["text"])
-            video_prompts[s["id"]] = "".join(parts).strip()
+            async with vp_sem:
+                parts = []
+                async for evt in api.sse("/api/text-engine/generate-video-prompt", {
+                    "description":        s.get("description", ""),
+                    "dialogues":          s.get("dialogues", []),
+                    "characters":         scene_chars,
+                    "start_frame_prompt": s.get("start_frame_prompt", ""),
+                    "end_frame_prompt":   s.get("end_frame_prompt", ""),
+                    "manuscript":         manuscript,
+                    "scene_index":        i + 1,
+                    "total_scenes":       len(scenes),
+                }):
+                    if "text" in evt:
+                        parts.append(evt["text"])
+                video_prompts[s["id"]] = "".join(parts).strip()
             print(f"     {s['id']}: {video_prompts[s['id']][:60]}…")
+
+        await asyncio.gather(*(gen_video_prompt(i, s) for i, s in enumerate(scenes)))
         await api.put(f"/api/projects/{pid}/video-prompts", video_prompts)
 
         print(f"[8/9] generate video via LTX workflow: {args.video_workflow}")

@@ -16,6 +16,14 @@
         </button>
         <button
           class="btn btn-secondary btn-sm"
+          :disabled="!scenes.length"
+          @click="rewriteDialoguesByMode"
+          :title="'保留所有分镜与提示词，仅按当前对白模式重新拆分每镜的台词（适合切换对白模式后同步）'"
+        >
+          ♻ 按对白模式重抽台词
+        </button>
+        <button
+          class="btn btn-secondary btn-sm"
           :disabled="!scenes.length || generatingPrompts || generatingPromptIdx !== null"
           @click="generateAllPrompts"
           :title="'为所有分镜生成首帧/尾帧提示词'"
@@ -430,19 +438,48 @@ function _splitSentences(text) {
 }
 
 function _extractDialogues(text) {
+  const t0 = (text || '').trim()
+  if (!t0) return []
   const mode = manuscriptConfig.value.dialogue_mode
-  if (mode === 'reading') {
-    return [{ character: '', text: text.trim(), emotion: '平静' }]
+  // reading / narration：整段都作为单条（reading=直读全文，narration=旁白叙述）
+  if (mode === 'reading' || mode === 'narration') {
+    return [{ character: '', text: t0, emotion: '平静' }]
   }
-  // Simple heuristic: extract content within Chinese/regular quote pairs
+  // dialogue：仅引号里的对白（混合模式同样使用此抽取；旁白部分留给 reading/narration 处理）
+  // 兼顾中英文引号
   const dlgs = []
-  const re = /[「“‘](.*?)[」”’]/gs
+  const re = /[「“‘"'](.*?)[」”’"']/gs
   let m
-  while ((m = re.exec(text)) !== null) {
-    const t = m[1].trim()
-    if (t) dlgs.push({ character: '', text: t, emotion: '平静' })
+  while ((m = re.exec(t0)) !== null) {
+    const seg = m[1].trim()
+    if (seg) dlgs.push({ character: '', text: seg, emotion: '平静' })
+  }
+  // mixed 模式下若一句也没抽到（描述里没引号），fallback 成整段 1 条以免音频生成完全没内容
+  if (!dlgs.length && mode === 'mixed') {
+    return [{ character: '', text: t0, emotion: '平静' }]
   }
   return dlgs
+}
+
+function rewriteDialoguesByMode() {
+  if (!scenes.value.length) return
+  const mode = manuscriptConfig.value.dialogue_mode || 'mixed'
+  const modeLabel = {
+    reading:   '纯朗读（整段直读）',
+    narration: '纯旁白',
+    dialogue:  '纯对话（仅引号内）',
+    mixed:     '旁白+对话',
+  }[mode] || mode
+  if (!confirm(
+    `将按当前对白模式「${modeLabel}」重新拆分每个分镜的台词。\n\n` +
+    `→ 仅会覆盖每镜的 dialogues 字段\n` +
+    `→ 分镜 id / 描述 / 首末帧提示词 / 出镜角色 / 已生成的图片 全部保留\n\n` +
+    `继续吗？`
+  )) return
+  for (const s of scenes.value) {
+    s.dialogues = _extractDialogues(s.description || '')
+  }
+  markDirty()
 }
 
 function openManualSplit() {
@@ -522,6 +559,21 @@ function toggleSceneChar(scene, charName) {
   markDirty()
 }
 
+// ── Text-engine concurrency helper ────────────────────────────────────────────
+// Pulls settings.text_engine.concurrency every time we kick off a batch, so the
+// user-facing 设置-文本引擎-批量并发数 actually controls 角色自动识别 + 帧 prompt.
+async function _resolveTextConcurrency() {
+  try {
+    const r = await fetch(`${API}/settings`)
+    if (r.ok) {
+      const s = await r.json()
+      const n = Number(s?.text_engine?.concurrency)
+      if (Number.isFinite(n) && n >= 1) return Math.min(n, 2500)
+    }
+  } catch { /* ignore */ }
+  return 4
+}
+
 // ── Frame prompt generation ───────────────────────────────────────────────────
 async function _fetchFramePrompts(scene) {
   // Use only the characters selected for this scene.
@@ -567,7 +619,7 @@ async function generateAllPrompts() {
   generatingPrompts.value = true
   promptProgress.value = 0
   const total = scenes.value.length
-  const CONCURRENCY = 3
+  const CONCURRENCY = await _resolveTextConcurrency()
   let cursor = 0
   async function worker() {
     while (cursor < total) {
@@ -617,7 +669,7 @@ async function autoDetectSceneCharacters() {
 
   let changed = false
   const total = scenes.value.length
-  const CONCURRENCY = 3
+  const CONCURRENCY = await _resolveTextConcurrency()
   let cursor = 0
   async function worker() {
     while (cursor < total) {

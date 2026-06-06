@@ -43,6 +43,8 @@ description: 驱动 LumiCreate-Pro 本地 AI 视频创作流水线（文案 → 
 
 详细链路与典型病灶诊断见 [prompts.md](./references/prompts.md)。
 
+⚠️ **批量提示词建议并发**：`prompts frame-batch` / `prompts video-batch` / `characters auto-build` 等遍历所有分镜的命令默认读 `settings.text_engine.concurrency` 并发。本地模型（Ollama/LM Studio）保持 **1–4**；云端高并发模型（DeepSeek v4-flash 上限 2500、Bailian 等）可设到 **50–500**，整片提示词生成从串行的几十分钟降到分钟级。CLI 可临时覆盖：`--concurrency 100`。
+
 ⚠️ **音频持久化 key 必须是 `__ms_reading__{sceneId}`**，否则前端"音频生成"页打不开预览。直接以 `{sceneId}` 为 key 写入会保存进文件但 UI 看不到。
 
 ⚠️ **视频生成前必须先生成图片**：reading 模式只省了音频拼接，每个分镜仍然需要 `start` / `end` 两张图。跳过图片步骤会得到 `scene_error: 缺少首帧图片`。

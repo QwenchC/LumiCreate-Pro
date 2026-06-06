@@ -29,6 +29,27 @@ video-engine/generate-stream
    scene.positive_prompt = <video prompt>               ← 描述运动，不重复 appearance
 ```
 
+## 角色错位 / 动作互换 / 首末帧角色相同 的处理
+
+### 后端 prompt 模板（FRAME_PROMPT_SYSTEM）做了哪些保证
+
+[prompts.py:187](../../backend/services/prompts.py#L187) 的 system rule 关键约束：
+
+| Rule              | 作用                                                                                       |
+|-------------------|--------------------------------------------------------------------------------------------|
+| **SEQUENTIAL FRAMING** | start frame 与 end frame 是**同一场景的两个不同瞬间**。一个角色不一定同时出现在两帧。LLM 会按描述的叙事顺序自行判断"A 走进来 → B 回答"这类场景，把 A 放进 start、B 放进 end |
+| **APPEARANCE ISOLATION** | 每个角色的外观标签（发型/衣着/配饰）严格归属，不会被借给别的角色                       |
+| **ACTION ISOLATION** | 每个角色的动作 / 姿势 / 位置 / 表情严格归属。**当 2 个角色同帧时禁止使用代词**，必须用 `Alice raises sword on the left, Bob recoils on the right` 这种命名 + 动作显式绑定 |
+| **LOCAL MODEL LIMITATION** | 每帧角色数硬上限 2；列了 3 个就拆开放到 start/end                                  |
+
+### 客户端这边能做的"分流"
+
+后端 LLM 已经会自己判断首末帧角色，但客户端可以再往前一步——**直接告诉模板"哪段台词属于哪一帧"**：
+
+- `dialogues` 顺序非常关键：前几条 → start 帧素材，后几条 → end 帧素材。手动分镜或编辑分镜时**保持原文顺序**。
+- reading 模式 `dialogues[i].character` 为空 → 后端会显示成 `[Narration]: 整段文本`，让 LLM 知道这是旁白而非对话。**不要把 `character` 填成 `"旁白"` / `"narrator"`**——后端约定空字符串才是旁白。
+- 同帧 2 角色容易出错时，更好的解决办法是回到分镜阶段，把这一镜按"先 A 后 B"再切成 2 镜（max_chars_per_scene=1 + 多分），完全规避同帧多角色问题。
+
 ## 角色 appearance 注入到 frame prompt 的实际位置
 
 后端 [text_engine.py:303-364](../../backend/routers/text_engine.py#L303) 和 [prompts.py:187-214](../../backend/services/prompts.py#L187) 的实现：
