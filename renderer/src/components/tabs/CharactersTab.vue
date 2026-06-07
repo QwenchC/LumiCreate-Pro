@@ -123,6 +123,45 @@
               </span>
             </p>
           </div>
+
+          <!-- 轮 4: 立绘画廊 -->
+          <div class="form-group">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+              <label style="margin:0">🎨 立绘</label>
+              <span class="text-muted" style="font-size:11px">
+                角色一致性参考；主立绘 ★ 用作后续图生图的默认参考
+              </span>
+              <button class="btn btn-secondary btn-xs" style="margin-left:auto"
+                      :disabled="!char.name?.trim()"
+                      @click="openPortraitGen(char)">
+                🎨 生成立绘
+              </button>
+            </div>
+            <div class="portraits-row" v-if="(char._portraits || []).length">
+              <div v-for="p in char._portraits" :key="p.filename"
+                   class="portrait-card"
+                   :class="{ primary: p.is_primary }"
+                   @click="openPortraitPreview(char, p)"
+                   title="点击放大预览">
+                <img :src="portraitUrl(char.name, p.filename)" class="portrait-img" />
+                <div class="portrait-actions" @click.stop>
+                  <button class="portrait-mini" :title="p.is_primary ? '已是主立绘' : '设为主立绘'"
+                          :disabled="p.is_primary"
+                          @click.stop="setPrimaryPortrait(char, p)">
+                    {{ p.is_primary ? '★' : '☆' }}
+                  </button>
+                  <button class="portrait-mini danger" title="删除"
+                          @click.stop="deletePortrait(char, p)">🗑</button>
+                </div>
+                <div class="portrait-name truncate" :title="p.workflow_name">
+                  {{ p.workflow_name || '—' }}
+                </div>
+              </div>
+            </div>
+            <p v-else class="text-muted" style="font-size:11px;margin:4px 0 0">
+              暂无立绘 — 点上方"🎨 生成立绘"建立第一张
+            </p>
+          </div>
         </div>
       </div>
 
@@ -131,6 +170,62 @@
 
     <!-- Status -->
     <div v-if="statusMsg" class="status-toast" :class="statusType">{{ statusMsg }}</div>
+
+    <!-- 轮 4: 立绘生成弹窗 -->
+    <Teleport to="body">
+      <div v-if="portraitGenDialog.show" class="overlay" @click.self="portraitGenDialog.show = false">
+        <div class="dialog card" style="min-width:540px;max-width:640px">
+          <h3 class="dialog-title">🎨 生成立绘 · {{ portraitGenDialog.charName }}</h3>
+
+          <div class="form-group">
+            <label>工作流（文生图）</label>
+            <select v-model="portraitGenDialog.workflowName" class="input">
+              <option value="" disabled>请选择…</option>
+              <option v-for="w in t2iWorkflows" :key="w" :value="w">{{ w }}</option>
+            </select>
+            <p class="field-hint" v-if="!t2iWorkflows.length">
+              没有可用的文生图工作流。请到 ComfyUI 的 user/default/workflows 目录添加 t2i 工作流并刷新。
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label>画风</label>
+            <select v-model="portraitGenDialog.stylePreset" class="input">
+              <option v-for="p in STYLE_PRESETS" :key="p.value" :value="p.value">{{ p.label }}</option>
+            </select>
+            <input v-if="portraitGenDialog.stylePreset === '__custom__'"
+                   v-model="portraitGenDialog.customStyle"
+                   class="input" placeholder="输入英文画风提示词…"
+                   style="margin-top:6px" />
+          </div>
+
+          <div class="form-group">
+            <label>Prompt（英文，会注入角色 appearance）</label>
+            <textarea v-model="portraitGenDialog.prompt"
+                      class="input textarea" rows="4"
+                      placeholder="character portrait, full body, white background, ..."></textarea>
+            <p class="field-hint">
+              默认包含该角色的 appearance 标签 + "character portrait, full body, neutral pose, plain background"；
+              画风前缀在提交时自动拼到最前面。
+            </p>
+          </div>
+
+          <div v-if="portraitGenDialog.progress" class="form-group">
+            <p style="font-size:12px">{{ portraitGenDialog.progress }}</p>
+          </div>
+
+          <div class="dialog-actions">
+            <button class="btn btn-ghost" :disabled="portraitGenDialog.running"
+                    @click="portraitGenDialog.show = false">取消</button>
+            <button class="btn btn-primary"
+                    :disabled="portraitGenDialog.running || !portraitGenDialog.workflowName || !portraitGenDialog.prompt?.trim()"
+                    @click="runPortraitGen">
+              {{ portraitGenDialog.running ? '生成中…' : '▶ 开始生成' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Import from other project dialog -->
     <Teleport to="body">
@@ -185,6 +280,28 @@
         </div>
       </div>
     </Teleport>
+
+    <!-- 立绘大图预览 -->
+    <Teleport to="body">
+      <div v-if="portraitLightbox" class="portrait-lightbox" @click.self="closePortraitPreview">
+        <button class="pl-close" @click="closePortraitPreview">✕</button>
+        <button class="pl-nav pl-prev" v-if="portraitLightbox.list.length > 1"
+                @click="portraitLightboxNav(-1)">‹</button>
+        <div class="pl-body">
+          <img :src="portraitUrl(portraitLightbox.charName, portraitLightbox.list[portraitLightbox.index].filename)"
+               class="pl-img" />
+          <div class="pl-footer">
+            {{ portraitLightbox.charName }} ·
+            {{ portraitLightbox.list[portraitLightbox.index].filename }}
+            <span v-if="portraitLightbox.list.length > 1">
+              · {{ portraitLightbox.index + 1 }} / {{ portraitLightbox.list.length }}
+            </span>
+          </div>
+        </div>
+        <button class="pl-nav pl-next" v-if="portraitLightbox.list.length > 1"
+                @click="portraitLightboxNav(1)">›</button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -205,6 +322,211 @@ const statusMsg  = ref('')
 const statusType = ref('')
 const audioEngine = ref('indextts')  // 'indextts' | 'gptsovits' | 'msedge' | 'manual'
 const availableVoiceList = ref([])    // settings.audio_engine.msedge_available_voices
+
+// ── 轮 4: 立绘 ───────────────────────────────────────────────────────────────
+const t2iWorkflows = ref([])
+// 与 ImagesTab 共用一套画风预设
+const STYLE_PRESETS = [
+  { label: '— 无画风 —', value: '' },
+  { label: '二次元动漫', value: 'anime style, 2d animation, vibrant colors, clean linework' },
+  { label: '写实风格',   value: 'photorealistic, realistic, high detail, cinematic lighting' },
+  { label: '水彩插画',   value: 'watercolor illustration, soft colors, painted texture, artistic' },
+  { label: '赛博朋克',   value: 'cyberpunk style, neon lights, futuristic city, dark atmosphere' },
+  { label: '国风水墨',   value: 'Chinese ink painting, traditional brush strokes, elegant, minimalist' },
+  { label: '像素风格',   value: 'pixel art, retro 16-bit style' },
+  { label: '自定义',    value: '__custom__' },
+]
+const portraitGenDialog = reactive({
+  show: false, charName: '', workflowName: '',
+  prompt: '',         // 用户编辑的主提示词（不含画风前缀）
+  stylePreset: '',    // 画风预设值或 '__custom__'
+  customStyle: '',    // 自定义画风文本
+  running: false, progress: '',
+})
+
+function portraitUrl(charName, filename) {
+  const enc = encodeURIComponent(charName)
+  return `${API}/projects/${props.projectId}/characters/${enc}/portraits/file/${filename}`
+}
+
+async function loadT2iWorkflows() {
+  try {
+    // image_engine.workflow-info 可分类；先取全部 workflow，挨个 classify
+    const r = await fetch(`${API}/image-engine/workflows`)
+    if (!r.ok) return
+    const all = await r.json()
+    const results = await Promise.all(all.map(async name => {
+      try {
+        const info = await fetch(`${API}/image-engine/workflow-info?workflow_name=${encodeURIComponent(name)}`)
+        if (!info.ok) return null
+        const j = await info.json()
+        return j.kind === 't2i' ? name : null
+      } catch { return null }
+    }))
+    t2iWorkflows.value = results.filter(Boolean)
+  } catch {}
+}
+
+async function loadCharacterPortraits(char) {
+  if (!char?.name) return
+  try {
+    const r = await fetch(`${API}/projects/${props.projectId}/characters/${encodeURIComponent(char.name)}/portraits`)
+    if (r.ok) {
+      char._portraits = (await r.json()).portraits || []
+    }
+  } catch {}
+}
+
+async function openPortraitGen(char) {
+  if (!char?.name?.trim()) return
+  if (!t2iWorkflows.value.length) await loadT2iWorkflows()
+  portraitGenDialog.charName = char.name
+  portraitGenDialog.workflowName = t2iWorkflows.value[0] || ''
+  // 默认 prompt：拼接 appearance
+  const app = (char.appearance || '').trim()
+  const base = 'character portrait, full body, neutral pose, plain background, masterpiece, best quality'
+  portraitGenDialog.prompt = app ? `${app}, ${base}` : base
+  // 从全局设置带入默认画风
+  try {
+    const r = await fetch(`${API}/settings`)
+    if (r.ok) {
+      const s = await r.json()
+      const ie = s.image_engine || {}
+      portraitGenDialog.stylePreset = ie.style_preset ?? ''
+      portraitGenDialog.customStyle = ie.custom_style_text ?? ''
+    }
+  } catch {}
+  portraitGenDialog.progress = ''
+  portraitGenDialog.running  = false
+  portraitGenDialog.show     = true
+}
+
+async function runPortraitGen() {
+  const dlg = portraitGenDialog
+  if (dlg.running) return
+  dlg.running  = true
+  dlg.progress = '提交到 ComfyUI…'
+  try {
+    // 拼出最终 prompt：画风前缀 + 用户提示词
+    const style = dlg.stylePreset === '__custom__'
+      ? (dlg.customStyle || '').trim()
+      : (dlg.stylePreset || '').trim()
+    const fullPrompt = [style, dlg.prompt.trim()].filter(Boolean).join(', ')
+
+    // 1) 调 image-engine 单图 SSE 生成（不传 seed → 后端随机，避免每次都生成同一张）
+    const resp = await fetch(`${API}/image-engine/generate-stream`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workflow_name:   dlg.workflowName,
+        scene_id:        `__portrait__${dlg.charName}`,
+        frame_type:      'portrait',
+        slot_index:      0,
+        positive_prompt: fullPrompt,
+        negative_prompt: '',
+        width:           1080, height: 1920,   // 立绘固定竖幅
+      }),
+    })
+    if (!resp.ok) throw new Error(await resp.text())
+
+    let imageB64 = ''
+    const reader = resp.body.getReader(); const dec = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue
+        const raw = line.slice(5).trim()
+        if (raw === '[DONE]') break
+        try {
+          const ev = JSON.parse(raw)
+          if (ev.event === 'progress' && ev.value && ev.max) {
+            dlg.progress = `生成中… ${ev.value}/${ev.max}`
+          } else if (ev.event === 'completed') {
+            const first = (ev.images || [])[0]
+            if (first?.data) imageB64 = first.data
+          } else if (ev.event === 'error') {
+            throw new Error(ev.message || '生成失败')
+          }
+        } catch {}
+      }
+    }
+    if (!imageB64) throw new Error('没有取到生成结果')
+
+    // 2) 上传到角色立绘 endpoint
+    dlg.progress = '保存中…'
+    const up = await fetch(
+      `${API}/projects/${props.projectId}/characters/${encodeURIComponent(dlg.charName)}/portraits`,
+      {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: imageB64,
+          workflow_name: dlg.workflowName,
+          prompt: dlg.prompt,
+          set_primary: false,   // 让后端按"无主图时第一张默认主"逻辑处理
+        }),
+      },
+    )
+    if (!up.ok) throw new Error(await up.text())
+
+    // 3) 刷新当前角色的画廊
+    const char = characters.value.find(c => c.name === dlg.charName)
+    if (char) await loadCharacterPortraits(char)
+
+    dlg.progress = '✓ 完成'
+    dlg.show     = false
+  } catch (e) {
+    dlg.progress = '✗ ' + (e.message || e)
+    showStatus(dlg.progress, 'err')
+  } finally {
+    dlg.running = false
+  }
+}
+
+async function setPrimaryPortrait(char, p) {
+  try {
+    await fetch(
+      `${API}/projects/${props.projectId}/characters/${encodeURIComponent(char.name)}/portraits/${p.filename}/select`,
+      { method: 'PUT' },
+    )
+    for (const x of (char._portraits || [])) x.is_primary = (x.filename === p.filename)
+  } catch (e) { alert('设为主立绘失败: ' + e.message) }
+}
+
+// 轮 4: 立绘大图预览
+const portraitLightbox = ref(null)   // { charName, list: [], index }
+
+function openPortraitPreview(char, p) {
+  const list = char._portraits || []
+  const idx = list.findIndex(x => x.filename === p.filename)
+  portraitLightbox.value = { charName: char.name, list, index: idx < 0 ? 0 : idx }
+}
+function closePortraitPreview() { portraitLightbox.value = null }
+function portraitLightboxNav(dir) {
+  const lb = portraitLightbox.value
+  if (!lb) return
+  const n = lb.list.length
+  lb.index = (lb.index + dir + n) % n
+}
+function onPortraitLightboxKey(e) {
+  if (!portraitLightbox.value) return
+  if (e.key === 'Escape')     closePortraitPreview()
+  if (e.key === 'ArrowLeft')  portraitLightboxNav(-1)
+  if (e.key === 'ArrowRight') portraitLightboxNav(1)
+}
+
+async function deletePortrait(char, p) {
+  if (!confirm(`删除立绘 ${p.filename}？`)) return
+  try {
+    await fetch(
+      `${API}/projects/${props.projectId}/characters/${encodeURIComponent(char.name)}/portraits/${p.filename}`,
+      { method: 'DELETE' },
+    )
+    await loadCharacterPortraits(char)
+  } catch (e) { alert('删除失败: ' + e.message) }
+}
 
 function voiceGroupsFor(currentValue) {
   // 当前角色已选的 voice 即使不在通过名单里也要保留显示，避免"看上去丢了"
@@ -324,12 +646,19 @@ onMounted(async () => {
         appearance: c.appearance || '',
         negative: c.negative || '',
         voice: c.voice || '',
+        _portraits: [],          // 轮 4: 立绘缓存（按需懒加载）
         _generating: false,
         _finding: false,
         _profiling: false,
       }))
+      // 异步并发拉每个角色的立绘列表
+      for (const c of characters.value) {
+        loadCharacterPortraits(c)
+      }
     }
   } catch {}
+  // 同时拉一次 t2i 工作流列表（生成立绘对话框用）
+  loadT2iWorkflows()
   // 同时拉一次 settings 决定要不要显示音色字段
   try {
     const sr = await fetch(`${API}/settings`)
@@ -340,8 +669,12 @@ onMounted(async () => {
     }
   } catch {}
   window.addEventListener('lumi:save-project', onGlobalSave)
+  window.addEventListener('keydown', onPortraitLightboxKey)
 })
-onUnmounted(() => window.removeEventListener('lumi:save-project', onGlobalSave))
+onUnmounted(() => {
+  window.removeEventListener('lumi:save-project', onGlobalSave)
+  window.removeEventListener('keydown', onPortraitLightboxKey)
+})
 
 // ── AI generate appearance ─────────────────────────────────────────────────────
 async function generateAppearance(i) {
@@ -632,6 +965,42 @@ function showStatus(msg, type = '') {
 .char-actions-inline { display: flex; gap: 6px; flex-shrink: 0; }
 
 .char-card-body { display: flex; flex-direction: column; gap: 10px; }
+
+/* 轮 4: 立绘画廊 */
+.portraits-row {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px;
+}
+.portrait-card {
+  width: 90px; position: relative;
+  border: 1px solid var(--color-border);
+  border-radius: 6px; overflow: hidden;
+  background: var(--color-surface);
+  cursor: zoom-in;
+  transition: transform .12s, border-color .12s;
+}
+.portrait-card:hover { transform: translateY(-1px); border-color: var(--color-accent); }
+.portrait-card.primary { border-color: var(--color-accent); box-shadow: 0 0 0 1px var(--color-accent); }
+/* 立绘是竖幅 9:16 */
+.portrait-img { width: 100%; aspect-ratio: 9/16; object-fit: cover; display: block; background: rgba(0,0,0,.1); }
+.portrait-actions {
+  position: absolute; top: 4px; right: 4px;
+  display: flex; gap: 3px;
+  opacity: 0; transition: opacity .1s;
+}
+.portrait-card:hover .portrait-actions { opacity: 1; }
+.portrait-card.primary .portrait-actions { opacity: 1; }
+.portrait-mini {
+  background: rgba(0,0,0,.6); color: #fff;
+  border: none; cursor: pointer;
+  width: 20px; height: 20px; border-radius: 4px;
+  font-size: 11px; display: flex; align-items: center; justify-content: center;
+}
+.portrait-mini:disabled { background: var(--color-accent); cursor: default; }
+.portrait-mini.danger:hover { background: var(--color-error); }
+.portrait-name {
+  padding: 2px 4px; font-size: 10px;
+  color: var(--color-text-muted); text-align: center;
+}
 .form-group { display: flex; flex-direction: column; gap: 4px; }
 .form-group label { font-size: 12px; color: var(--color-text-muted); }
 .label-row {
@@ -662,4 +1031,35 @@ function showStatus(msg, type = '') {
 .import-char-row:hover { background: var(--bg-input); }
 .import-char-name { font-weight: 600; font-size: 14px; min-width: 80px; }
 .import-char-role { font-size: 12px; }
+
+/* 立绘大图预览 */
+.portrait-lightbox {
+  position: fixed; inset: 0; z-index: 10001;
+  background: rgba(0,0,0,.88);
+  display: flex; align-items: center; justify-content: center;
+}
+.pl-close {
+  position: absolute; top: 16px; right: 20px;
+  background: rgba(255,255,255,.12); border: none; color: #fff;
+  font-size: 20px; width: 36px; height: 36px; border-radius: 50%;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.pl-close:hover { background: rgba(255,255,255,.25); }
+.pl-nav {
+  background: rgba(255,255,255,.1); border: none; color: #fff;
+  font-size: 44px; line-height: 1; width: 52px; height: 80px;
+  border-radius: 6px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; margin: 0 12px; transition: background .15s;
+}
+.pl-nav:hover { background: rgba(255,255,255,.2); }
+.pl-body {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  max-width: calc(100vw - 200px); max-height: calc(100vh - 80px);
+}
+.pl-img {
+  max-width: 100%; max-height: calc(100vh - 120px);
+  object-fit: contain; border-radius: 6px; display: block;
+}
+.pl-footer { color: rgba(255,255,255,.7); font-size: 13px; }
 </style>

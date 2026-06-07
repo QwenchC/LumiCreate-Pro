@@ -159,6 +159,24 @@
             :value="activeScene.start_frame_prompt"
             @input="onPromptInput(activeScene, 'start', $event.target.value)"
           />
+          <!-- 轮 5: i2i 参考图槽位（首帧） -->
+          <div v-if="isI2I" class="ref-slots-row">
+            <span class="ref-slots-label">📎 参考图</span>
+            <div v-for="i in workflowRefCount" :key="'sref'+(i-1)"
+                 class="ref-slot"
+                 @click="openRefPicker(activeScene, 'start', i-1)">
+              <img v-if="refSlotPreview(activeScene, 'start', i-1)?._preview_url"
+                   :src="refSlotPreview(activeScene, 'start', i-1)._preview_url" />
+              <div v-else class="ref-slot-empty">＋ ref {{ i }}</div>
+              <button v-if="refSlotPreview(activeScene, 'start', i-1)"
+                      class="ref-slot-clear"
+                      @click.stop="clearRef(activeScene, 'start', i-1)" title="清除">✕</button>
+              <div v-if="refSlotPreview(activeScene, 'start', i-1)?._label"
+                   class="ref-slot-label" :title="refSlotPreview(activeScene,'start',i-1)._label">
+                {{ refSlotPreview(activeScene,'start',i-1)._label }}
+              </div>
+            </div>
+          </div>
           <div class="image-slots">
             <div
               v-for="slot in getFrameSlotCount(activeScene.id, 'start')" :key="slot-1"
@@ -209,6 +227,24 @@
             :value="activeScene.end_frame_prompt"
             @input="onPromptInput(activeScene, 'end', $event.target.value)"
           />
+          <!-- 轮 5: i2i 参考图槽位（尾帧） -->
+          <div v-if="isI2I" class="ref-slots-row">
+            <span class="ref-slots-label">📎 参考图</span>
+            <div v-for="i in workflowRefCount" :key="'eref'+(i-1)"
+                 class="ref-slot"
+                 @click="openRefPicker(activeScene, 'end', i-1)">
+              <img v-if="refSlotPreview(activeScene, 'end', i-1)?._preview_url"
+                   :src="refSlotPreview(activeScene, 'end', i-1)._preview_url" />
+              <div v-else class="ref-slot-empty">＋ ref {{ i }}</div>
+              <button v-if="refSlotPreview(activeScene, 'end', i-1)"
+                      class="ref-slot-clear"
+                      @click.stop="clearRef(activeScene, 'end', i-1)" title="清除">✕</button>
+              <div v-if="refSlotPreview(activeScene, 'end', i-1)?._label"
+                   class="ref-slot-label" :title="refSlotPreview(activeScene,'end',i-1)._label">
+                {{ refSlotPreview(activeScene,'end',i-1)._label }}
+              </div>
+            </div>
+          </div>
           <div class="image-slots">
             <div
               v-for="slot in getFrameSlotCount(activeScene.id, 'end')" :key="slot-1"
@@ -292,12 +328,21 @@
       </div>
       <button class="lightbox-nav lightbox-next" @click="lightboxNav(1)">›</button>
     </div>
+
+    <!-- 轮 5: 参考图选择器 -->
+    <ReferencePicker
+      v-if="refPickerOpen"
+      :project-id="projectId"
+      @picked="onRefPicked"
+      @close="refPickerOpen = false"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, onActivated } from 'vue'
 import axios from 'axios'
+import ReferencePicker from '../ReferencePicker.vue'
 
 const props = defineProps({ projectId: String })
 const emit = defineEmits(['dirty', 'saved'])
@@ -378,6 +423,74 @@ const effectiveStyle  = computed(() =>
 const activeSceneId = ref(null)
 const activeScene   = computed(() => scenes.value.find(s => s.id === activeSceneId.value) ?? null)
 const regenPromptingId = ref('')   // "{sceneId}:start" or "{sceneId}:end" while regenerating prompt only
+
+// 轮 5: 工作流类型检测（决定是否需要参考图）
+const workflowKind = ref('t2i')      // 't2i' | 'i2i_single' | 'i2i_double' | 'video'
+const workflowRefCount = ref(0)
+const isI2I = computed(() => workflowKind.value === 'i2i_single' || workflowKind.value === 'i2i_double')
+
+async function loadWorkflowInfo() {
+  workflowKind.value = 't2i'; workflowRefCount.value = 0
+  if (!selectedWorkflow.value) return
+  try {
+    const r = await fetch(`${API}/image-engine/workflow-info?workflow_name=${encodeURIComponent(selectedWorkflow.value)}`)
+    if (r.ok) {
+      const d = await r.json()
+      workflowKind.value = d.kind || 't2i'
+      workflowRefCount.value = d.ref_count || 0
+    }
+  } catch {}
+}
+watch(selectedWorkflow, () => loadWorkflowInfo(), { immediate: false })
+
+// 轮 5: 参考图选择器状态
+const refPickerOpen = ref(false)
+const refPickerCtx  = ref(null)   // { sceneId, frameType, refIndex }
+
+function openRefPicker(scene, frameType, refIndex) {
+  refPickerCtx.value = { sceneId: scene.id, frameType, refIndex }
+  refPickerOpen.value = true
+}
+function onRefPicked(ref) {
+  const ctx = refPickerCtx.value
+  refPickerOpen.value = false
+  if (!ctx || !ref) return
+  const scene = scenes.value.find(s => s.id === ctx.sceneId)
+  if (!scene) return
+  if (!scene._frame_refs) scene._frame_refs = { start: [], end: [] }
+  if (!scene._frame_refs[ctx.frameType]) scene._frame_refs[ctx.frameType] = []
+  const arr = scene._frame_refs[ctx.frameType].slice()
+  while (arr.length <= ctx.refIndex) arr.push(null)
+  arr[ctx.refIndex] = ref
+  scene._frame_refs[ctx.frameType] = arr.slice(0, workflowRefCount.value)
+  emit('dirty')
+  saveScenes()
+}
+function clearRef(scene, frameType, refIndex) {
+  if (!scene._frame_refs?.[frameType]) return
+  const arr = scene._frame_refs[frameType].slice()
+  arr[refIndex] = null
+  scene._frame_refs[frameType] = arr
+  emit('dirty')
+  saveScenes()
+}
+function getFrameRefs(scene, frameType) {
+  const refs = scene._frame_refs?.[frameType] || []
+  const cleaned = []
+  for (let i = 0; i < workflowRefCount.value; i++) {
+    const r = refs[i] || null
+    // 剥掉前端 _preview_url/_label 等私有字段后才能发后端
+    cleaned.push(r ? { kind: r.kind, project_id: r.project_id, char_name: r.char_name,
+                       filename: r.filename, scope: r.scope, element_id: r.element_id } : null)
+  }
+  return cleaned
+}
+function getFrameRefsForBackend(scene, frameType) {
+  return getFrameRefs(scene, frameType).filter(Boolean)
+}
+function refSlotPreview(scene, frameType, refIndex) {
+  return scene._frame_refs?.[frameType]?.[refIndex] || null
+}
 watch(scenes, (list) => { if (list.length && !activeSceneId.value) activeSceneId.value = list[0].id }, { immediate: true })
 
 // Persist selected workflow back to global settings whenever user changes it
@@ -540,13 +653,18 @@ async function loadData() {
     scenes.value = ((scenesRes.data?.scenes) || []).map(s => ({
       ...s,
       _selected_start: s._selected_start ?? 0,
-      _selected_end:   s._selected_end   ?? 0
+      _selected_end:   s._selected_end   ?? 0,
+      _frame_refs:     s._frame_refs     ?? { start: [], end: [] },
     }))
     const imgCfg = settingsRes.data?.image_engine || {}
     genCount.value  = imgCfg.default_gen_count ?? 3
     imgWidth.value  = imgCfg.image_width  ?? 1920
     imgHeight.value = imgCfg.image_height ?? 1080
-    if (imgCfg.default_workflow) selectedWorkflow.value = imgCfg.default_workflow
+    if (imgCfg.default_workflow) {
+      selectedWorkflow.value = imgCfg.default_workflow
+      // 触发 workflow-info 加载（watch 在初始化前不会触发，主动调用一次）
+      await loadWorkflowInfo()
+    }
     if (imgCfg.style_preset !== undefined) stylePreset.value = imgCfg.style_preset
     if (imgCfg.custom_style_text !== undefined) customStyleText.value = imgCfg.custom_style_text
     workflows.value = workflowsRes.data || []
@@ -721,11 +839,31 @@ async function generateSceneSlots(scene, { skipExisting = false } = {}) {
     return parts.join(', ')
   }
 
-  if (scene.start_frame_prompt)
-    frames.push({ scene_id: scene.id, frame_type: 'start', prompt: _buildPrompt(scene.start_frame_prompt) })
-  if (scene.end_frame_prompt)
-    frames.push({ scene_id: scene.id, frame_type: 'end',   prompt: _buildPrompt(scene.end_frame_prompt) })
+  if (scene.start_frame_prompt) {
+    const f = { scene_id: scene.id, frame_type: 'start', prompt: _buildPrompt(scene.start_frame_prompt) }
+    if (isI2I.value) f.refs = getFrameRefsForBackend(scene, 'start')
+    frames.push(f)
+  }
+  if (scene.end_frame_prompt) {
+    const f = { scene_id: scene.id, frame_type: 'end', prompt: _buildPrompt(scene.end_frame_prompt) }
+    if (isI2I.value) f.refs = getFrameRefsForBackend(scene, 'end')
+    frames.push(f)
+  }
   if (!frames.length) return
+
+  // 轮 5: i2i 模式下，缺参考图直接报错——避免无意义生成
+  if (isI2I.value) {
+    for (const f of frames) {
+      const need = workflowRefCount.value
+      const got = (f.refs || []).length
+      if (got < need) {
+        const which = f.frame_type === 'start' ? '首帧' : '尾帧'
+        const msg = `${which} 需要 ${need} 张参考图（当前 ${got} 张）— 请先在参考图槽位选择`
+        alert(msg)
+        throw new Error(msg)
+      }
+    }
+  }
 
   if (skipExisting) {
     frames = frames.filter(f => {
@@ -924,8 +1062,8 @@ function onPromptInput(scene, frameType, value) {
 async function saveScenes() {
   try {
     const payload = scenes.value.map(s => {
-      const { _selected_start, _selected_end, _scene_characters, ...rest } = s
-      return { ...rest, _selected_start, _selected_end, _scene_characters }
+      const { _selected_start, _selected_end, _scene_characters, _frame_refs, ...rest } = s
+      return { ...rest, _selected_start, _selected_end, _scene_characters, _frame_refs }
     })
     await axios.put(API + '/projects/' + props.projectId + '/scenes', { scenes: payload })
   } catch {}
@@ -939,17 +1077,43 @@ async function regenPromptOnly(scene, frameType) {
     const selected = scene._scene_characters || []
     const allChars = characters.value || []
     const chars = allChars.filter(c => selected.includes(c.name))
-    const res = await fetch(API + '/text-engine/generate-frame-prompts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+
+    // 轮 6: i2i 工作流走专门的 img2img 提示词端点（要求至少有 refs）
+    let endpoint, body
+    if (isI2I.value) {
+      const refs = getFrameRefsForBackend(scene, frameType)
+      if (!refs.length) {
+        alert('图生图工作流需要先选择参考图，才能生成对应的提示词')
+        return
+      }
+      endpoint = API + '/text-engine/generate-img2img-prompt'
+      body = {
+        description:   scene.description,
+        dialogues:     scene.dialogues || [],
+        characters:    chars,
+        refs,
+        workflow_kind: workflowKind.value,
+        project_id:    props.projectId,
+        manuscript:    manuscript.value,
+        scene_index:   scene.index,
+        total_scenes:  scenes.value.length,
+      }
+    } else {
+      endpoint = API + '/text-engine/generate-frame-prompts'
+      body = {
         description:  scene.description,
         dialogues:    scene.dialogues || [],
         characters:   chars,
         manuscript:   manuscript.value,
         scene_index:  scene.index,
         total_scenes: scenes.value.length,
-      }),
+      }
+    }
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     })
     if (!res.ok) throw new Error(await res.text())
     const data = await res.json()
@@ -969,6 +1133,17 @@ async function regenPromptOnly(scene, frameType) {
 
 async function runSingleSlot(sceneId, frameType, slotIndex, prompt) {
   const key = slotKey(sceneId, frameType, slotIndex)
+  // 轮 5: 单 slot 重生也带上 refs
+  let refs = []
+  if (isI2I.value) {
+    const sc = scenes.value.find(s => s.id === sceneId)
+    if (sc) refs = getFrameRefsForBackend(sc, frameType)
+    if (refs.length < workflowRefCount.value) {
+      slotError.value[key] = `需要 ${workflowRefCount.value} 张参考图`
+      slotLoading.value[key] = false
+      return
+    }
+  }
   try {
     const response = await fetch(API + '/image-engine/generate-stream', {
       method: 'POST',
@@ -976,7 +1151,8 @@ async function runSingleSlot(sceneId, frameType, slotIndex, prompt) {
       body: JSON.stringify({
         workflow_name: selectedWorkflow.value, positive_prompt: prompt,
         negative_prompt: '', width: imgWidth.value, height: imgHeight.value,
-        scene_id: sceneId, frame_type: frameType, slot_index: slotIndex
+        scene_id: sceneId, frame_type: frameType, slot_index: slotIndex,
+        refs,
       })
     })
     const reader = response.body.getReader()
@@ -1330,4 +1506,37 @@ async function addOneMore(scene, frameType) {
   object-fit: contain; border-radius: 6px; display: block;
 }
 .lightbox-footer { color: rgba(255,255,255,.6); font-size: 13px; }
+
+/* 轮 5: i2i 参考图槽位 */
+.ref-slots-row {
+  display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px; background: rgba(99,179,237,.05);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.ref-slots-label { font-size: 12px; color: var(--text-muted); padding-top: 6px; flex-shrink: 0; }
+.ref-slot {
+  position: relative; width: 96px; height: 96px;
+  border: 1px dashed var(--border); border-radius: 6px;
+  background: var(--bg-input); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 2px; overflow: hidden;
+  transition: border-color .15s;
+}
+.ref-slot:hover { border-color: var(--accent); }
+.ref-slot img { width: 100%; height: 100%; object-fit: cover; }
+.ref-slot-empty { font-size: 11px; color: var(--text-muted); user-select: none; }
+.ref-slot-clear {
+  position: absolute; top: 2px; right: 2px;
+  background: rgba(0,0,0,.6); color: #fff; border: none;
+  width: 18px; height: 18px; border-radius: 50%;
+  font-size: 10px; cursor: pointer; line-height: 1;
+}
+.ref-slot-clear:hover { background: rgba(229,62,62,.85); }
+.ref-slot-label {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  background: rgba(0,0,0,.55); color: #fff;
+  font-size: 10px; padding: 1px 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 </style>

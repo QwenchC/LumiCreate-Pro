@@ -69,6 +69,13 @@ async def precheck_image_workflow(
                 hint="检查 ImageEngineConfig.workflow_dir 是否正确")
         return res
 
+    # 轮 1: subgraph 展平后再扫——Flux.2 等工作流类型 UUID 节点会被误判为"缺节点"
+    try:
+        from services.comfyui import _flatten_subgraphs
+        workflow = _flatten_subgraphs(workflow)
+    except Exception:
+        pass
+
     async with httpx.AsyncClient(timeout=15) as client:
         try:
             await client.get(f"{comfyui_url.rstrip('/')}/", timeout=5)

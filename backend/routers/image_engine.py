@@ -31,6 +31,23 @@ class ConnectionTestResult(BaseModel):
     message: str
 
 
+class RefImageSpec(BaseModel):
+    """参考图来源标识。后端按 kind 解析为绝对路径。
+
+    支持三种来源：
+      - kind="portrait":  project_id + char_name + filename → 项目角色立绘
+      - kind="element":   scope ("global" 或 "project:{pid}") + element_id → 元素库
+      - kind="path":      path（仅供测试 / 内部使用，绝对路径直传）
+    """
+    kind: str
+    project_id: Optional[str] = None
+    char_name: Optional[str] = None
+    filename: Optional[str] = None
+    scope: Optional[str] = None
+    element_id: Optional[int] = None
+    path: Optional[str] = None
+
+
 class SingleGenerateRequest(BaseModel):
     workflow_name: str
     positive_prompt: str
@@ -41,6 +58,7 @@ class SingleGenerateRequest(BaseModel):
     scene_id: str = ""
     frame_type: str = ""
     slot_index: int = 0
+    refs: list[RefImageSpec] = []   # 轮 5: i2i 参考图（可为空 = t2i）
 
 
 # D2: 工作流前置检查
@@ -53,13 +71,49 @@ async def precheck_workflow(workflow_name: str):
     return {"ok": result.ok, "issues": result.issues, "info": result.info}
 
 
+# 轮 1: 工作流分类 + 参考图节点位置 —— 前端用来决定 ImagesTab 是否切图生图布局
+@router.get("/workflow-info")
+async def workflow_info(workflow_name: str):
+    """返回工作流的分类（t2i / i2i_single / i2i_double / video）+ 参考图节点信息。
+    前端可据此决定：
+    - 图片生成页是否显示"参考图选择器"
+    - 显示几个参考图槽位
+    """
+    from services.comfyui import get_workflow_json
+    from services.workflow_meta import classify_workflow, load_meta, get_ref_image_nodes
+    from pathlib import Path
+    cfg = load_settings().image_engine
+    workflow = await get_workflow_json(cfg, workflow_name)
+    if workflow is None:
+        return {"kind": "unknown", "ref_count": 0, "ref_nodes": [], "found": False}
+
+    wf_dir = Path(cfg.workflow_dir or "")
+    wf_path = wf_dir / f"{workflow_name}.json" if wf_dir.exists() else None
+
+    kind = classify_workflow(workflow_name, workflow=workflow, workflow_path=str(wf_path) if wf_path else None)
+    meta = load_meta(str(wf_path), type_="image") if wf_path else {}
+    ref_nodes = get_ref_image_nodes(meta, workflow=workflow)
+    ref_count = {"t2i": 0, "i2i_single": 1, "i2i_double": 2}.get(kind, 0)
+    # 工作流实际 LoadImage 节点数可能多于声明（如 single 工作流里有 2 个 LoadImage 一个不用）
+    # 优先用 kind 推断的 ref_count，但提供 actual 给前端做诊断
+    return {
+        "kind": kind,
+        "ref_count": ref_count,
+        "ref_nodes": ref_nodes[:max(ref_count, 1)] if ref_count else [],
+        "actual_loadimage_count": sum(1 for n in (workflow.get("nodes") or [])
+                                       if n.get("type") == "LoadImage"),
+        "found": True,
+    }
+
+
 class BatchGenerateRequest(BaseModel):
     workflow_name: str
     gen_count: int = 3
     negative_prompt: str = ""
     width: int = 0
     height: int = 0
-    frames: list[dict]   # [{scene_id, frame_type, prompt}]
+    # 轮 5: 每个 frame 可附带 refs: [{kind, ...}]，没有则等同 t2i
+    frames: list[dict]   # [{scene_id, frame_type, prompt, refs?: [RefImageSpec]}]
     # A1: 让后端在批量结束时把失败镜次写入 last_run_errors.json，前端可一键重试
     project_id: str = ""
 
@@ -71,6 +125,52 @@ async def _load_workflow(cfg, workflow_name: str) -> dict:
     if wf is None:
         raise HTTPException(status_code=404, detail=f"工作流 '{workflow_name}' 未找到")
     return wf
+
+
+def _resolve_ref_paths(refs: list) -> list[str]:
+    """把 RefImageSpec / dict 列表解析为本地绝对路径列表。
+    用于 i2i 工作流向 ComfyUI 注入参考图。
+    """
+    from pathlib import Path as _P
+    s = load_settings()
+    out: list[str] = []
+    for r in refs or []:
+        # 兼容 Pydantic 模型和 dict
+        r = r.model_dump() if hasattr(r, "model_dump") else dict(r or {})
+        kind = (r.get("kind") or "").strip()
+        if kind == "portrait":
+            pid = r.get("project_id") or ""
+            cn = r.get("char_name") or ""
+            fn = r.get("filename") or ""
+            if not (pid and cn and fn):
+                raise HTTPException(400, detail=f"portrait ref 缺字段: {r}")
+            from routers.projects import _safe_character_dirname
+            safe_cn = _safe_character_dirname(cn)
+            p = _P(s.projects_dir) / pid / "characters" / safe_cn / fn
+            if not p.is_file():
+                raise HTTPException(404, detail=f"角色立绘文件不存在: {p}")
+            out.append(str(p))
+        elif kind == "element":
+            scope = r.get("scope") or "global"
+            eid = r.get("element_id")
+            if eid is None:
+                raise HTTPException(400, detail=f"element ref 缺 element_id: {r}")
+            from services.elements_repo import get_element_path
+            try:
+                p = get_element_path(scope, int(eid))
+            except Exception as e:
+                raise HTTPException(404, detail=f"element {eid}@{scope} 不可用: {e}")
+            if not p:
+                raise HTTPException(404, detail=f"element {eid}@{scope} 文件不存在")
+            out.append(str(p))
+        elif kind == "path":
+            p = r.get("path") or ""
+            if not p or not _P(p).is_file():
+                raise HTTPException(404, detail=f"path ref 文件不存在: {p}")
+            out.append(str(p))
+        else:
+            raise HTTPException(400, detail=f"不支持的 ref kind: {kind!r}")
+    return out
 
 
 def _sse(obj: dict) -> str:
@@ -160,8 +260,14 @@ async def generate_single_stream(req: SingleGenerateRequest):
     w = req.width  or cfg.image_width
     h = req.height or cfg.image_height
 
+    ref_paths = _resolve_ref_paths(req.refs) if req.refs else []
+
     async def stream():
-        async for event in generate_image(cfg, workflow, req.positive_prompt, req.negative_prompt, req.seed, w, h):
+        async for event in generate_image(
+            cfg, workflow, req.positive_prompt, req.negative_prompt, req.seed, w, h,
+            ref_image_paths=ref_paths or None,
+            workflow_name=req.workflow_name,
+        ):
             yield _sse({**event, **meta})
         yield "data: [DONE]\n\n"
 
@@ -198,7 +304,21 @@ async def generate_batch_stream(req: BatchGenerateRequest):
     async def run_one(frame: dict, slot: int):
         nonlocal done_count
         meta = {"scene_id": frame["scene_id"], "frame_type": frame["frame_type"], "slot_index": slot}
-        async for event in generate_image(cfg, workflow, frame.get("prompt", ""), req.negative_prompt, width=w, height=h):
+        # 轮 5: 每个 frame 自带 refs
+        try:
+            frame_ref_paths = _resolve_ref_paths(frame.get("refs") or [])
+        except HTTPException as e:
+            await queue.put({"event": "error", "message": f"参考图解析失败: {e.detail}", **meta})
+            done_count += 1
+            if done_count >= total_tasks:
+                finished.set()
+            return
+        async for event in generate_image(
+            cfg, workflow, frame.get("prompt", ""), req.negative_prompt,
+            width=w, height=h,
+            ref_image_paths=frame_ref_paths or None,
+            workflow_name=req.workflow_name,
+        ):
             ev_out = {**event, **meta}
             # D1: project_id 提供时由后端直接落盘 → 事件加 file_path（前端可不再 base64 PUT）
             if event.get("event") == "completed" and req.project_id:

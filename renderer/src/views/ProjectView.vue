@@ -139,6 +139,7 @@ const activeTab = computed({
 const TABS = [
   { key: 'manuscript',  label: '文案创建', icon: '📝' },
   { key: 'characters',  label: '角色管理', icon: '🎭' },
+  { key: 'elements',    label: '元素库',   icon: '📦' },
   { key: 'scenes',      label: '分镜设计', icon: '🎞' },
   { key: 'images',      label: '图片生成', icon: '🖼' },
   { key: 'audio',       label: '音频生成', icon: '🎙' },
@@ -149,6 +150,7 @@ const TABS = [
 const TAB_COMPONENTS = {
   manuscript:  defineAsyncComponent(() => import('../components/tabs/ManuscriptTab.vue')),
   characters:  defineAsyncComponent(() => import('../components/tabs/CharactersTab.vue')),
+  elements:    defineAsyncComponent(() => import('../components/tabs/ElementsTab.vue')),
   scenes:      defineAsyncComponent(() => import('../components/tabs/ScenesTab.vue')),
   images:      defineAsyncComponent(() => import('../components/tabs/ImagesTab.vue')),
   audio:       defineAsyncComponent(() => import('../components/tabs/AudioTab.vue')),
@@ -197,7 +199,7 @@ function onProjectKey(e) {
     return
   }
   // Ctrl+1-7 切 tab —— inField 时跳过，避免覆盖编辑器内的常用功能
-  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && /^[1-7]$/.test(e.key) && !inField) {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && /^[1-8]$/.test(e.key) && !inField) {
     const idx = Number(e.key) - 1
     if (TABS[idx]) {
       e.preventDefault()

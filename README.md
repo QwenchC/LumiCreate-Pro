@@ -176,6 +176,20 @@ SKILL/
 
 ## 更新日志
 
+### v1.4.0
+本版本围绕 **Flux.2 工作流支持**、**i2i 全链路**、**元素库**、**角色立绘** 四条主线落地。新增 6 轮重构 + 多个生产 bug 的根因修复。
+
+- ✅ **ComfyUI Subgraph 支持**：完整解析 ComfyUI 新版 Subgraph（顶层节点 `type=UUID`），递归展平到顶层 + 重连外部 link + 重写内部节点 `inputs[*].link` ID 映射 → 真实生产 Flux.2 image-edit 工作流可直接提交
+- ✅ **Type-aware bypass**：mode==4 节点按 input/output 类型匹配做穿透；不匹配的 slot 直接断链让消费者 fallback 到 widget 值（修复 `GetImageSize` IMAGE→INT 类型不匹配导致 ComfyUI 400）
+- ✅ **工作流分类系统**：自动判别 `t2i / i2i_single / i2i_double / video`（meta.kind > 名字模式 > 节点扫描三级优先链）；前端按类型动态切换 ImagesTab 布局
+- ✅ **元素库（全局 + 项目级）**：多级文件夹树、自动迁移物理目录、SQLite + APPDATA/elements.sqlite；scope-aware repo 一套接口覆盖 `global` 和 `project:{pid}`；主屏「📦 元素库」入口 + 项目「元素」标签页
+- ✅ **角色立绘（Portraits）**：CharactersTab 新增立绘画廊 + 「🎨 生成立绘」弹窗；t2i 工作流自动过滤；画风预设下拉 + 1080×1920 竖幅 + 主图选择 / 删除 + 自动晋升主图；点击放大预览（Lightbox 含键盘导航）
+- ✅ **图生图全链路（i2i）**：ImagesTab 检测 workflow_kind 后切换 i2i 布局，每帧 1–2 个 📎 参考图槽位；ReferencePicker 三 Tab 选择器（🎭 角色立绘 / 📦 元素库 / ⬆ 本地上传）；本地上传自动落入元素库 `local` 文件夹；scene._frame_refs 持久化到 scenes.json
+- ✅ **i2i 提示词生成端点**：`POST /api/text-engine/generate-img2img-prompt` 把 refs + characters + 分镜信息送 LLM 生成"编辑指令"风格 prompt（不混 style tags，因为 i2i 模型自动继承参考图风格）；前端 isI2I 自动切到此端点
+- ✅ **Flux.2 size patching**：`_patch_workflow` 白名单扩展 `EmptyFlux2LatentImage` + `Flux2Scheduler`（后者的分辨率相关 sigma 调度必须与 latent 同步），user 设置的 1080×1920 终于真正生效
+- ✅ **错误诊断**：ComfyUI 400 / 500 解析 `error.message` + `node_errors[*].errors[*]` 提示具体哪个节点报错；patched workflow 自动转储 `%APPDATA%/LumiCreate-Pro/diagnostics/failed_prompt_<ts>.json` 方便对照
+- ✅ **测试 + 集成**：后端 **152 / 152 pytest 通过**（v1.3.7 时 79 个），新增 subgraph 展平 / i2i ref 注入 / i2i prompt 端点 / Flux.2 size patching 等 73 个测；用真实 Flux.2 工作流文件做集成测试
+
 ### v1.3.7
 本版本是一次"地基级"重构。围绕项目数据模型、任务系统、阻塞调用、类型契约、引擎抽象、资产寻址、集成测试 7 大方向系统性升级，把 LumiCreate 从"功能丰富的脚本工具"升级为"可长期演进的产品"。**用户使用体验完全向后兼容**——所有改动都通过双写 / 兼容读路径不破坏现有项目。
 

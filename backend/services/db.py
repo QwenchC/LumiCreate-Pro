@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
-from config import load_settings
+from config import SETTINGS_PATH, load_settings
 
 # 每个项目 db 的连接池（同进程内复用）
 _CONNS: dict[str, sqlite3.Connection] = {}
@@ -35,6 +35,38 @@ SCHEMA_VERSION = 1
 
 
 # Initial DDL（version=1 含全部初始表）；未来 +column 走 MIGRATIONS
+_ELEMENTS_DDL = """
+CREATE TABLE IF NOT EXISTS element_folders (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    parent_id   INTEGER,                     -- NULL = 根
+    -- path 是冗余字段（root/a/b），便于前端展示与跨表查询
+    path        TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    UNIQUE(parent_id, name),
+    FOREIGN KEY(parent_id) REFERENCES element_folders(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_element_folders_parent ON element_folders(parent_id);
+
+CREATE TABLE IF NOT EXISTS elements (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder_id    INTEGER,                    -- NULL = 根目录
+    name         TEXT NOT NULL,              -- 显示名（可以与文件名不同）
+    file_path    TEXT NOT NULL,              -- 相对元素根目录的路径
+    mime         TEXT NOT NULL DEFAULT 'image/png',
+    source       TEXT NOT NULL DEFAULT 'upload',  -- upload | t2i | imported
+    source_meta  TEXT NOT NULL DEFAULT '{}',      -- JSON: 来源详情（如生成时的 prompt / workflow）
+    width        INTEGER,
+    height       INTEGER,
+    bytes        INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    FOREIGN KEY(folder_id) REFERENCES element_folders(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_elements_folder ON elements(folder_id);
+CREATE INDEX IF NOT EXISTS idx_elements_created ON elements(created_at DESC);
+"""
+
+
 INITIAL_DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY,
@@ -109,7 +141,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_trace ON events(trace_id, id);
 CREATE INDEX IF NOT EXISTS idx_events_task  ON events(task_id, id);
-"""
+""" + _ELEMENTS_DDL
 
 
 # 未来 column-add migration
@@ -203,3 +235,66 @@ def drop_project_db(project_id: str) -> None:
         if f.exists():
             try: f.unlink()
             except Exception: pass
+
+
+# ── 全局元素库（轮 2）─────────────────────────────────────────────────────────
+# 与项目 SQLite 独立的全局元素数据库，所有项目共享。
+# 仅包含 element_folders + elements 两张表（schema 同项目库的元素表）。
+
+_GLOBAL_ELEMENTS_DDL = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+""" + _ELEMENTS_DDL
+
+
+_GLOBAL_KEY = "__global_elements__"
+
+
+def _global_elements_path() -> Path:
+    # 与 settings.json 同目录（APPDATA/LumiCreate-Pro/）
+    return SETTINGS_PATH.parent / "elements.sqlite"
+
+
+def _ensure_global_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(_GLOBAL_ELEMENTS_DDL)
+    row = conn.execute("SELECT COALESCE(MAX(version), 0) AS v FROM schema_version").fetchone()
+    if int(row["v"] or 0) < 1:
+        from datetime import datetime, timezone
+        conn.execute(
+            "INSERT INTO schema_version(version, applied_at) VALUES(?, ?)",
+            (1, datetime.now(timezone.utc).isoformat()),
+        )
+    conn.commit()
+
+
+def get_global_elements_conn() -> sqlite3.Connection:
+    """全局元素库连接（同进程单例）。"""
+    with _CONN_LOCK:
+        c = _CONNS.get(_GLOBAL_KEY)
+        if c is not None:
+            return c
+        path = _global_elements_path()
+        c = _make_conn(path)
+        _ensure_global_schema(c)
+        _CONNS[_GLOBAL_KEY] = c
+        return c
+
+
+def global_elements_root() -> Path:
+    """全局元素的文件存储根目录。"""
+    p = SETTINGS_PATH.parent / "elements"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+@contextmanager
+def global_elements_db() -> Iterator[sqlite3.Connection]:
+    conn = get_global_elements_conn()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise

@@ -79,6 +79,10 @@
         </div>
       </div>
       <div class="sidebar-footer">
+        <button v-if="!sidebarCollapsed" class="btn btn-ghost btn-sm" @click="globalElementsOpen = true">
+          📦 元素库
+        </button>
+        <button v-else class="sidebar-settings-icon" title="全局元素库" @click="globalElementsOpen = true">📦</button>
         <button v-if="!sidebarCollapsed" class="btn btn-ghost btn-sm" @click="taskHistoryOpen = true">
           📊 任务历史
         </button>
@@ -92,6 +96,9 @@
 
     <!-- E2: 任务历史弹层 -->
     <TaskHistoryPanel v-if="taskHistoryOpen" @close="taskHistoryOpen = false" />
+
+    <!-- 轮 3: 全局元素库弹层 -->
+    <GlobalElementsPanel v-if="globalElementsOpen" @close="globalElementsOpen = false" />
 
     <!-- Main content -->
     <main class="main-content">
@@ -335,6 +342,7 @@ import { useRouter } from 'vue-router'
 import { useProjectStore } from '../stores/projects'
 import { useTabsStore } from '../stores/tabs'
 import TaskHistoryPanel from '../components/TaskHistoryPanel.vue'
+import GlobalElementsPanel from '../components/GlobalElementsPanel.vue'
 
 const router = useRouter()
 const store = useProjectStore()
@@ -343,6 +351,8 @@ void router    // 模板里通过 $router 访问，避免编译器把 router 视
 
 // E2: 任务历史弹层
 const taskHistoryOpen = ref(false)
+// 轮 3: 全局元素库
+const globalElementsOpen = ref(false)
 
 const STEPS = { manuscript: '文案', scenes: '分镜', images: '图片', audio: '音频', video: '视频' }
 

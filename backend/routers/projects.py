@@ -1029,3 +1029,200 @@ async def save_characters(project_id: str, data: CharactersData):
     )
     return {"ok": True, "count": len(data.characters)}
 
+
+# ── 角色立绘 (轮 4) ────────────────────────────────────────────────────────────
+#
+# 每个角色可有多张立绘，每张立绘存盘到 <项目>/characters/{safe_name}/portrait_N.png
+# 元数据写入 characters.json 该角色对象的 `portraits` 字段：
+#   portraits: [
+#     {
+#       filename: "portrait_1.png",
+#       workflow_name: "t2i-lumicreate",
+#       prompt: "<英文 prompt>",
+#       created_at: "...",
+#       is_primary: true   // 主立绘，用于角色一致性参考的默认头像
+#     }, ...
+#   ]
+
+
+_PORTRAIT_NAME_RE = re.compile(r"[^A-Za-z0-9_\-一-龥]+")
+
+
+def _safe_character_dirname(name: str) -> str:
+    """角色名转安全目录名（保留中文 + 字母数字）。"""
+    n = _PORTRAIT_NAME_RE.sub("_", (name or "").strip())
+    return n or "_char"
+
+
+def _characters_dir(project_id: str, char_name: str) -> Path:
+    return _project_dir(project_id) / "characters" / _safe_character_dirname(char_name)
+
+
+def _load_characters_list(project_id: str) -> list[dict]:
+    path = _project_dir(project_id) / "characters.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        return list(data.get("characters") or [])
+    except Exception:
+        return []
+
+
+def _save_characters_list(project_id: str, chars: list[dict]) -> None:
+    (_project_dir(project_id) / "characters.json").write_text(
+        json.dumps({"characters": chars}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _find_character(chars: list[dict], name: str) -> Optional[dict]:
+    for c in chars:
+        if (c.get("name") or "").strip() == (name or "").strip():
+            return c
+    return None
+
+
+class PortraitUploadRequest(BaseModel):
+    data:          str             # base64 PNG (前端已生成的图)
+    workflow_name: str = ""        # 来源工作流（记录用）
+    prompt:        str = ""        # 生成时的 prompt（记录用）
+    set_primary:   bool = False    # 上传后立刻设为主立绘
+
+
+from fastapi.responses import FileResponse  # noqa: E402
+
+@router.post("/{project_id}/characters/{char_name}/portraits")
+async def add_character_portrait(project_id: str, char_name: str,
+                                  req: PortraitUploadRequest):
+    """角色立绘上传：前端拿到图（自己调 image-engine 生成或本地选）后调本接口。
+    返回 {filename, file_path, url} 立刻可用。"""
+    _read_meta(project_id)
+    cdir = _characters_dir(project_id, char_name)
+    cdir.mkdir(parents=True, exist_ok=True)
+
+    # 找下个可用编号
+    n = 1
+    while (cdir / f"portrait_{n}.png").exists():
+        n += 1
+    filename = f"portrait_{n}.png"
+    full = cdir / filename
+    try:
+        full.write_bytes(base64.b64decode(req.data))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"bad base64: {e}")
+
+    # 更新 characters.json
+    chars = _load_characters_list(project_id)
+    char = _find_character(chars, char_name)
+    if char is None:
+        # 角色不存在则即时新建一个空角色
+        char = {"name": char_name, "role": "", "traits": "",
+                "appearance": "", "negative": "", "voice": "", "portraits": []}
+        chars.append(char)
+
+    char.setdefault("portraits", [])
+    now = datetime.now(timezone.utc).isoformat()
+    new_entry = {
+        "filename":      filename,
+        "workflow_name": req.workflow_name or "",
+        "prompt":        req.prompt or "",
+        "created_at":    now,
+        "is_primary":    bool(req.set_primary),
+    }
+    # 若设主，把别的清掉
+    if req.set_primary:
+        for p in char["portraits"]:
+            p["is_primary"] = False
+    elif not any(p.get("is_primary") for p in char["portraits"]):
+        # 没有任何主图时第一张自动设主
+        new_entry["is_primary"] = True
+    char["portraits"].append(new_entry)
+    _save_characters_list(project_id, chars)
+
+    rel = f"characters/{_safe_character_dirname(char_name)}/{filename}"
+    return {
+        "filename":  filename,
+        "file_path": rel,
+        "url":       f"/api/projects/{project_id}/characters/{char_name}/portraits/file/{filename}",
+        "is_primary": new_entry["is_primary"],
+        "created_at": now,
+    }
+
+
+@router.get("/{project_id}/characters/{char_name}/portraits")
+async def list_character_portraits(project_id: str, char_name: str):
+    _read_meta(project_id)
+    chars = _load_characters_list(project_id)
+    char = _find_character(chars, char_name)
+    if char is None:
+        return {"portraits": []}
+    cdir = _characters_dir(project_id, char_name)
+    out = []
+    for p in (char.get("portraits") or []):
+        fn = p.get("filename")
+        if not fn:
+            continue
+        out.append({
+            **p,
+            "url": f"/api/projects/{project_id}/characters/{char_name}/portraits/file/{fn}",
+            "exists_on_disk": (cdir / fn).exists(),
+        })
+    return {"portraits": out}
+
+
+@router.delete("/{project_id}/characters/{char_name}/portraits/{filename}",
+               status_code=204)
+async def delete_character_portrait(project_id: str, char_name: str, filename: str):
+    _read_meta(project_id)
+    # 名字安全：不允许路径穿越
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code=400, detail="bad filename")
+    cdir = _characters_dir(project_id, char_name)
+    fp = cdir / filename
+    fp.unlink(missing_ok=True)
+
+    chars = _load_characters_list(project_id)
+    char = _find_character(chars, char_name)
+    if char is not None:
+        before = char.get("portraits") or []
+        after  = [p for p in before if p.get("filename") != filename]
+        # 若刚删的是主图且还剩别的，把剩下第一张提升为主图
+        if any(p.get("filename") == filename and p.get("is_primary") for p in before):
+            if after and not any(p.get("is_primary") for p in after):
+                after[0]["is_primary"] = True
+        char["portraits"] = after
+        _save_characters_list(project_id, chars)
+
+
+@router.put("/{project_id}/characters/{char_name}/portraits/{filename}/select")
+async def set_primary_portrait(project_id: str, char_name: str, filename: str):
+    """把指定立绘设为主图（用作"角色头像 / 一致性参考")。"""
+    _read_meta(project_id)
+    chars = _load_characters_list(project_id)
+    char = _find_character(chars, char_name)
+    if char is None or not (char.get("portraits") or []):
+        raise HTTPException(status_code=404, detail="character or portraits not found")
+    found = False
+    for p in char["portraits"]:
+        if p.get("filename") == filename:
+            p["is_primary"] = True
+            found = True
+        else:
+            p["is_primary"] = False
+    if not found:
+        raise HTTPException(status_code=404, detail="portrait not found")
+    _save_characters_list(project_id, chars)
+    return {"ok": True}
+
+
+@router.get("/{project_id}/characters/{char_name}/portraits/file/{filename}")
+async def serve_character_portrait(project_id: str, char_name: str, filename: str):
+    _read_meta(project_id)
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code=400, detail="bad filename")
+    full = _characters_dir(project_id, char_name) / filename
+    if not full.is_file():
+        raise HTTPException(status_code=404, detail="portrait file missing")
+    return FileResponse(full, media_type="image/png", filename=filename)
+

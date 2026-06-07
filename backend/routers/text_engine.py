@@ -25,6 +25,8 @@ from services.prompts import (
     CHARACTER_PROFILE_USER_TEMPLATE,
     FRAME_PROMPT_SYSTEM,
     FRAME_PROMPT_USER_TEMPLATE,
+    I2I_PROMPT_SYSTEM,
+    I2I_PROMPT_USER_TEMPLATE,
     VIDEO_PROMPT_SYSTEM,
     VIDEO_PROMPT_USER_TEMPLATE,
 )
@@ -72,6 +74,19 @@ class GenerateFramePromptsRequest(BaseModel):
     manuscript:  str  = ""   # full manuscript text for narrative context
     scene_index: int  = 0
     total_scenes: int = 0
+
+
+# 轮 6: i2i 提示词
+class GenerateI2IPromptsRequest(BaseModel):
+    description:  str
+    dialogues:    list = []
+    characters:   list = []      # 选中的角色（含 appearance）
+    refs:         list = []      # [{kind, ...}] 同 image-engine refs
+    workflow_kind: str = "i2i_single"   # i2i_single | i2i_double
+    project_id:   str  = ""      # 解析 portrait/element 需要
+    manuscript:   str  = ""
+    scene_index:  int  = 0
+    total_scenes: int  = 0
 
 
 class GenerateVideoPromptRequest(BaseModel):
@@ -387,6 +402,148 @@ async def generate_frame_prompts(req: GenerateFramePromptsRequest):
     return {
         "start_frame_prompt": obj.get("start_frame_prompt", ""),
         "end_frame_prompt":   obj.get("end_frame_prompt",   ""),
+    }
+
+
+# ── 轮 6: i2i 提示词（图生图工作流专用）──────────────────────────────────────
+
+
+def _describe_ref(ref: dict, *, project_id: str = "") -> dict:
+    """根据 ref 标识查到一段描述，供 LLM 理解参考图内容。
+
+    返回 {role, label, description}：
+      - role:        'character' | 'element' | 'unknown'
+      - label:       人类可读标签（角色名/元素名/路径）
+      - description: 用于 prompt 的英文描述（appearance / element name / 文件名）
+    """
+    kind = (ref or {}).get("kind") or ""
+    if kind == "portrait":
+        char_name = ref.get("char_name") or ""
+        pid = ref.get("project_id") or project_id
+        appearance = ""
+        if pid and char_name:
+            try:
+                from routers.projects import _project_dir
+                cj_path = _project_dir(pid) / "characters.json"
+                if cj_path.exists():
+                    cj = json.loads(cj_path.read_text(encoding="utf-8-sig"))
+                    for c in cj.get("characters") or []:
+                        if (c.get("name") or "").strip() == char_name:
+                            appearance = (c.get("appearance") or "").strip()
+                            break
+            except Exception:
+                pass
+        return {
+            "role": "character",
+            "label": char_name or "character",
+            "description": appearance or f"character portrait of {char_name}",
+        }
+    if kind == "element":
+        scope = ref.get("scope") or "global"
+        eid = ref.get("element_id")
+        name = ""
+        meta_prompt = ""
+        try:
+            from services.elements_repo import get_element
+            elem = get_element(scope, int(eid)) if eid is not None else None
+            if elem:
+                name = elem.get("name") or ""
+                meta = elem.get("source_meta") or {}
+                meta_prompt = (meta.get("prompt") if isinstance(meta, dict) else "") or ""
+        except Exception:
+            pass
+        desc = meta_prompt or f"reference element '{name}'" if name else "reference image"
+        return {
+            "role": "element",
+            "label": name or "element",
+            "description": desc,
+        }
+    return {"role": "unknown", "label": "reference", "description": "reference image"}
+
+
+@router.post("/generate-img2img-prompt")
+async def generate_img2img_prompt(req: GenerateI2IPromptsRequest):
+    """根据参考图 + 角色 + 分镜信息生成 i2i 编辑指令。"""
+    if req.workflow_kind not in ("i2i_single", "i2i_double"):
+        raise HTTPException(status_code=400,
+                            detail=f"workflow_kind 必须是 i2i_single 或 i2i_double，得到: {req.workflow_kind!r}")
+    ref_count = 1 if req.workflow_kind == "i2i_single" else 2
+
+    # 1) refs 描述块
+    ref_descs = [_describe_ref(r, project_id=req.project_id) for r in (req.refs or [])]
+    ref_lines = []
+    for i, d in enumerate(ref_descs[:ref_count]):
+        role_label = "character portrait" if d["role"] == "character" else \
+                     ("scene/element" if d["role"] == "element" else "reference")
+        ref_lines.append(f"  Image {i + 1} ({role_label}, {d['label']}): {d['description']}")
+    ref_block = ""
+    if ref_lines:
+        ref_block = "Reference images (passed to the model alongside this prompt):\n" + \
+                    "\n".join(ref_lines) + "\n\n"
+
+    # 2) 角色块（沿用 t2i 的写法）
+    char_parts = []
+    for c in (req.characters or []):
+        name = (c.get("name") or "").strip()
+        if not name:
+            continue
+        role = (c.get("role") or "").strip()
+        appearance = (c.get("appearance") or "").strip()
+        traits = (c.get("traits") or "").strip()
+        visual = appearance or traits or ""
+        line = f"  - {name}"
+        if role:   line += f" ({role})"
+        if visual: line += f": {visual}"
+        char_parts.append(line)
+    char_block = ""
+    if char_parts:
+        char_block = (
+            "Characters in this scene (only these may appear):\n"
+            + "\n".join(char_parts) + "\n\n"
+        )
+
+    # 3) 台词块
+    dialogue_lines = ""
+    if req.dialogues:
+        parts = []
+        for d in req.dialogues:
+            text = (d.get("text") or "").strip()
+            if not text: continue
+            speaker = (d.get("character") or "").strip()
+            parts.append(f"  [{speaker or 'Narration'}]: {text}")
+        if parts:
+            dialogue_lines = "Dialogues / narration (earlier → start frame, later → end frame):\n" + \
+                              "\n".join(parts) + "\n"
+
+    user_msg = I2I_PROMPT_USER_TEMPLATE.format(
+        char_block=char_block,
+        ref_block=ref_block,
+        description=req.description,
+        dialogue_lines=dialogue_lines,
+        workflow_kind=req.workflow_kind,
+        ref_count=ref_count,
+        ref_count_plural="" if ref_count == 1 else "s",
+    )
+
+    cfg = load_settings().text_engine
+    full_text = ""
+    async for chunk in stream_chat(cfg, I2I_PROMPT_SYSTEM, user_msg):
+        full_text += chunk
+
+    cleaned = re.sub(r"```(?:json)?\n?", "", full_text).strip()
+    try:
+        obj = json.loads(cleaned)
+    except json.JSONDecodeError:
+        m = re.search(r"\{[\s\S]*\}", cleaned)
+        obj = {}
+        if m:
+            try: obj = json.loads(m.group())
+            except json.JSONDecodeError: obj = {}
+
+    return {
+        "start_frame_prompt": str(obj.get("start_frame_prompt", "")).strip(),
+        "end_frame_prompt":   str(obj.get("end_frame_prompt", "")).strip(),
+        "ref_descriptions":   ref_descs[:ref_count],   # 调试用，前端可忽略
     }
 
 

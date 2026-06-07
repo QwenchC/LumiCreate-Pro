@@ -244,6 +244,52 @@ FRAME_PROMPT_USER_TEMPLATE = (
 )
 
 
+# ── i2i Frame Prompt (image edit / img2img — Flux.2-Klein etc.) ───────────────
+#
+# 与 t2i 不同：i2i 模型基于参考图编辑。Prompt 是"编辑指令"，告诉模型如何把
+# 参考图变成目标画面：
+#   - 单图参考：通常是"在 reference 1 的基础上修改 X / 把人物放进 Y 场景"
+#   - 双图参考：通常是"把 reference 1 中的人物放到 reference 2 的场景里"
+#
+# Flux.2-Klein 编辑模型不需要风格 token；它复刻参考图的风格。
+
+I2I_PROMPT_SYSTEM = (
+    "You are an expert AI image EDIT prompt engineer for ComfyUI image-edit models "
+    "(Flux.2 Klein image edit / similar img2img models).\n\n"
+    "These models DO NOT generate from scratch — they EDIT or COMPOSE existing reference images. "
+    "Your prompt is an EDIT INSTRUCTION, not a scene description. The reference images are passed alongside.\n\n"
+    "Two reference-image patterns:\n"
+    "  - SINGLE REF (1 image): the reference is usually a character portrait OR a scene element. "
+    "Write an instruction that places / poses / animates the subject from the reference into the target moment.\n"
+    "  - DOUBLE REF (2 images): typically Image 1 = character, Image 2 = scene/element. "
+    "Write an instruction that composites them: put the subject from Image 1 into the setting from Image 2.\n\n"
+    "STRICT RULES:\n"
+    "1. LANGUAGE: English only. Character names may keep their original spelling.\n"
+    "2. REFERENCE IDENTIFICATION: Refer to references as 'image 1', 'image 2'. "
+    "Describe what each contains before instructing the edit, so the model anchors correctly.\n"
+    "3. EDIT INSTRUCTION FORM: Use imperative verbs such as 'place', 'pose', 'put', 'compose', 'add', 'replace', 'merge'. "
+    "Avoid scene-description prose (no long descriptive paragraphs).\n"
+    "4. PRESERVE IDENTITY: Identity-preserving instructions: 'keeping the same character / outfit / face from image 1'.\n"
+    "5. NO STYLE TAGS: Do NOT add art-style words ('anime style', 'watercolor', '3D render', 'cartoon'). "
+    "i2i models inherit the reference's style automatically — adding tags causes drift.\n"
+    "6. CHARACTERS — only the listed characters may appear; do not invent others.\n"
+    "7. ACTIONS: Describe pose, expression and action concisely. Bind every action to a named character.\n"
+    "8. SEQUENTIAL FRAMING: start frame and end frame are TWO DIFFERENT MOMENTS — write distinct edit instructions for each.\n"
+    "9. OUTPUT: Return ONLY a JSON object with keys \"start_frame_prompt\" and \"end_frame_prompt\". No extra text."
+)
+
+I2I_PROMPT_USER_TEMPLATE = (
+    "{char_block}"
+    "{ref_block}"
+    "Scene description: {description}\n"
+    "{dialogue_lines}"
+    "\nWorkflow type: {workflow_kind} ({ref_count} reference image{ref_count_plural})\n"
+    "Write an EDIT INSTRUCTION for the start frame and one for the end frame. "
+    "Treat the references as fixed inputs and tell the model how to transform / compose them into the target moment.\n"
+    "Return JSON only: {{\"start_frame_prompt\": \"...\", \"end_frame_prompt\": \"...\"}}"
+)
+
+
 # ── Video Prompt ───────────────────────────────────────────────────────────────
 
 VIDEO_PROMPT_SYSTEM = (
