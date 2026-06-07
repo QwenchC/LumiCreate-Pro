@@ -27,14 +27,14 @@
             <label>图片工作流</label>
             <select v-model="imageWorkflow" class="input">
               <option value="">— 选择 —</option>
-              <option v-for="wf in workflows" :key="wf" :value="wf">{{ wf }}</option>
+              <option v-for="wf in imageWorkflows" :key="wf" :value="wf">{{ wf }}</option>
             </select>
           </div>
           <div class="form-group" style="flex:1">
             <label>视频工作流（仅传递）</label>
             <select v-model="videoWorkflow" class="input">
               <option value="">— 选择 —</option>
-              <option v-for="wf in workflows" :key="wf" :value="wf">{{ wf }}</option>
+              <option v-for="wf in videoWorkflows" :key="wf" :value="wf">{{ wf }}</option>
             </select>
           </div>
         </div>
@@ -147,7 +147,9 @@ const manualSplit    = ref(false)       // 默认 AI 有机分镜
 const maxCharsPerScene = ref(50)
 const rate = ref('+25%')
 const subtitleFontSize = ref(0)
-const workflows = ref([])
+// v1.4.1: 图片和视频用各自支持的子集，不混在同一个 list
+const imageWorkflows = ref([])
+const videoWorkflows = ref([])
 
 const running  = ref(false)
 const finished = ref(false)
@@ -175,8 +177,12 @@ function stageIcon(key) {
 
 async function loadWorkflows() {
   try {
-    const r = await fetch(`${API}/image-engine/workflows`)
-    if (r.ok) workflows.value = await r.json()
+    const [ri, rv] = await Promise.all([
+      fetch(`${API}/image-engine/workflows`),
+      fetch(`${API}/video-engine/workflows`),
+    ])
+    if (ri.ok) imageWorkflows.value = await ri.json()
+    if (rv.ok) videoWorkflows.value = await rv.json()
   } catch {}
   // Pre-fill from settings if available
   try {

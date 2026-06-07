@@ -175,16 +175,19 @@ def patch_workflow(
     wf = copy.deepcopy(workflow)
 
     # 按字段名构造 value map：key=字段名 → (value, default_node_id, default_widget)
+    # 无音频模式由调用方传静音 WAV 的文件名（见 generate_video），所以这里 audio
+    # 永远会被打到 LoadAudio 节点上。
     by_field = {
         "first_frame_image": first_frame_file,
         "last_frame_image":  last_frame_file,
-        "audio":             audio_file,
         "width":             width,
         "height":            height,
         "duration_secs":     duration_secs,
         "fps":               float(fps),
         "positive_prompt":   positive_prompt,
     }
+    if audio_file:
+        by_field["audio"] = audio_file
     # node_id -> {widget_idx: value}
     values: dict[int, dict[int, object]] = {}
     for field, value in by_field.items():
@@ -237,6 +240,22 @@ def _litegraph_to_api(workflow: dict) -> dict:
 
 # ── Video generation ───────────────────────────────────────────────────────────
 
+def _make_silent_wav(duration_ms: int, *, sample_rate: int = 44100) -> bytes:
+    """生成 mono 16-bit PCM 静音 WAV。flfa2i 无音频模式用：LoadAudio 节点
+    需要一个真实音频文件做严格 validation，所以不能直接跳过这一节点。
+    """
+    import struct
+    n_samples = max(1, int(round(sample_rate * duration_ms / 1000.0)))
+    data_bytes = 2 * n_samples
+    # RIFF header
+    header = b"RIFF" + struct.pack("<I", 36 + data_bytes) + b"WAVE"
+    header += b"fmt " + struct.pack("<IHHIIHH",
+        16, 1, 1, sample_rate, sample_rate * 2, 2, 16,
+    )
+    header += b"data" + struct.pack("<I", data_bytes)
+    return header + b"\x00" * data_bytes
+
+
 async def generate_video(
     comfyui_url: str,
     workflow: dict,
@@ -255,7 +274,11 @@ async def generate_video(
     workflow_meta: Optional[dict] = None,
 ) -> AsyncGenerator[dict, None]:
     """
-    Upload assets, patch workflow, queue to ComfyUI, stream progress events.
+    flfa2i 工作流：上传首/末帧 + 音频（无音频模式时上传与 duration 等长的静音 WAV），
+    打补丁，提交，流式回传进度。
+
+    audio_b64 为空 = 无音频模式：自动注入静音 WAV（ComfyUI 的 LoadAudio 严格校验文件
+    存在性，无法跳过该节点）；生成的视频音轨为静音，可作为 BGM/AI 自动配音底版。
 
     Yields:
       {"event": "uploading"}
@@ -267,15 +290,22 @@ async def generate_video(
     yield {"event": "uploading", "scene_id": scene_id}
 
     # ── 1. Upload images & audio ─────────────────────────────────────────────
+    no_audio_mode = not audio_b64
     try:
         first_png  = base64.b64decode(first_frame_b64)
         last_png   = base64.b64decode(last_frame_b64)
-        audio_wav  = base64.b64decode(audio_b64)
+        if no_audio_mode:
+            # 无音频模式：用同样时长的静音 WAV 走完原本的 LoadAudio 链路
+            audio_wav = _make_silent_wav(duration_ms)
+            aud_filename = f"lumi_silent_{scene_id}.wav"
+        else:
+            audio_wav = base64.b64decode(audio_b64)
+            aud_filename = f"lumi_aud_{scene_id}.wav"
 
         ff_name, lf_name, aud_name = await asyncio.gather(
             _upload_image(comfyui_url, first_png, f"lumi_ff_{scene_id}.png"),
             _upload_image(comfyui_url, last_png,  f"lumi_lf_{scene_id}.png"),
-            _upload_audio(comfyui_url, audio_wav, f"lumi_aud_{scene_id}.wav",
+            _upload_audio(comfyui_url, audio_wav, aud_filename,
                           comfyui_input_dir=comfyui_input_dir, workflow_dir=workflow_dir),
         )
     except Exception as e:
@@ -354,6 +384,7 @@ async def generate_video(
                         if video_data:
                             video_bytes = base64.b64decode(video_data["data"])
                             # Replace AI-generated audio with the user's original audio
+                            # （audio_b64 为空 = 无音频模式 → 保留 ComfyUI 自带的音轨）
                             if replace_audio and audio_b64:
                                 ffmpeg = _find_ffmpeg(comfyui_input_dir, workflow_dir)
                                 if ffmpeg:
@@ -370,6 +401,167 @@ async def generate_video(
                             }
                         else:
                             yield {"event": "error", "scene_id": scene_id, "message": "未找到输出视频文件"}
+                        return
+                elif mtype == "execution_error":
+                    if data.get("prompt_id") == prompt_id:
+                        yield {"event": "error", "scene_id": scene_id,
+                               "message": data.get("exception_message", "ComfyUI 执行错误")}
+                        return
+    except Exception as e:
+        yield {"event": "error", "scene_id": scene_id, "message": f"WebSocket 错误: {e}"}
+
+
+# ── i2v 驱动（单图 + 时长，video_ltx2_3_i2v.json）──────────────────────────────
+
+
+def patch_workflow_i2v(
+    workflow: dict,
+    image_file: str,
+    width: int,
+    height: int,
+    fps: float,
+    duration_secs: int,
+    positive_prompt: str,
+) -> dict:
+    """补丁 i2v 工作流（LTX-2.3 image-to-video）。
+
+    与 flfa2i 不同的是：subgraph 内部节点的 widgets_values 才是真正生效的字段。
+    所以需要分别遍历顶层 nodes 和 definitions.subgraphs[*].nodes。
+    """
+    from services.workflow_meta import DEFAULT_VIDEO_I2V_NODE_MAP
+    wf = copy.deepcopy(workflow)
+
+    by_field = {
+        "first_frame_image": image_file,
+        "width":             int(width),
+        "height":            int(height),
+        "fps":               int(round(float(fps))),
+        "duration_secs":     int(duration_secs),
+        "positive_prompt":   positive_prompt,
+    }
+    values: dict[int, dict[int, object]] = {}
+    for field, value in by_field.items():
+        d = DEFAULT_VIDEO_I2V_NODE_MAP.get(field) or {}
+        nid    = d.get("node_id")
+        widget = d.get("widget", 0)
+        if nid is None:
+            continue
+        values.setdefault(int(nid), {})[int(widget)] = value
+
+    def _patch_one(node: dict) -> None:
+        nid = node.get("id")
+        if nid in values:
+            wv = node.get("widgets_values")
+            if isinstance(wv, list):
+                for idx, val in values[nid].items():
+                    if idx < len(wv):
+                        wv[idx] = val
+                    else:
+                        wv.append(val)
+
+    # 顶层
+    for node in wf.get("nodes", []):
+        _patch_one(node)
+    # subgraph 内部
+    for sg in (wf.get("definitions") or {}).get("subgraphs") or []:
+        for node in sg.get("nodes") or []:
+            _patch_one(node)
+    return wf
+
+
+async def generate_video_i2v(
+    comfyui_url: str,
+    workflow: dict,
+    first_frame_b64: str,
+    width: int,
+    height: int,
+    fps: float,
+    duration_ms: int,
+    positive_prompt: str,
+    scene_id: str = "",
+    comfyui_input_dir: str = "",
+    workflow_dir: str = "",
+) -> AsyncGenerator[dict, None]:
+    """i2v 工作流：单图 + 时长 → 视频。"""
+    yield {"event": "uploading", "scene_id": scene_id}
+
+    try:
+        first_png = base64.b64decode(first_frame_b64)
+        ff_name = await _upload_image(comfyui_url, first_png,
+                                       f"lumi_ff_{scene_id}.png")
+    except Exception as e:
+        yield {"event": "error", "scene_id": scene_id, "message": f"图片上传失败: {e}"}
+        return
+
+    duration_secs = max(1, math.ceil(duration_ms / 1000))
+    patched_lg = patch_workflow_i2v(
+        workflow, ff_name, width, height, fps, duration_secs, positive_prompt,
+    )
+    try:
+        api_workflow = _litegraph_to_api(patched_lg)
+    except Exception as e:
+        yield {"event": "error", "scene_id": scene_id, "message": f"工作流转换失败: {e}"}
+        return
+
+    client_id = str(uuid.uuid4())
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            r = await http.post(
+                f"{comfyui_url}/prompt",
+                json={"prompt": api_workflow, "client_id": client_id},
+            )
+            if r.status_code >= 400:
+                try:
+                    detail = r.json()
+                    errmsg = detail.get("error", {}).get("message") or str(detail)
+                except Exception:
+                    errmsg = r.text[:500]
+                yield {"event": "error", "scene_id": scene_id,
+                       "message": f"提交任务失败 {r.status_code}: {errmsg}"}
+                return
+            r.raise_for_status()
+            prompt_id = r.json()["prompt_id"]
+    except Exception as e:
+        yield {"event": "error", "scene_id": scene_id, "message": f"提交任务失败: {e}"}
+        return
+
+    yield {"event": "queued", "prompt_id": prompt_id, "scene_id": scene_id}
+
+    if websockets is None:
+        yield {"event": "error", "scene_id": scene_id, "message": "websockets 包未安装"}
+        return
+
+    ws_url = comfyui_url.replace("http://", "ws://").replace("https://", "wss://")
+    ws_url = f"{ws_url}/ws?clientId={client_id}"
+
+    try:
+        async with websockets.connect(ws_url, ping_interval=20) as ws:
+            async for raw in ws:
+                if isinstance(raw, bytes):
+                    continue
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                mtype = msg.get("type")
+                data  = msg.get("data", {})
+                if mtype == "progress":
+                    yield {"event": "progress", "value": data.get("value", 0),
+                           "max":   data.get("max", 1), "scene_id": scene_id}
+                elif mtype == "executing":
+                    if data.get("node") is None and data.get("prompt_id") == prompt_id:
+                        video_data = await _fetch_video(comfyui_url, prompt_id)
+                        if video_data:
+                            yield {
+                                "event":    "completed",
+                                "scene_id": scene_id,
+                                "video":    video_data["data"],   # already b64
+                                "filename": video_data["filename"],
+                                "mime":     "video/mp4",
+                            }
+                        else:
+                            yield {"event": "error", "scene_id": scene_id,
+                                   "message": "未找到输出视频文件"}
                         return
                 elif mtype == "execution_error":
                     if data.get("prompt_id") == prompt_id:

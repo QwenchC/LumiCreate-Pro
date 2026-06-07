@@ -21,53 +21,78 @@ from config import ImageEngineConfig
 
 
 # ── Workflow listing ───────────────────────────────────────────────────────────
+#
+# v1.4.1+: 仅显示项目自带 workflows/ 目录里的工作流。ComfyUI 用户目录里的
+# 工作流虽然能跑，但软件没适配过的不在下拉里出现，避免用户选了不支持的
+# 工作流然后 ComfyUI 400 一脸懵。
+#
+# bundled 目录解析顺序：
+#   1. 显式环境变量 LUMI_WORKFLOWS_DIR（测试或定制部署用）
+#   2. 仓库根 workflows/ 子目录（开发/正常运行）
+#   3. cfg.workflow_dir（最后兜底，便于用户自己加但已经通过 classifier 校验）
+
+
+def bundled_workflow_dir() -> Optional[Path]:
+    """返回项目自带工作流目录的绝对路径，找不到则 None。"""
+    import os
+    env = os.environ.get("LUMI_WORKFLOWS_DIR", "").strip()
+    if env:
+        p = Path(env)
+        if p.is_dir():
+            return p
+    # backend/services/comfyui.py → parents[2] 是仓库根
+    candidate = Path(__file__).resolve().parents[2] / "workflows"
+    if candidate.is_dir():
+        return candidate
+    return None
+
 
 async def list_workflows(cfg: ImageEngineConfig) -> list[str]:
-    """Return names of saved workflows.
+    """Return names of bundled workflows (project-shipped `workflows/`).
 
-    Priority:
-      1. Local filesystem (cfg.workflow_dir) — fastest and version-independent.
-      2. ComfyUI /api/userdata?dir=workflows — fallback for remote setups.
+    Only files inside the bundled directory are listed; the user's ComfyUI
+    workflow directory is intentionally NOT scanned to prevent unsupported
+    workflows from appearing in the UI. cfg.workflow_dir is still used as
+    a fallback when the bundled directory is unavailable (test fixtures etc).
     """
-    # ── 1. Local directory ────────────────────────────────────────────────────
+    bundled = bundled_workflow_dir()
+    if bundled is not None:
+        return sorted(p.stem for p in bundled.glob("*.json"))
+
+    # 兜底：cfg.workflow_dir（测试隔离环境 / 仓库结构异常时）
     if cfg.workflow_dir:
         from pathlib import Path as _Path
         d = _Path(cfg.workflow_dir)
         if d.is_dir():
             return sorted(p.stem for p in d.glob("*.json"))
-
-    # ── 2. ComfyUI API ────────────────────────────────────────────────────────
-    async with httpx.AsyncClient(timeout=8) as client:
-        try:
-            r = await client.get(f"{cfg.comfyui_url}/api/userdata", params={"dir": "workflows"})
-            if r.status_code == 200:
-                items = r.json()
-                return [Path(p).stem for p in items if str(p).endswith(".json")]
-        except Exception:
-            pass
     return []
 
 
 async def get_workflow_json(cfg: ImageEngineConfig, workflow_name: str) -> Optional[dict]:
-    """Download a saved workflow JSON by name.
-
-    Priority:
-      1. Local filesystem (cfg.workflow_dir) — reads file directly.
-      2. ComfyUI /api/userdata/{path} — HTTP fallback.
-    """
+    """Load a workflow JSON by name. Priority: bundled dir → cfg.workflow_dir → ComfyUI API."""
     import json as _json
+    from pathlib import Path as _Path
 
-    # ── 1. Local directory ────────────────────────────────────────────────────
-    if cfg.workflow_dir:
-        from pathlib import Path as _Path
-        p = _Path(cfg.workflow_dir) / f"{workflow_name}.json"
+    # 1. Bundled
+    bundled = bundled_workflow_dir()
+    if bundled is not None:
+        p = bundled / f"{workflow_name}.json"
         if p.is_file():
             try:
-                return _json.loads(p.read_text(encoding="utf-8"))
+                return _json.loads(p.read_text(encoding="utf-8-sig"))
             except Exception:
                 pass
 
-    # ── 2. ComfyUI API ────────────────────────────────────────────────────────
+    # 2. cfg.workflow_dir
+    if cfg.workflow_dir:
+        p = _Path(cfg.workflow_dir) / f"{workflow_name}.json"
+        if p.is_file():
+            try:
+                return _json.loads(p.read_text(encoding="utf-8-sig"))
+            except Exception:
+                pass
+
+    # 3. ComfyUI API
     async with httpx.AsyncClient(timeout=8) as client:
         for url in [
             f"{cfg.comfyui_url}/api/userdata/workflows/{workflow_name}.json",
@@ -623,10 +648,17 @@ def _litegraph_to_api(workflow: dict) -> dict:
         if a == '*' or b == '*': return True
         return str(a).upper() == str(b).upper()
 
+    # Reroute (虚拟节点) 在概念上等同于 bypass：直接把 slot 0 input 透传到
+    # slot 0 output。Reroute 的 input.type 通常是 '*'，所以 _types_compat 自然兼容。
+    # 不处理的话，下游消费 Reroute 输出的节点会因为 link 指向被 skip 的虚拟节点
+    # 而拿不到上游源 → "Required input is missing"。
+    def _is_passthrough(node) -> bool:
+        return node.get("mode") == 4 or node.get("type") == "Reroute"
+
     for _ in range(len(nodes)):
         changed = False
         for node in nodes:
-            if node.get("mode") != 4:
+            if not _is_passthrough(node):
                 continue
             inputs_meta = node.get("inputs", [])
             inp_link_ids = [inp.get("link") for inp in inputs_meta]

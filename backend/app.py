@@ -7,7 +7,7 @@ from routers import settings, projects, text_engine, image_engine, audio_engine,
 def create_app() -> FastAPI:
     app = FastAPI(
         title="LumiCreate-Pro API",
-        version="1.4.0",
+        version="1.4.1",
         docs_url="/docs",
     )
 
@@ -67,6 +67,6 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     async def health():
-        return {"status": "ok", "version": "1.4.0"}
+        return {"status": "ok", "version": "1.4.1"}
 
     return app

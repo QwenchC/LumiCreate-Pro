@@ -37,8 +37,8 @@ class SceneVideoRequest(BaseModel):
     scene_id:        str
     scene_index:     int
     start_image_b64: str = ""
-    end_image_b64:   str = ""
-    audio_b64:       str = ""
+    end_image_b64:   str = ""    # i2v 工作流不需要
+    audio_b64:       str = ""    # 空 = 无音频模式（flfa2i + i2v 都接受）
     duration_ms:     int = 4000
     positive_prompt: str = ""
 
@@ -50,6 +50,32 @@ async def precheck_video_workflow_endpoint(workflow_name: str):
     cfg = load_settings().video_engine
     result = await precheck_video_workflow(cfg.comfyui_url, workflow_name)
     return {"ok": result.ok, "issues": result.issues, "info": result.info}
+
+
+# v1.4.1: 视频工作流分类（前端用来决定显示几个图片槽 + 是否需要音频）
+@router.get("/workflow-info")
+async def video_workflow_info(workflow_name: str):
+    from services.workflow_meta import classify_video_workflow, get_video_workflow_features
+    from services.comfyui import get_workflow_json
+    from pathlib import Path as _P
+
+    cfg  = load_settings()
+    vcfg = cfg.video_engine
+    icfg = cfg.image_engine
+    wdir = vcfg.workflow_dir or icfg.workflow_dir
+
+    class _Cfg:
+        def __init__(self, url, wd):
+            self.comfyui_url  = url
+            self.workflow_dir = wd
+
+    wf = await get_workflow_json(_Cfg(vcfg.comfyui_url, wdir), workflow_name)
+    if wf is None:
+        return {**get_video_workflow_features("unknown"), "found": False}
+    wf_path = _P(wdir) / f"{workflow_name}.json" if wdir else None
+    kind = classify_video_workflow(workflow_name, workflow=wf,
+                                     workflow_path=str(wf_path) if wf_path else None)
+    return {**get_video_workflow_features(kind), "found": True}
 
 
 class VideoGenerateRequest(BaseModel):
@@ -95,26 +121,42 @@ async def test_connection():
 
 @router.get("/workflows", response_model=list[str])
 async def get_video_workflows():
+    """v1.4.1+: 只列举项目自带 workflows/ 目录里能被识别为视频工作流的文件
+    (video_flfa2i / video_i2v)。用户的 ComfyUI 目录里其它工作流不显示。"""
+    from services.workflow_meta import is_supported_video_workflow
+    from services.comfyui import bundled_workflow_dir, get_workflow_json
+
     cfg  = load_settings()
     vcfg = cfg.video_engine
-    icfg = cfg.image_engine
 
     class _Cfg:
         def __init__(self, url, wd):
             self.comfyui_url  = url
             self.workflow_dir = wd
 
-    for wdir in filter(None, [vcfg.workflow_dir, icfg.workflow_dir]):
-        p = Path(wdir)
-        if p.is_dir():
-            names = sorted(f.stem for f in p.glob("*.json"))
-            if names:
-                return names
+    bundled = bundled_workflow_dir()
+    if bundled is None:
+        # 仓库结构异常时兜底用 cfg.workflow_dir
+        wdir = vcfg.workflow_dir or cfg.image_engine.workflow_dir
+        if not wdir or not Path(wdir).is_dir():
+            return []
+        names = [f.stem for f in Path(wdir).glob("*.json")]
+        base = wdir
+    else:
+        names = [f.stem for f in bundled.glob("*.json")]
+        base = str(bundled)
 
-    try:
-        return await list_workflows(_Cfg(vcfg.comfyui_url, ""))
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    supported: list[str] = []
+    for name in names:
+        try:
+            wf = await get_workflow_json(_Cfg(vcfg.comfyui_url, base), name)
+            wf_path = Path(base) / f"{name}.json"
+            if is_supported_video_workflow(name, workflow=wf,
+                                           workflow_path=str(wf_path) if wf_path.exists() else None):
+                supported.append(name)
+        except Exception:
+            pass
+    return sorted(set(supported))
 
 
 # ── Video generation SSE ───────────────────────────────────────────────────────
@@ -135,17 +177,30 @@ async def generate_video_stream(req: VideoGenerateRequest):
     if workflow is None:
         raise HTTPException(status_code=404, detail=f"工作流 '{req.workflow_name}' 未找到")
 
+    # v1.4.1+: 解析 wf_path（优先 bundled）让 meta.json 也按相同优先级查
+    from services.comfyui import bundled_workflow_dir
+    from pathlib import Path as _P
+    bundled = bundled_workflow_dir()
+    wf_path = None
+    if bundled is not None and (bundled / f"{req.workflow_name}.json").exists():
+        wf_path = bundled / f"{req.workflow_name}.json"
+    elif wdir and (_P(wdir) / f"{req.workflow_name}.json").exists():
+        wf_path = _P(wdir) / f"{req.workflow_name}.json"
+
     # C1: 读取同名 .meta.json（如果存在），让节点 ID 可配置
     workflow_meta = None
-    if wdir:
+    if wf_path is not None:
         from services.workflow_meta import load_meta
-        from pathlib import Path as _P
-        wf_path = _P(wdir) / f"{req.workflow_name}.json"
-        if wf_path.exists():
-            workflow_meta = load_meta(wf_path, type_="video")
+        workflow_meta = load_meta(wf_path, type_="video")
 
     width, height = _parse_resolution(req.resolution)
     total = len(req.scenes)
+
+    # v1.4.1: 工作流类型决定走哪个 driver + 校验哪些字段
+    from services.workflow_meta import classify_video_workflow, get_video_workflow_features
+    wf_kind = classify_video_workflow(req.workflow_name, workflow=workflow,
+                                        workflow_path=str(wf_path) if wf_path else None)
+    wf_features = get_video_workflow_features(wf_kind)
 
     # Error substring that indicates VRAM weight offload to CPU — safe to free+retry
     _VRAM_OFFLOAD_SIG = "should be the same"
@@ -175,27 +230,24 @@ async def generate_video_stream(req: VideoGenerateRequest):
     started_ms = int(__import__("time").time() * 1000)
 
     async def stream():
-        from services.ltx2video import generate_video
+        from services.ltx2video import generate_video, generate_video_i2v
 
         for idx, scene in enumerate(req.scenes):
+            # 必需字段校验（按 workflow kind 决定）
             if not scene.start_image_b64:
                 _record_err(scene.scene_id, "缺少首帧图片")
                 yield _sse({"event": "scene_error", "scene_id": scene.scene_id,
                             "scene_index": scene.scene_index,
                             "message": "缺少首帧图片"})
                 continue
-            if not scene.end_image_b64:
+            if wf_features.get("requires_end_image") and not scene.end_image_b64:
                 _record_err(scene.scene_id, "缺少末帧图片")
                 yield _sse({"event": "scene_error", "scene_id": scene.scene_id,
                             "scene_index": scene.scene_index,
                             "message": "缺少末帧图片"})
                 continue
-            if not scene.audio_b64:
-                _record_err(scene.scene_id, "缺少场景合并音频")
-                yield _sse({"event": "scene_error", "scene_id": scene.scene_id,
-                            "scene_index": scene.scene_index,
-                            "message": "缺少场景合并音频"})
-                continue
+            # 音频：flfa2i 可选（空字符串 = 无音频模式），i2v 不接受音频
+            # 不再做"缺音频就 fail"的硬校验
 
             yield _sse({
                 "event":       "scene_start",
@@ -203,28 +255,44 @@ async def generate_video_stream(req: VideoGenerateRequest):
                 "scene_index": scene.scene_index,
                 "current":     idx + 1,
                 "total":       total,
+                "workflow_kind": wf_kind,
             })
 
-            gen_kwargs = dict(
-                comfyui_url       = vcfg.comfyui_url,
-                workflow          = workflow,
-                first_frame_b64   = scene.start_image_b64,
-                last_frame_b64    = scene.end_image_b64,
-                audio_b64         = scene.audio_b64,
-                width             = width,
-                height            = height,
-                fps               = req.fps,
-                duration_ms       = scene.duration_ms,
-                positive_prompt   = scene.positive_prompt,
-                scene_id          = scene.scene_id,
-                comfyui_input_dir = vcfg.comfyui_input_dir,
-                workflow_dir      = wdir or "",
-                workflow_meta     = workflow_meta,
-            )
+            def _make_iter():
+                if wf_kind == "video_i2v":
+                    return generate_video_i2v(
+                        comfyui_url       = vcfg.comfyui_url,
+                        workflow          = workflow,
+                        first_frame_b64   = scene.start_image_b64,
+                        width             = width,
+                        height            = height,
+                        fps               = req.fps,
+                        duration_ms       = scene.duration_ms,
+                        positive_prompt   = scene.positive_prompt,
+                        scene_id          = scene.scene_id,
+                        comfyui_input_dir = vcfg.comfyui_input_dir,
+                        workflow_dir      = wdir or "",
+                    )
+                return generate_video(
+                    comfyui_url       = vcfg.comfyui_url,
+                    workflow          = workflow,
+                    first_frame_b64   = scene.start_image_b64,
+                    last_frame_b64    = scene.end_image_b64,
+                    audio_b64         = scene.audio_b64,
+                    width             = width,
+                    height            = height,
+                    fps               = req.fps,
+                    duration_ms       = scene.duration_ms,
+                    positive_prompt   = scene.positive_prompt,
+                    scene_id          = scene.scene_id,
+                    comfyui_input_dir = vcfg.comfyui_input_dir,
+                    workflow_dir      = wdir or "",
+                    workflow_meta     = workflow_meta,
+                )
 
             for attempt in range(2):   # at most one retry
                 vram_error = False
-                async for event in generate_video(**gen_kwargs):
+                async for event in _make_iter():
                     ev  = event.get("event")
                     msg = event.get("message", "")
                     if ev == "error":

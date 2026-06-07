@@ -176,6 +176,18 @@ SKILL/
 
 ## 更新日志
 
+### v1.4.1
+本版本以 **视频引擎扩展 + ComfyUI 工作流真子图驱动稳定性** 为主线，配合一系列生产 bug 根因修复。
+
+- ✅ **新视频工作流 video_ltx2_3_i2v**：LTX-2.3 单图 + 时长 → 视频 driver；新写 `patch_workflow_i2v` 同时遍历顶层和 subgraph 内部节点，按 ID 写入 widget；deep-copy 避免污染共享 subgraph 定义
+- ✅ **flfa2i 无音频模式**：「🔇 无音频模式」复选框，每分镜单独设视频时长；后端自动生成等长静音 WAV 上传到 ComfyUI input/，绕过 LoadAudio 严格校验
+- ✅ **视频工作流分类系统**：`classify_video_workflow()` 自动判别 `video_flfa2i / video_i2v / unknown`（meta.kind > 名字关键词 > 节点扫描）；`workflow-info` 端点供前端按 kind 动态切换 UI（i2v 隐藏末帧槽 + 音频开关）
+- ✅ **VideoTab 工作流自适应布局**：kind 徽章、分镜资产指示器按 features 动态显隐；i2v 显示参考图 + 时长输入框、flfa2i 显示首末帧 + 音频/时长开关
+- ✅ **Reroute 节点正确穿透**：`_litegraph_to_api` 把 Reroute 加入"穿透节点"集合，与 mode==4 bypass 一同处理（修复 i2v workflow `VAEDecodeTiled / LTXVLatentUpsampler / LTXVImgToVideoInplace` "Required input is missing: vae" 报错）
+- ✅ **工作流下拉硬名单**：三层防御 —— bundled 目录扫描 + 严格分类器 + 硬名单。`SUPPORTED_IMAGE_WORKFLOWS / SUPPORTED_VIDEO_WORKFLOWS` frozenset 确保下拉只显示 5 个支持的工作流，绕不过去；硬名单只影响下拉，不影响生成 / `get_workflow_json` / `classify_*` / precheck / 用户的 `cfg.workflow_dir` 设置
+- ✅ **OrchestratorPanel 视频/图片下拉分离**：之前一键全流程的"视频工作流"下拉错用了图片工作流列表；现在分别从 `/image-engine/workflows` 和 `/video-engine/workflows` 拉取
+- ✅ **测试 + 集成**：后端 **172 / 172 pytest 通过**（v1.4.0 时 152 个），新增视频工作流分类 / i2v 补丁 / Reroute 穿透 / 静音 WAV / 硬名单等 20 个回归测；用真实生产工作流文件做集成测试
+
 ### v1.4.0
 本版本围绕 **Flux.2 工作流支持**、**i2i 全链路**、**元素库**、**角色立绘** 四条主线落地。新增 6 轮重构 + 多个生产 bug 的根因修复。
 
@@ -189,36 +201,6 @@ SKILL/
 - ✅ **Flux.2 size patching**：`_patch_workflow` 白名单扩展 `EmptyFlux2LatentImage` + `Flux2Scheduler`（后者的分辨率相关 sigma 调度必须与 latent 同步），user 设置的 1080×1920 终于真正生效
 - ✅ **错误诊断**：ComfyUI 400 / 500 解析 `error.message` + `node_errors[*].errors[*]` 提示具体哪个节点报错；patched workflow 自动转储 `%APPDATA%/LumiCreate-Pro/diagnostics/failed_prompt_<ts>.json` 方便对照
 - ✅ **测试 + 集成**：后端 **152 / 152 pytest 通过**（v1.3.7 时 79 个），新增 subgraph 展平 / i2i ref 注入 / i2i prompt 端点 / Flux.2 size patching 等 73 个测；用真实 Flux.2 工作流文件做集成测试
-
-### v1.3.7
-本版本是一次"地基级"重构。围绕项目数据模型、任务系统、阻塞调用、类型契约、引擎抽象、资产寻址、集成测试 7 大方向系统性升级，把 LumiCreate 从"功能丰富的脚本工具"升级为"可长期演进的产品"。**用户使用体验完全向后兼容**——所有改动都通过双写 / 兼容读路径不破坏现有项目。
-
-- ✅ **项目 SQLite 数据库 + 状态机**：每个项目目录新增 `project.sqlite`（5 张表：scenes/scene_assets/tasks/events/schema_version），与现有 JSON 文件并存；引入 SceneStatus 状态机（`draft → prompted → image_drafted → audio_ready → video_ready → finalized`），每次资产落盘自动推进状态 + invariant 校验；老项目首次打开自动迁移 JSON → SQLite，无感升级
-- ✅ **任务异步化（后台 worker）**：新增 `POST /api/tasks` 提交任务立即返回 task_id（< 200ms）；orchestrator 改成后台 asyncio task 跑，事件持久化到 SQLite `events` 表；`GET /tasks/{id}/events` SSE 流支持 `Last-Event-ID` 断网重连续传；**关电脑也能跑完整片**；启动时自动把上次崩溃留下的 running 任务标 interrupted
-- ✅ **结构化日志 + trace_id**：基于 contextvars 自动跨 await 传播 trace_id / task_id / stage / project_id；事件双写到 stderr（兼容前端日志浮窗）+ SQLite events 表（可按 trace_id 关联回放整次任务）；新增 `GET /events` / `GET /traces` 查询端点供"任务回放"使用
-- ✅ **阻塞调用走共享线程池**：所有 `subprocess.run(ffmpeg)` / Whisper queue 等同步阻塞改成 `await run_blocking(...)`；统一 ThreadPoolExecutor（cpu × 4 workers，环境变量可调）；视频合并 / 字幕烧录的 30 秒时间内 event loop 仍能调度其它请求；同时跑"视频合并 + 出图 + 字幕"不再互相排队
-- ✅ **OpenAPI → 前端 TypeScript 类型自动生成**：FastAPI 自动产 `/openapi.json`；`backend/openapi.snapshot.json` 入 git 让前端离线 typegen；`npm run typegen` / `typegen:live` 生成 `src/types/generated/api.ts`（73 endpoints + 59 schemas）；新增类型安全的 `api.get/post/put/delete` 客户端 —— **后端改 schema 编译期立刻报错**
-- ✅ **EngineAdapter 抽象**：把 audio_engine.py 里堆叠的 if/elif 分发逻辑收敛为统一接口（`test() / synthesise() / info()`）；4 种 adapter（msedge/indextts/gptsovits/manual），工厂 `make_audio_adapter()` 按 settings 选；新增引擎（Replicate/Civitai/RunningHub 等）只需要写一个 adapter 类，不动 router 一行
-- ✅ **ComfyUI 前置检查（precheck）**：出图/出视频前先校验工作流的节点 class_type / 模型引用 是否在当前 ComfyUI 实例里；缺失时**立刻**emit `precheck_failed` 带具体缺失项 + 修复提示；orchestrator images / video 阶段自动跑前置检查，**避免跑 5 分钟才发现"少个 LoRA"**
-- ✅ **资产 URL 化（去 base64 回环）**：通用资产寻址 `GET /projects/{id}/assets/file/{scene_id}/{asset_type}[/{slot}]`；image-engine / video-engine SSE 在 project_id 提供时**直接落盘 + record_asset**，事件多带 `file_path` / `url` 字段；orchestrator 视频阶段从"HTTP fetch 自循环"改成"直读磁盘"，30 镜项目省下 120 次 HTTP 往返 + 一半 base64 编解码
-- ✅ **router 双写全覆盖**：images/audio/video slot endpoint 写盘成功自动 `record_asset` → SQLite scene_assets 同步 → 状态机自动推进；前端代码零改动即可享受状态查询能力
-- ✅ **orchestrator 用状态机跳过已完成镜次**：每个 stage 启动前查 SQLite scene.status，已 prompted+ 的跳过 prompts，已 image_drafted+ 的跳过 images，依此类推；同一项目第二次点 🚀 一键全流程只跑剩余阶段，**关电脑去喝咖啡也能继续**
-- ✅ **集成测试 + 单元测试基础设施**：后端 **79 / 79 pytest 通过**（v1.3.6 时 14 个）；新增覆盖状态机转移 / DAL 双写 / 任务 lifecycle / events 查询 / assets URL round-trip / 老项目迁移 / 引擎工厂 / 前置检查 / 阻塞调用并行；前端 **13 / 13 vitest 通过**，新增类型化 API client 烟雾测试
-
-### v1.3.6
-- ✅ **一键全流程（Orchestrator）**：新增 🚀 按钮串跑 分镜→帧提示词→图片→音频→视频→合并→字幕；实时进度面板 + 失败镜次累计；默认 **AI 有机分镜**（按情节/视角/动作切，宁多不少），保留机械式手动分镜为高级选项
-- ✅ **健壮性与失败恢复**：4 个核心 service 自动重试瞬态错误；三个 tab 顶部「⚠ 上次失败 N 个分镜 [↻ 只重试失败镜]」红色横幅，失败镜次持久化到 `last_run_errors.json`；删除项目时清理 ComfyUI `input/` 临时文件
-- ✅ **项目体积优化**：audio.json / videos.json 拆为"slot 单文件落盘 + 元数据"，几百 MB 项目载入秒级；新增 `PUT /audio/slot` / `PUT /videos/slot` 增量端点；兼容老项目
-- ✅ **视频后期**：BGM 上传 + 音量/淡入淡出；10 种 xfade 镜间过渡；字幕样式扩展（颜色/描边/阴影/位置/V 边距/粗体/斜体），字号按方向自适应（竖屏 10 / 横屏 16）
-- ✅ **音频引擎扩展**：微软神经语音支持**全部对白模式**（纯旁白/纯对话/混合/纯朗读）；角色卡新增 `voice` 字段按性别/年龄配音色；朗读模式区分音色（叙述句 vs 引号对话句 + 按角色 voice 自动选）；🧪 全部音色测试一键过滤不可用音色
-- ✅ **AI 分镜与角色一致性**：frame prompt 加入 SEQUENTIAL FRAMING + ACTION ISOLATION 规则；分镜设计页新增「♻ 按对白模式重抽台词」保留 id/提示词/图片只改 dialogues；Ctrl+Z/Y 撤销/重做（栈深 20）
-- ✅ **工作流可扩展**：每个工作流可放 `<name>.meta.json` 声明节点 ID 映射，**自定义工作流不再改后端代码**；标题栏新增 ComfyUI 🟢/🔴 健康指示灯（60s 自动 ping）
-- ✅ **可观测性**：右下角后端日志浮窗实时滚动 print/stderr，500 行缓冲；「📊 任务历史」记录每次批量任务（本月统计 + 类型/项目排行）；文本引擎并发数全局可配（云端模型可调到 50-500，整片提示词生成从分钟级降到秒级）
-- ✅ **主屏与导航**：搜索跨文件夹 + 排序；项目模板「📦 另存为模板 / 从模板新建」；全局快捷键（Ctrl+S/F/N/1-7/Z/Y、Esc 等）
-- ✅ **i18n 与类型系统**：vue-i18n 接入中/英双语；TypeScript 脚手架 + 起步迁移；后端 pytest（14 ✓）+ 前端 Vitest（6 ✓）测试基础设施
-- ✅ **SKILL 增强**：新增 manual-scenes / character-cards / prompts 三份参考文档；SKILL CLI 新增 `prompts frame-batch / video-batch` 等并发子命令
-- ✅ **入门体验**：新增 [QUICKSTART.md](QUICKSTART.md) 30 分钟跑通第一个漫剧；日志浮窗默认折叠为 28px 不挡内容
-- ✅ **关键修复**：顶部小标签页区域无法拖窗的问题；orchestrator 图片阶段 SSE 完成事件落盘缺失导致视频"缺少素材"全员失败；merge 端点 URL 错误；窗口拖动 / 设置页保存按钮不再被日志浮窗遮挡
 
 ### v1.3.0
 - ✅ **字幕生成与烧录**：新增「字幕生成」Tab，集成 stable-whisper 音频对齐流水线，支持视频帧率标准化 → 音频提取 → Whisper 词级对齐 → SRT 生成全流程；字幕脚本可从分镜台词导入或通过断句工具自动切句；字幕烧录可选字体（等线 Bold / 微软雅黑 / 黑体 / 仿宋 / 楷体等）及字号；生成与烧录均有实时进度显示

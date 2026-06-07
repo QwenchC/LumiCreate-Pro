@@ -205,6 +205,18 @@
           </select>
         </div>
       </div>
+      <!-- v1.4.1: 工作流模式提示 + 无音频开关 -->
+      <div class="config-row" v-if="workflowKind !== 'unknown'">
+        <div class="config-group" style="flex:1">
+          <span class="kind-badge" :class="workflowKind">
+            {{ workflowFeatures.label }}
+          </span>
+        </div>
+        <label v-if="workflowFeatures.supports_audio" class="no-audio-toggle">
+          <input type="checkbox" v-model="noAudioMode" />
+          🔇 无音频模式（每分镜单独设时长）
+        </label>
+      </div>
       <p class="config-hint">
         ⚠ 视频分辨率限制在 1280px 以内（本地算力有限），每边自动对齐至 32px 倍数
       </p>
@@ -244,17 +256,28 @@
           >↺</button>
         </div>
 
-        <!-- Readiness indicators -->
+        <!-- Readiness indicators (随工作流类型动态显隐) -->
         <div class="asset-checks">
           <span class="asset-tag" :class="scene.hasStart ? 'ok' : 'miss'">
-            {{ scene.hasStart ? '✓' : '✗' }} 首帧
+            {{ scene.hasStart ? '✓' : '✗' }} {{ workflowFeatures.requires_end_image ? '首帧' : '参考图' }}
           </span>
-          <span class="asset-tag" :class="scene.hasEnd ? 'ok' : 'miss'">
+          <span v-if="workflowFeatures.requires_end_image"
+                class="asset-tag" :class="scene.hasEnd ? 'ok' : 'miss'">
             {{ scene.hasEnd ? '✓' : '✗' }} 末帧
           </span>
-          <span class="asset-tag" :class="scene.hasAudio ? 'ok' : 'miss'">
+          <span v-if="workflowFeatures.supports_audio && !noAudioMode"
+                class="asset-tag" :class="scene.hasAudio ? 'ok' : 'miss'">
             {{ scene.hasAudio ? '✓' : '✗' }} 合并音频
             <template v-if="scene.hasAudio"> ({{ formatMs(scene.audioDurationMs) }})</template>
+          </span>
+          <span v-if="!workflowFeatures.supports_audio || noAudioMode"
+                class="asset-tag duration-tag">
+            ⏱ 时长
+            <input type="number" min="1" max="30" step="1"
+                   class="duration-input"
+                   :value="manualDurations[scene.id] ?? 5"
+                   @input="manualDurations[scene.id] = Number($event.target.value) || 5" />
+            <span class="text-muted" style="margin-left:2px">s</span>
           </span>
         </div>
 
@@ -457,6 +480,36 @@ const audioData       = ref({})   // "__stitched__{sceneId}" → {data, duration
 const loadingScenes   = ref(false)
 const workflows       = ref([])
 const selectedWorkflow = ref('')
+
+// v1.4.1: 工作流类型 + 特性
+const workflowKind     = ref('unknown')      // 'video_flfa2i' | 'video_i2v' | 'unknown'
+const workflowFeatures = ref({
+  requires_start_image: true,
+  requires_end_image:   true,
+  supports_audio:       true,
+  supports_duration:    true,
+  label:                '',
+})
+// 无音频模式（仅 flfa2i 可选；i2v 始终无音频）
+const noAudioMode = ref(false)
+// 无音频时的手动时长（秒），按分镜 id 存
+const manualDurations = ref({})   // { sceneId: number }
+
+async function loadWorkflowInfo() {
+  workflowKind.value = 'unknown'
+  if (!selectedWorkflow.value) return
+  try {
+    const r = await fetch(`${API}/video-engine/workflow-info?workflow_name=${encodeURIComponent(selectedWorkflow.value)}`)
+    if (r.ok) {
+      const d = await r.json()
+      workflowKind.value     = d.kind || 'unknown'
+      workflowFeatures.value = d
+      // i2v 永远无音频
+      if (workflowKind.value === 'video_i2v') noAudioMode.value = true
+    }
+  } catch {}
+}
+watch(selectedWorkflow, () => loadWorkflowInfo(), { immediate: false })
 const resolution      = ref('720x1280')
 const fps             = ref(25)
 const running         = ref(false)
@@ -504,7 +557,7 @@ const scenesWithData = computed(() =>
 )
 
 const readyCount = computed(() =>
-  scenesWithData.value.filter(s => s.hasStart && s.hasEnd && s.hasAudio).length
+  scenesWithData.value.filter(sceneReady).length
 )
 
 const completedCount = computed(() =>
@@ -520,7 +573,15 @@ const allVideosReady = computed(() =>
   scenes.value.every(s => !!sceneVideos.value[s.id])
 )
 
-function sceneReady(s) { return s.hasStart && s.hasEnd && s.hasAudio }
+// v1.4.1: 按工作流类型决定 readiness
+function sceneReady(s) {
+  if (!s.hasStart) return false
+  if (workflowFeatures.value.requires_end_image && !s.hasEnd) return false
+  // 音频：只有 flfa2i + 关闭无音频模式时才要求音频
+  const audioRequired = workflowFeatures.value.supports_audio && !noAudioMode.value
+  if (audioRequired && !s.hasAudio) return false
+  return true
+}
 
 function sceneFullText(scene) {
   if (!scene) return '（无描述）'
@@ -590,7 +651,11 @@ async function loadData() {
     const vCfg = settingsRes.data?.video_engine || {}
     resolution.value = vCfg.resolution || '720x1280'
     fps.value        = vCfg.fps ?? 25
-    if (vCfg.default_workflow) selectedWorkflow.value = vCfg.default_workflow
+    if (vCfg.default_workflow) {
+      selectedWorkflow.value = vCfg.default_workflow
+      // watch 在初始化前不会触发，主动加载一次工作流类型
+      await loadWorkflowInfo()
+    }
     workflows.value  = wfRes.data || []
 
     // Saved videos
@@ -867,11 +932,19 @@ async function _runGeneration(sceneList) {
     for (const s of sceneList) {
       if (stopFlag.value) break
 
-      // Resolve images for this single scene only
+      // v1.4.1: i2v 不需要末帧；无音频模式（i2v 始终 / flfa2i 可选）不带音频
+      const needEnd = workflowFeatures.value.requires_end_image
+      const dropAudio = !workflowFeatures.value.supports_audio || noAudioMode.value
+
       const [startB64, endB64] = await Promise.all([
         _srcToB64(s.startImageB64),
-        _srcToB64(s.endImageB64),
+        needEnd ? _srcToB64(s.endImageB64) : Promise.resolve(''),
       ])
+
+      // 时长：无音频模式用手动设置（默认 5s），有音频用音频时长
+      const dur_ms = dropAudio
+        ? Math.max(1, Number(manualDurations.value[s.id] ?? 5)) * 1000
+        : (s.audioDurationMs || 4000)
 
       const payload = {
         workflow_name: selectedWorkflow.value,
@@ -883,8 +956,8 @@ async function _runGeneration(sceneList) {
           scene_index:     s.index,
           start_image_b64: startB64,
           end_image_b64:   endB64,
-          audio_b64:       s.audioB64,
-          duration_ms:     s.audioDurationMs || 4000,
+          audio_b64:       dropAudio ? '' : s.audioB64,
+          duration_ms:     dur_ms,
           positive_prompt: scenePrompts.value[s.id] ?? _buildPromptFallback(s),
         }],
       }
@@ -1242,5 +1315,39 @@ async function showMergedInFolder() {
 .prompt-textarea:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* v1.4.1: 工作流类型徽章 + 无音频开关 */
+.kind-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: var(--bg-input, rgba(255,255,255,.08));
+  border: 1px solid var(--border, #333);
+  color: var(--text-muted, #aaa);
+}
+.kind-badge.video_flfa2i {
+  border-color: rgba(99,179,237,.5); color: #63b3ed;
+  background: rgba(99,179,237,.08);
+}
+.kind-badge.video_i2v {
+  border-color: rgba(183,148,244,.5); color: #b794f4;
+  background: rgba(183,148,244,.08);
+}
+.no-audio-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-muted, #aaa); cursor: pointer;
+}
+.no-audio-toggle input { margin: 0; }
+
+.duration-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.duration-input {
+  width: 48px; height: 22px; padding: 0 6px;
+  border: 1px solid var(--border, #444); border-radius: 4px;
+  background: var(--bg-input, #2a2a2a); color: var(--text, #ddd);
+  font-size: 12px; text-align: center;
 }
 </style>

@@ -273,3 +273,48 @@ def test_flux2_width_height_patching_i2i():
     assert n66.get("inputs", {}).get("height") == 1920
     assert n62.get("inputs", {}).get("width")  == 1080
     assert n62.get("inputs", {}).get("height") == 1920
+
+
+def test_classify_strict_rejects_noise_workflows():
+    """v1.4.1+: 真实生产 bug —— 用户的 ComfyUI 目录里 27 个工作流全显示在下拉里，
+    因为 classify_workflow 默认返回 't2i'。新的严格分类应让所有无明显证据的
+    工作流返回 'unknown'，被支持过滤掉。"""
+    from services.workflow_meta import classify_workflow, is_supported_image_workflow
+    # 用户截图里的实际工作流名字（部分）
+    noise = [
+        "3d_hunyuan3d-v2.1",         # 3D 模型，不是图生
+        "Bernini_testing_video_edit_01",   # video_edit → 视频
+        "EasyFlow v1.5",             # 无任何关键词
+        "LTX-2.3首尾帧+语音数字人",  # 视频
+        "WanMove工作流",             # Wan 视频
+        "Z-Image-万能局部重绘",     # 不在白名单
+        "Z_Image 合集",              # 不在白名单
+        "_temp_relay",               # 私有临时文件
+        "canny_workflow",            # ControlNet 辅助
+        "depth_workflow",            # ControlNet 辅助
+        "fishaudio+ltx2.3",          # 视频（含 ltx）
+        "hed_workflow",              # ControlNet 辅助
+        "infinitetalk单人 I2V",      # 视频
+        "video_wan2_2_14B_i2v",      # 视频
+        "video_wan2_2_5B_ti2v",      # 视频
+        "utility_sdpose_ood_image_to_pose",   # pose 估计
+    ]
+    for name in noise:
+        kind = classify_workflow(name, workflow=None)
+        # 这些都不能进图片下拉
+        assert not is_supported_image_workflow(name, workflow=None), \
+            f"{name!r} → kind={kind!r}, leaked into image dropdown"
+
+
+def test_classify_strict_keeps_real_image_workflows():
+    """正面：bundled 里那 3 个图片工作流仍然识别。"""
+    import json
+    from pathlib import Path
+    from services.workflow_meta import classify_workflow, is_supported_image_workflow
+    REPO = Path(__file__).resolve().parents[2]
+    wd = REPO / "workflows"
+    for name in ("t2i-lumicreate", "image_flux2_text_to_image_9b",
+                 "image_flux2_klein_image_edit_9b_base"):
+        wf = json.loads((wd / f"{name}.json").read_text(encoding="utf-8-sig"))
+        assert is_supported_image_workflow(name, workflow=wf), \
+            f"{name} should still pass image classifier"

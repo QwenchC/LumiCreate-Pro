@@ -79,7 +79,7 @@ async def workflow_info(workflow_name: str):
     - 图片生成页是否显示"参考图选择器"
     - 显示几个参考图槽位
     """
-    from services.comfyui import get_workflow_json
+    from services.comfyui import get_workflow_json, bundled_workflow_dir
     from services.workflow_meta import classify_workflow, load_meta, get_ref_image_nodes
     from pathlib import Path
     cfg = load_settings().image_engine
@@ -87,8 +87,15 @@ async def workflow_info(workflow_name: str):
     if workflow is None:
         return {"kind": "unknown", "ref_count": 0, "ref_nodes": [], "found": False}
 
-    wf_dir = Path(cfg.workflow_dir or "")
-    wf_path = wf_dir / f"{workflow_name}.json" if wf_dir.exists() else None
+    # v1.4.1+: bundled 优先（与 list 端点一致）
+    bundled = bundled_workflow_dir()
+    wf_path = None
+    if bundled is not None and (bundled / f"{workflow_name}.json").exists():
+        wf_path = bundled / f"{workflow_name}.json"
+    else:
+        wf_dir = Path(cfg.workflow_dir or "")
+        if wf_dir.exists():
+            wf_path = wf_dir / f"{workflow_name}.json"
 
     kind = classify_workflow(workflow_name, workflow=workflow, workflow_path=str(wf_path) if wf_path else None)
     meta = load_meta(str(wf_path), type_="image") if wf_path else {}
@@ -193,6 +200,34 @@ async def test_connection():
 
 @router.get("/workflows", response_model=list[str])
 async def get_workflows():
+    """v1.4.1: 只返回当前后端能驱动的图片工作流（t2i / i2i_single / i2i_double）。
+    视频工作流虽然在同一目录，但不会出现在图片下拉里。"""
+    from services.workflow_meta import is_supported_image_workflow
+    from services.comfyui import get_workflow_json
+    from pathlib import Path as _P
+    cfg = load_settings().image_engine
+    try:
+        names = await list_workflows(cfg)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    out: list[str] = []
+    wf_dir = _P(cfg.workflow_dir or "")
+    for name in names:
+        try:
+            wf = await get_workflow_json(cfg, name)
+            wf_path = (wf_dir / f"{name}.json") if wf_dir.is_dir() else None
+            if is_supported_image_workflow(name, workflow=wf,
+                                            workflow_path=str(wf_path) if wf_path else None):
+                out.append(name)
+        except Exception:
+            pass
+    return out
+
+
+# v1.4.1: 旧端点：把所有 json 文件（包括视频工作流）作为下拉项时用
+@router.get("/workflows-all", response_model=list[str])
+async def get_workflows_all():
+    """不做过滤，返回工作流目录下的全部 *.json（调试 / 高级用户用）。"""
     cfg = load_settings().image_engine
     try:
         return await list_workflows(cfg)
