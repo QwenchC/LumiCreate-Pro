@@ -15,7 +15,7 @@
         </select>
         <div class="style-select-group">
           <label class="text-muted" style="font-size:12px;white-space:nowrap">画风</label>
-          <select class="input select-compact" v-model="stylePreset" :disabled="running" style="min-width:110px;max-width:160px">
+          <select class="input select-compact style-preset-select" v-model="stylePreset" :disabled="running">
             <option v-for="p in STYLE_PRESETS" :key="p.value" :value="p.value">{{ p.label }}</option>
           </select>
           <input v-if="stylePreset === '__custom__'" class="input style-custom-input"
@@ -1312,14 +1312,38 @@ async function addOneMore(scene, frameType) {
   gap: 12px;
   flex-wrap: wrap;
 }
-.toolbar-left  { display: flex; align-items: center; gap: 10px; }
-.toolbar-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.toolbar-title { font-weight: 700; font-size: 15px; margin: 0; }
-.select-compact { height: 32px; padding: 0 8px; min-width: 180px; max-width: 240px; font-size: 13px; }
-.gen-count-group { display: flex; align-items: center; gap: 6px; }
-.input-num { height: 32px; width: 56px; text-align: center; padding: 0 6px; font-size: 13px; }
-.style-select-group { display: flex; align-items: center; gap: 6px; }
-.style-custom-input { height: 32px; min-width: 160px; padding: 0 8px; font-size: 13px; }
+.toolbar-left  { display: flex; align-items: center; gap: 10px; min-width: 0; flex-shrink: 1; }
+.toolbar-left .scene-count { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* v1.4.5: 关闭 toolbar-right 的 wrap，让所有控件挤在一行。
+   选择类控件允许收缩、按钮永远不收缩；总宽度真撑爆时由 toolbar 外层 wrap 而非 right 内部 wrap。 */
+.toolbar-right { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; min-width: 0; }
+.toolbar-title { font-weight: 700; font-size: 15px; margin: 0; flex-shrink: 0; white-space: nowrap; }
+/* 工作流 / 模型下拉：收紧 min-width，允许进一步收缩 */
+.select-compact {
+  height: 32px; padding: 0 8px;
+  min-width: 120px; max-width: 220px;
+  font-size: 13px;
+  flex: 0 1 auto; min-width: 0;
+}
+/* 工作流第一个下拉占用最宽（让用户看清模型名）—— 用 nth-of-type 锁定 */
+.toolbar-right > .select-compact:first-child { flex: 1 1 180px; max-width: 240px; }
+.gen-count-group { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.input-num { height: 32px; width: 52px; text-align: center; padding: 0 6px; font-size: 13px; }
+/* 画风组：label + select 整体 flex-shrink 跟 select 一致；
+   group 不收缩到比 select 还窄，避免 select 溢出"叠"到下一个控件上 */
+.style-select-group {
+  display: flex; align-items: center; gap: 6px;
+  flex: 0 1 auto; flex-shrink: 1; min-width: 0;
+}
+.style-preset-select {
+  /* 用专属类避免被通用 .select-compact 的 min-width 覆盖 */
+  min-width: 92px !important;
+  max-width: 150px !important;
+  flex: 0 1 auto;
+}
+.style-custom-input { height: 32px; min-width: 120px; padding: 0 8px; font-size: 13px; flex-shrink: 1; }
+/* 操作按钮（▶ 全部生成 / ⏸ 暂停 / ✕ 取消 等）始终不收缩、不换行 */
+.toolbar-right .btn { flex-shrink: 0; white-space: nowrap; }
 .batch-progress-bar-wrap {
   padding: 8px 16px;
   background: var(--bg-panel);

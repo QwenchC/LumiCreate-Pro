@@ -101,24 +101,85 @@
 
       <!-- Image engine -->
       <section v-if="activeTab === 'image'" class="settings-section">
-        <h3 class="section-title">图片生成引擎（ComfyUI）</h3>
+        <h3 class="section-title">图片生成引擎</h3>
+
+        <!-- v1.4.5: 引擎切换 -->
         <div class="form-group">
-          <label>ComfyUI 地址</label>
-          <input v-model="settings.image_engine.comfyui_url" class="input" placeholder="http://localhost:8188" />
+          <label>引擎类型</label>
+          <div class="radio-group">
+            <label class="radio-item">
+              <input type="radio" value="comfyui" v-model="settings.image_engine.engine_type" />
+              ComfyUI（本地，工作流驱动）
+            </label>
+            <label class="radio-item">
+              <input type="radio" value="pollinations" v-model="settings.image_engine.engine_type" />
+              Pollinations（云端，按模型名直生 — 适合无 GPU / 想用 Flux/GPT-Image 等托管模型）
+            </label>
+          </div>
         </div>
-        <div class="form-group">
-          <label>工作流本地目录 <span class="form-hint-inline">（优先于API获取，推荐填写）</span></label>
-          <input
-            v-model="settings.image_engine.workflow_dir"
-            class="input"
-            placeholder="例：F:/ComfyUI-aki/ComfyUI/user/default/workflows"
-          />
-          <p class="form-hint">填写 ComfyUI 工作流文件夹的绝对路径，可直接读取本地 .json 工作流，无需依赖 ComfyUI API 版本</p>
-        </div>
-        <div class="form-group">
-          <label>默认工作流</label>
-          <input v-model="settings.image_engine.default_workflow" class="input" placeholder="工作流名称（不含 .json）" />
-        </div>
+
+        <!-- ComfyUI 配置 -->
+        <template v-if="settings.image_engine.engine_type === 'comfyui'">
+          <div class="form-group">
+            <label>ComfyUI 地址</label>
+            <input v-model="settings.image_engine.comfyui_url" class="input" placeholder="http://localhost:8188" />
+          </div>
+          <div class="form-group">
+            <label>工作流本地目录 <span class="form-hint-inline">（优先于API获取，推荐填写）</span></label>
+            <input
+              v-model="settings.image_engine.workflow_dir"
+              class="input"
+              placeholder="例：F:/ComfyUI-aki/ComfyUI/user/default/workflows"
+            />
+            <p class="form-hint">填写 ComfyUI 工作流文件夹的绝对路径，可直接读取本地 .json 工作流，无需依赖 ComfyUI API 版本</p>
+          </div>
+          <div class="form-group">
+            <label>默认工作流</label>
+            <input v-model="settings.image_engine.default_workflow" class="input" placeholder="工作流名称（不含 .json）" />
+          </div>
+        </template>
+
+        <!-- v1.4.5: Pollinations 配置 -->
+        <template v-else-if="settings.image_engine.engine_type === 'pollinations'">
+          <div class="form-group">
+            <label>Pollinations 基础地址</label>
+            <input v-model="settings.image_engine.pollinations_base_url" class="input"
+                   placeholder="https://gen.pollinations.ai" />
+          </div>
+          <div class="form-group">
+            <label>API Key
+              <a href="https://enter.pollinations.ai" target="_blank"
+                 style="font-weight:normal;font-size:12px;margin-left:8px">
+                在 enter.pollinations.ai 获取 ↗
+              </a>
+            </label>
+            <input v-model="settings.image_engine.pollinations_api_key" class="input"
+                   type="password" placeholder="sk_..." />
+            <p class="form-hint">
+              sk_ 是 secret key（服务端用，无 IP 限流），pk_ 是 publishable key（前端用，每 IP 每小时 1 次）。
+              本应用用 secret key（sk_）即可。
+            </p>
+          </div>
+          <div class="form-group">
+            <label>默认模型</label>
+            <select v-model="settings.image_engine.pollinations_model" class="input"
+                    style="max-width:300px">
+              <option v-for="m in pollinationsModels" :key="m" :value="m">{{ m }}</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" style="margin-left:8px"
+                    :disabled="pollLoading" @click="refreshPollinationsModels">
+              {{ pollLoading ? '⏳' : '↻' }} 刷新
+            </button>
+            <button class="btn btn-secondary btn-sm" style="margin-left:8px"
+                    :disabled="pollTesting" @click="testPollinations">
+              {{ pollTesting ? '⏳' : '🔌' }} 测试连接
+            </button>
+            <p v-if="pollTestMsg" :class="pollTestOk ? 'form-hint' : 'form-warn'">
+              {{ pollTestOk ? '✓' : '⚠' }} {{ pollTestMsg }}
+            </p>
+          </div>
+        </template>
+
         <div class="form-group">
           <label>默认生成次数</label>
           <input type="number" v-model.number="settings.image_engine.default_gen_count" class="input" min="1" max="10" style="width:80px" />
@@ -393,6 +454,41 @@ const testResult = ref(null)
 const modelList = ref([])
 const testStatus = ref({ text: '', image: '', audio: '', video: '' })
 
+// v1.4.5: Pollinations
+const pollinationsModels = ref([
+  'flux', 'gptimage', 'nanobanana', 'kontext', 'seedream', 'zimage', 'qwen-image',
+])
+const pollLoading  = ref(false)
+const pollTesting  = ref(false)
+const pollTestMsg  = ref('')
+const pollTestOk   = ref(true)
+
+async function refreshPollinationsModels() {
+  pollLoading.value = true
+  try {
+    const r = await api.get('/image-engine/pollinations/models')
+    if (r.data?.models?.length) pollinationsModels.value = r.data.models
+  } catch (e) {
+    console.warn('refresh pollinations models failed', e)
+  } finally {
+    pollLoading.value = false
+  }
+}
+async function testPollinations() {
+  pollTesting.value = true
+  pollTestMsg.value = ''
+  try {
+    const r = await api.get('/image-engine/pollinations/test')
+    pollTestOk.value  = !!r.data?.success
+    pollTestMsg.value = r.data?.message || (r.data?.success ? '连接成功' : '连接失败')
+  } catch (e) {
+    pollTestOk.value  = false
+    pollTestMsg.value = e?.response?.data?.message || e.message || String(e)
+  } finally {
+    pollTesting.value = false
+  }
+}
+
 // ── MS Edge 试听 ──────────────────────────────────────────────────────────────
 import { MSEDGE_VOICES, filterVoices, groupByGender } from '../data/msedgeVoices'
 import { availableLocales, setLocale, i18n } from '../i18n'
@@ -642,6 +738,7 @@ async function chooseDir() {
 .input-with-btn { display: flex; gap: 8px; }
 .hint { font-size: 11px; color: var(--color-text-muted); margin-top: 5px; }
 .form-hint { font-size: 11px; color: var(--color-text-muted); margin-top: 5px; }
+.form-warn { font-size: 11px; color: var(--danger, #fc8181); margin-top: 5px; }
 .ms-test-row {
   display:flex; align-items:center; gap:6px;
   padding:4px 8px; border-radius:4px; font-size:12px;

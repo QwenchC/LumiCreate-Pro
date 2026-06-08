@@ -80,6 +80,29 @@ class SingleGenerateRequest(BaseModel):
     sd_params: Optional[SdParams] = None   # v1.4.4: SD 工作流高级参数
 
 
+# v1.4.5: Pollinations 模型列表
+@router.get("/pollinations/models")
+async def pollinations_models():
+    """从 Pollinations 拉活的图片模型列表（失败时回退内置兜底列表）。"""
+    from services.pollinations_image import fetch_pollinations_image_models
+    cfg = load_settings().image_engine
+    base_url = getattr(cfg, "pollinations_base_url", "") or "https://gen.pollinations.ai"
+    return {"models": await fetch_pollinations_image_models(base_url)}
+
+
+@router.get("/pollinations/test", response_model=ConnectionTestResult)
+async def pollinations_test():
+    """连通性 + API key 校验。"""
+    from services.pollinations_image import test_pollinations_connection
+    cfg = load_settings().image_engine
+    result = await test_pollinations_connection(
+        getattr(cfg, "pollinations_base_url", "") or "https://gen.pollinations.ai",
+        getattr(cfg, "pollinations_api_key", "") or "",
+    )
+    return ConnectionTestResult(success=bool(result.get("success")),
+                                 message=str(result.get("message") or ""))
+
+
 # v1.4.4: 给 SD 工作流面板提供可选模型列表
 @router.get("/model-info")
 async def get_model_info():
@@ -114,9 +137,19 @@ async def workflow_info(workflow_name: str):
     )
     from pathlib import Path
     cfg = load_settings().image_engine
+
+    # v1.4.5: Pollinations 模式没有工作流概念，直接返回 t2i shape
+    if getattr(cfg, "engine_type", "comfyui") == "pollinations":
+        return {
+            "kind": "t2i", "ref_count": 0, "ref_nodes": [],
+            "actual_loadimage_count": 0, "found": True,
+            "engine_type": "pollinations",
+        }
+
     workflow = await get_workflow_json(cfg, workflow_name)
     if workflow is None:
-        return {"kind": "unknown", "ref_count": 0, "ref_nodes": [], "found": False}
+        return {"kind": "unknown", "ref_count": 0, "ref_nodes": [], "found": False,
+                "engine_type": "comfyui"}
 
     # v1.4.1+: bundled 优先（与 list 端点一致）
     bundled = bundled_workflow_dir()
@@ -152,6 +185,7 @@ async def workflow_info(workflow_name: str):
         "ref_nodes": ref_nodes[:ref_count] if ref_count else [],
         "actual_loadimage_count": actual,
         "found": True,
+        "engine_type": "comfyui",
     }
 
 
@@ -245,11 +279,20 @@ async def test_connection():
 @router.get("/workflows", response_model=list[str])
 async def get_workflows():
     """v1.4.1: 只返回当前后端能驱动的图片工作流（t2i / i2i_single / i2i_double）。
-    视频工作流虽然在同一目录，但不会出现在图片下拉里。"""
+    视频工作流虽然在同一目录，但不会出现在图片下拉里。
+    v1.4.5: engine_type='pollinations' 时返回 Pollinations 模型名列表（下拉用同一字段）。"""
     from services.workflow_meta import is_supported_image_workflow
     from services.comfyui import get_workflow_json
     from pathlib import Path as _P
     cfg = load_settings().image_engine
+
+    # v1.4.5: Pollinations 模式直接返回模型列表
+    if getattr(cfg, "engine_type", "comfyui") == "pollinations":
+        from services.pollinations_image import fetch_pollinations_image_models
+        return await fetch_pollinations_image_models(
+            getattr(cfg, "pollinations_base_url", "") or "https://gen.pollinations.ai"
+        )
+
     try:
         names = await list_workflows(cfg)
     except Exception as e:
@@ -334,10 +377,34 @@ async def put_workflow_meta(workflow_name: str, payload: WorkflowMetaPayload):
 @router.post("/generate-stream")
 async def generate_single_stream(req: SingleGenerateRequest):
     cfg = load_settings().image_engine
-    workflow = await _load_workflow(cfg, req.workflow_name)
     meta = {"scene_id": req.scene_id, "frame_type": req.frame_type, "slot_index": req.slot_index}
     w = req.width  or cfg.image_width
     h = req.height or cfg.image_height
+
+    # v1.4.5: Pollinations 路径 —— 不走 ComfyUI 工作流
+    if getattr(cfg, "engine_type", "comfyui") == "pollinations":
+        from services.pollinations_image import generate_image_pollinations
+        # workflow_name 在 Pollinations 模式下当作模型名（保持前端字段语义一致）
+        model = req.workflow_name or cfg.pollinations_model or "flux"
+
+        async def stream_pollinations():
+            async for event in generate_image_pollinations(
+                base_url = cfg.pollinations_base_url,
+                api_key  = cfg.pollinations_api_key,
+                model    = model,
+                prompt   = req.positive_prompt,
+                width    = w, height = h,
+                seed     = req.seed,
+            ):
+                yield _sse({**event, **meta})
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(stream_pollinations(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
+
+    # ComfyUI 路径（默认）
+    workflow = await _load_workflow(cfg, req.workflow_name)
 
     # v1.4.4: SD 工作流先打补丁（其它工作流跳过）
     if req.sd_params and req.workflow_name == "sd_default_workflow":
@@ -380,10 +447,15 @@ async def generate_batch_stream(req: BatchGenerateRequest):
     completed carries: images = [{filename, data(base64), type}]
     """
     cfg = load_settings().image_engine
-    workflow = await _load_workflow(cfg, req.workflow_name)
 
-    # v1.4.4: SD 工作流先打补丁（一次，整批共用）
-    if req.sd_params and req.workflow_name == "sd_default_workflow":
+    # v1.4.5: Pollinations 路径 —— 跳过 ComfyUI 工作流加载，按 prompt 直跑
+    is_pollinations = getattr(cfg, "engine_type", "comfyui") == "pollinations"
+    workflow = None
+    if not is_pollinations:
+        workflow = await _load_workflow(cfg, req.workflow_name)
+
+    # v1.4.4: SD 工作流先打补丁（一次，整批共用；Pollinations 模式跳过）
+    if not is_pollinations and req.sd_params and req.workflow_name == "sd_default_workflow":
         from services.sd_workflow import patch_sd_workflow
         workflow = patch_sd_workflow(
             workflow,
@@ -407,9 +479,62 @@ async def generate_batch_stream(req: BatchGenerateRequest):
     # A1: 收集失败镜次的最后错误，批量结束时持久化
     scene_errors: dict[str, str] = {}
 
+    # v1.4.5: Pollinations 模式按模型名选择（workflow_name 字段当模型名用）
+    poll_model = req.workflow_name or getattr(cfg, "pollinations_model", "flux") or "flux"
+
     async def run_one(frame: dict, slot: int):
         nonlocal done_count
         meta = {"scene_id": frame["scene_id"], "frame_type": frame["frame_type"], "slot_index": slot}
+
+        # Pollinations 路径：无参考图、无工作流，直接调 prompt
+        if is_pollinations:
+            from services.pollinations_image import generate_image_pollinations
+            gen = generate_image_pollinations(
+                base_url = cfg.pollinations_base_url,
+                api_key  = cfg.pollinations_api_key,
+                model    = poll_model,
+                prompt   = frame.get("prompt", ""),
+                width    = w, height = h,
+                seed     = None,    # 每张都新随机
+            )
+            async for event in gen:
+                ev_out = {**event, **meta}
+                if event.get("event") == "completed" and req.project_id:
+                    imgs = event.get("images") or []
+                    if imgs and (imgs[0] or {}).get("data"):
+                        try:
+                            import base64 as _b64
+                            from pathlib import Path as _P
+                            from config import load_settings as _ls
+                            pid = req.project_id
+                            sid = frame["scene_id"]; ft = frame["frame_type"]
+                            img_dir = _P(_ls().projects_dir) / pid / "images"
+                            img_dir.mkdir(parents=True, exist_ok=True)
+                            filename = f"{sid}_{ft}_{slot}.png"
+                            (img_dir / filename).write_bytes(_b64.b64decode(imgs[0]["data"]))
+                            rel = f"images/{filename}"
+                            ev_out["file_path"] = rel
+                            ev_out["url"] = f"/api/projects/{pid}/assets/file/{sid}/" \
+                                            f"{'image_start' if ft == 'start' else 'image_end'}/{slot}"
+                            from services.project_repo import record_asset
+                            record_asset(
+                                pid, sid,
+                                "image_start" if ft == "start" else "image_end",
+                                slot_index=slot, file_path=rel, format="png",
+                                is_selected=(slot == 0),
+                            )
+                        except Exception as e:
+                            print(f"[image-batch-poll] auto-persist failed: {e}", flush=True)
+                await queue.put(ev_out)
+                if event.get("event") == "error":
+                    scene_errors[f"{frame['scene_id']}:{frame['frame_type']}"] = \
+                        str(event.get("message", "unknown error"))[:500]
+            done_count += 1
+            if done_count >= total_tasks:
+                finished.set()
+            return
+
+        # ComfyUI 路径（默认）
         # 轮 5: 每个 frame 自带 refs
         try:
             frame_ref_paths = _resolve_ref_paths(frame.get("refs") or [])

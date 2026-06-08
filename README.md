@@ -176,6 +176,21 @@ SKILL/
 
 ## 更新日志
 
+### v1.4.5
+本版本以 **Pollinations 云端图片生成引擎** 为主线，让无 GPU 用户也能跑漫剧出图。同时收紧布局/参数防御。
+
+- ✅ **Pollinations 引擎**：`settings.image_engine.engine_type` 一字段切 ComfyUI ↔ Pollinations，配合 `pollinations_base_url / pollinations_api_key / pollinations_model` 三个字段；上层端点 (`/workflows`, `/workflow-info`, `/generate-stream`, `/generate-batch-stream`) 内部 dispatch，前端 UI 行为不变（仍是"选模型 → 输入 prompt → 生成"）
+- ✅ **后端 `services/pollinations_image.py`**：
+  - `generate_image_pollinations()` —— 单图 GET 模拟成 ComfyUI 风格 SSE 事件流（queued → progress 伪进度 → completed / error）；`seed=None` 强制随机注入；`?key=` 走 query 防 CDN 代理掉 header
+  - `fetch_pollinations_image_models()` —— 拉 `/image/models` 活的模型列表，失败回退 `DEFAULT_POLLINATIONS_IMAGE_MODELS` 兜底
+  - `test_pollinations_connection()` —— 连通性 + API key 校验（调 `/account/key` 返 key 类型）
+- ✅ **路由分派**：`/workflows` 在 Pollinations 模式直接返模型列表；`/workflow-info` 返回 `{kind:"t2i", engine_type:"pollinations", ref_count:0}` —— 自动隐藏参考图槽、SD 高级面板
+- ✅ **URL 参数收紧**：严格按 `gen.pollinations.ai` 白名单 `model / width / height / seed / key`，不传旧版的 `nologo / private`（这两个会触发 `400 Query parameter validation failed`）
+- ✅ **错误诊断增强**：4xx JSON 错误解析 `error.details / issues / errors` 字段并拼到消息里，能立即定位是哪个 query 参数被拒绝
+- ✅ **设置页**：图片引擎 tab 上方加 ComfyUI / Pollinations radio；Pollinations 模式下显示 base URL / API key (password 输入) / 默认模型下拉 / 「↻ 刷新模型列表」/「🔌 测试连接」按钮
+- ✅ **图片生成页 toolbar 布局修复**：68 个 Pollinations 模型让工作流下拉变宽，「全部生成」按钮被挤换行 + 画风下拉与「每帧张数」label 重叠 —— 改 `flex-wrap: nowrap` + 按钮 `flex-shrink: 0` 锁住 + 画风选择器用专属类 `style-preset-select` 替换 inline 样式，91-150px 自适应
+- ✅ **测试 + 集成**：后端 **236 / 236 pytest 通过**（v1.4.4 时 225 个），新增 11 个回归测覆盖 URL 构造白名单 / 完整流程 base64 一致性 / 401 解析 / 200 非图片诚实拒绝 / 模型列表解析 + 离线兜底 / engine_type 路由分派 / 400 details 透出（钉死本轮"validation failed"诊断改进）
+
 ### v1.4.4
 本版本以 **通用 Stable Diffusion 工作流支持** 为主线，把 SD 的完整调参面板（Checkpoint / LoRA 链 / 采样器 / 调度器）暴露到图片生成页。
 

@@ -22,6 +22,8 @@ class TextEngineConfig(BaseModel):
 
 
 class ImageEngineConfig(BaseModel):
+    # v1.4.5: 多引擎切换 — 默认走本地 ComfyUI，可切到云端 Pollinations
+    engine_type: Literal["comfyui", "pollinations"] = "comfyui"
     comfyui_url: str = "http://localhost:8188"
     workflow_dir: str = ""          # local path to ComfyUI workflows folder (e.g. F:/ComfyUI/user/default/workflows)
     default_workflow: str = ""
@@ -30,6 +32,10 @@ class ImageEngineConfig(BaseModel):
     image_height: int = Field(default=1080, ge=64, le=8192)
     style_preset: str = ""           # selected style preset value
     custom_style_text: str = ""      # text when style_preset == '__custom__'
+    # v1.4.5: Pollinations 字段（仅 engine_type='pollinations' 时使用）
+    pollinations_base_url: str = "https://gen.pollinations.ai"
+    pollinations_api_key:  str = ""               # sk_... 或 pk_...
+    pollinations_model:    str = "flux"           # 默认模型；可被 default_workflow 覆盖
 
 
 class AudioEngineConfig(BaseModel):

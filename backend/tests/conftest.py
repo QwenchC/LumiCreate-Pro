@@ -33,12 +33,17 @@ def isolated_app(tmp_path, monkeypatch):
         # 给路由层零依赖即可启动的最小 stubs
         text_engine  = type("T", (), {"engine_type": "ollama", "concurrency": 4})()
         image_engine = type("I", (), {
+            "engine_type":    "comfyui",
             "comfyui_url":    "http://localhost:18888",
             "workflow_dir":   str(tmp_path / "workflows"),
             "default_workflow": "",
             "image_width": 1024, "image_height": 1024,
             "default_gen_count": 1,
             "style_preset": "", "custom_style_text": "",
+            # v1.4.5: Pollinations
+            "pollinations_base_url": "https://gen.pollinations.ai",
+            "pollinations_api_key":  "",
+            "pollinations_model":    "flux",
         })()
         audio_engine = type("A", (), {
             "engine_type": "msedge",

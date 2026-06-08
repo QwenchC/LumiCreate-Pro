@@ -9,6 +9,8 @@
 | GET  | `/api/image-engine/test`                      | ✗    | 探活 ComfyUI                                    |
 | GET  | `/api/image-engine/workflows`                 | ✗    | **v1.4.4** bundled + 硬白名单（4 个：`t2i-lumicreate / image_flux2_text_to_image_9b / image_flux2_klein_image_edit_9b_base / sd_default_workflow`） |
 | GET  | `/api/image-engine/model-info`                | ✗    | **v1.4.4** SD 面板用：从 ComfyUI `/object_info` 抽 `{checkpoints, loras, samplers, schedulers}` 枚举 |
+| GET  | `/api/image-engine/pollinations/models`       | ✗    | **v1.4.5** 从 `gen.pollinations.ai/image/models` 拉活的模型列表（失败回退内置兜底） |
+| GET  | `/api/image-engine/pollinations/test`         | ✗    | **v1.4.5** Pollinations 连通性 + API key 校验 |
 | GET  | `/api/image-engine/workflows-all`             | ✗    | 不过滤全量（调试用）                            |
 | GET  | `/api/image-engine/workflow-info?workflow_name=X` | ✗ | **v1.4.3** `{kind, ref_count, ref_nodes}`；kind ∈ `t2i / i2i_single / i2i_double / i2i_multi / unknown` |
 | GET  | `/api/image-engine/workflow/{name}`           | ✗    | 取单个工作流 JSON                               |
@@ -248,6 +250,74 @@ POST /api/image-engine/generate-batch-stream
   "lora_chain": [10, 11, 13, 12, 14, 15, 16],  # 链头到链尾
 }
 ```
+
+## Pollinations 引擎（v1.4.5）
+
+LumiCreate 现支持两种图片生成引擎，通过 `settings.image_engine.engine_type` 字段切换：
+
+| engine_type   | 说明                                                              |
+|---------------|-------------------------------------------------------------------|
+| `comfyui`     | 默认。本地 ComfyUI，按工作流文件驱动；上文一切机制（i2i / refs / SD 面板）都属于此模式 |
+| `pollinations`| **v1.4.5** 云端 `gen.pollinations.ai`，按模型名直生；适合无 GPU / 想用 Flux/GPT-Image 等托管模型 |
+
+### Pollinations 配置（settings.image_engine 字段）
+
+```jsonc
+{
+  "engine_type": "pollinations",
+  "pollinations_base_url": "https://gen.pollinations.ai",   // 默认即可
+  "pollinations_api_key":  "sk_xxxxx",                       // 必填 (用户在 enter.pollinations.ai 获取)
+  "pollinations_model":    "flux"                            // 默认模型；可被请求里的 workflow_name 覆盖
+}
+```
+
+key 类型：
+- `sk_` (secret) — **服务端用**，无 IP 限流；本应用应当用这种
+- `pk_` (publishable) — 客户端用，每 IP 每小时 1 次
+
+### 上层端点在 Pollinations 模式下的行为
+
+| 端点 | 行为 |
+|---|---|
+| `GET /workflows` | 返回 Pollinations 模型名列表（替代 ComfyUI 工作流名）—— 前端下拉同字段 |
+| `GET /workflow-info?workflow_name=X` | 返回 `{kind: "t2i", ref_count: 0, engine_type: "pollinations"}` —— 自动隐藏参考图槽、SD 高级面板 |
+| `POST /generate-stream` | 跳过工作流加载，按 `workflow_name`（当作模型名）+ `positive_prompt` 直跑；refs / sd_params 都被忽略 |
+| `POST /generate-batch-stream` | 同上；项目内自动 record_asset + 落盘到 `<project>/images/` |
+
+### 生成请求示例（Pollinations 模式）
+
+```http
+POST /api/image-engine/generate-stream
+{
+  "workflow_name":   "flux",                    // 模型名（不再是工作流文件名）
+  "positive_prompt": "a cyberpunk city at night",
+  "negative_prompt": "",                          // Pollinations 不支持，忽略
+  "width":           1024, "height": 1024,
+  "scene_id": "scene_001", "frame_type": "start", "slot_index": 0,
+  "seed": null                                    // 后端会强制随机
+}
+```
+
+SSE 事件保持与 ComfyUI 引擎完全一致（`queued / progress / completed / error`），前端无感知。
+
+### URL 构造规则
+
+`gen.pollinations.ai` 校验严格，仅接受这 5 个 query 参（多传一个就会 `400 Query parameter validation failed`）：
+
+```
+GET https://gen.pollinations.ai/image/{url-encoded-prompt}?model={m}&width={w}&height={h}&seed={s}&key={sk_xxx}
+```
+
+后端 `_build_url` **严格按白名单**生成，**不会**传 `nologo / private / enhance` 等旧字段。
+
+### 关键失败处理
+
+| 状态 | 含义 | 智能体处理 |
+|------|------|----------|
+| `400 Query parameter validation failed` | 参数白名单外 | 后端只传 5 个白名单参，已避免；如再现，检查 `_build_url` |
+| `401 Invalid API key` | key 无效或过期 | 引导用户去 `enter.pollinations.ai` 刷新 |
+| `402 Insufficient pollen balance` | 余额不足 | 引导用户充值或换 publishable key |
+| 200 但 `content-type: text/html` | CDN 维护页 / 模型停服 | 后端识别为 error（不假装成功）；重试或换模型 |
 
 ## 失败处理
 
