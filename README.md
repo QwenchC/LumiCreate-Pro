@@ -176,6 +176,20 @@ SKILL/
 
 ## 更新日志
 
+### v1.4.4
+本版本以 **通用 Stable Diffusion 工作流支持** 为主线，把 SD 的完整调参面板（Checkpoint / LoRA 链 / 采样器 / 调度器）暴露到图片生成页。
+
+- ✅ **新增 sd_default_workflow 工作流**：通用 SD t2i + 7 槽 LoRA 链，加入 `SUPPORTED_IMAGE_WORKFLOWS` 硬白名单；分类器返 `t2i`
+- ✅ **后端 `services/sd_workflow.py`**：
+  - `patch_sd_workflow()` deep-copy 原工作流后写 widgets；用户传 N 个 LoRA → 链头 N 个槽位 enabled、剩余 `7-N` 个 `mode=4` bypass；name 为 `"None"/"none"` 或 strength=0 视为禁用 + bypass
+  - 借用 `_litegraph_to_api` 已有的链路穿透机制，让 KSampler.model 引用正确绕过 bypassed LoRA 节点
+  - `fetch_sd_model_info()` 从 ComfyUI `/object_info` 抽 4 个枚举（checkpoints / loras / samplers / schedulers）；ComfyUI 离线时返空列表 + error，不抛 500
+- ✅ **新增 `GET /api/image-engine/model-info`**：给前端下拉填可选模型
+- ✅ **请求 schema 扩展**：`SingleGenerateRequest` 和 `BatchGenerateRequest` 新增 `sd_params: SdParams | None`（含 `checkpoint / loras: [{name, strength}] / steps / cfg / sampler_name / scheduler`）；仅当 `workflow_name == "sd_default_workflow"` 时生效
+- ✅ **前端 `SdParamsPanel.vue`**：可折叠面板，含 Checkpoint 下拉 + 动态增删 LoRA 链（0–7 行）+ 负面提示词 textarea + 4 项 KSampler 控件；自动从 `/model-info` 拉枚举；ImagesTab 检测到 `sd_default_workflow` 选中时挂载
+- ✅ **SKILL 同步**：`modules/image.md` 新增"SD 工作流参数化（v1.4.4）"章节，含 `model-info` schema、`sd_params` 请求示例、LoRA bypass 机制、节点 ID 映射
+- ✅ **测试 + 集成**：后端 **225 / 225 pytest 通过**（v1.4.3 时 215 个），新增 10 个回归测覆盖 SD 分类 / 硬名单 / Checkpoint + KSampler 补丁 / 7 槽 LoRA 链补丁 / 0–N 个 LoRA / `name='none'` 或 `strength=0` 禁用 / 不污染原工作流 / KSampler.model 正确穿透 bypassed LoRA / `/model-info` 离线兜底 / `/object_info` 正常解析
+
 ### v1.4.3
 本版本聚焦 **i2i 工作流的灵活参考图支持** + **UI 槽位清理**。
 

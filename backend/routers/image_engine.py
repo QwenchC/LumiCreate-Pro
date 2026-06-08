@@ -48,6 +48,24 @@ class RefImageSpec(BaseModel):
     path: Optional[str] = None
 
 
+class LoraSpec(BaseModel):
+    name:     str = ""
+    strength: float = 1.0
+
+
+class SdParams(BaseModel):
+    """v1.4.4: sd_default_workflow 暴露的全套可调参数。
+    前端检测到 sd_default_workflow 时显示对应面板，把这些参数发过来。
+    其它 t2i / i2i 工作流不发该字段。
+    """
+    checkpoint:   str = ""
+    loras:        list[LoraSpec] = []
+    steps:        int   = 0   # 0 = 用工作流默认
+    cfg:          float = 0.0
+    sampler_name: str = ""
+    scheduler:    str = ""
+
+
 class SingleGenerateRequest(BaseModel):
     workflow_name: str
     positive_prompt: str
@@ -59,6 +77,16 @@ class SingleGenerateRequest(BaseModel):
     frame_type: str = ""
     slot_index: int = 0
     refs: list[RefImageSpec] = []   # 轮 5: i2i 参考图（可为空 = t2i）
+    sd_params: Optional[SdParams] = None   # v1.4.4: SD 工作流高级参数
+
+
+# v1.4.4: 给 SD 工作流面板提供可选模型列表
+@router.get("/model-info")
+async def get_model_info():
+    """从 ComfyUI /object_info 拉 checkpoints / loras / samplers / schedulers 枚举。"""
+    from services.sd_workflow import fetch_sd_model_info
+    cfg = load_settings().image_engine
+    return await fetch_sd_model_info(cfg.comfyui_url)
 
 
 # D2: 工作流前置检查
@@ -137,6 +165,8 @@ class BatchGenerateRequest(BaseModel):
     frames: list[dict]   # [{scene_id, frame_type, prompt, refs?: [RefImageSpec]}]
     # A1: 让后端在批量结束时把失败镜次写入 last_run_errors.json，前端可一键重试
     project_id: str = ""
+    # v1.4.4: SD 工作流的高级参数（所有 frame 共用，因为 ckpt / LoRA / sampler 是整批一致的）
+    sd_params: Optional[SdParams] = None
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -309,6 +339,19 @@ async def generate_single_stream(req: SingleGenerateRequest):
     w = req.width  or cfg.image_width
     h = req.height or cfg.image_height
 
+    # v1.4.4: SD 工作流先打补丁（其它工作流跳过）
+    if req.sd_params and req.workflow_name == "sd_default_workflow":
+        from services.sd_workflow import patch_sd_workflow
+        workflow = patch_sd_workflow(
+            workflow,
+            checkpoint=req.sd_params.checkpoint,
+            loras=[l.model_dump() for l in req.sd_params.loras],
+            steps=req.sd_params.steps,
+            cfg=req.sd_params.cfg,
+            sampler_name=req.sd_params.sampler_name,
+            scheduler=req.sd_params.scheduler,
+        )
+
     ref_paths = _resolve_ref_paths(req.refs) if req.refs else []
 
     async def stream():
@@ -338,6 +381,20 @@ async def generate_batch_stream(req: BatchGenerateRequest):
     """
     cfg = load_settings().image_engine
     workflow = await _load_workflow(cfg, req.workflow_name)
+
+    # v1.4.4: SD 工作流先打补丁（一次，整批共用）
+    if req.sd_params and req.workflow_name == "sd_default_workflow":
+        from services.sd_workflow import patch_sd_workflow
+        workflow = patch_sd_workflow(
+            workflow,
+            checkpoint=req.sd_params.checkpoint,
+            loras=[l.model_dump() for l in req.sd_params.loras],
+            steps=req.sd_params.steps,
+            cfg=req.sd_params.cfg,
+            sampler_name=req.sd_params.sampler_name,
+            scheduler=req.sd_params.scheduler,
+        )
+
     gen_count = max(1, min(req.gen_count, 10))
     total_tasks = len(req.frames) * gen_count
     w = req.width  or cfg.image_width

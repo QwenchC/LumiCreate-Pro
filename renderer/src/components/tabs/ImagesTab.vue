@@ -55,6 +55,11 @@
       </details>
     </div>
 
+    <!-- v1.4.4: SD 工作流高级参数面板（仅在 sd_default_workflow 选中时） -->
+    <SdParamsPanel v-if="isSdWorkflow"
+                   v-model="sdParams"
+                   v-model:negativePrompt="sdNegativePrompt" />
+
     <!-- == Progress bar == -->
     <div v-if="running || paused || batchDone" class="batch-progress-bar-wrap">
       <div class="batch-progress-label">
@@ -355,6 +360,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, onActivated } from 'vue'
 import axios from 'axios'
 import ReferencePicker from '../ReferencePicker.vue'
+import SdParamsPanel from '../SdParamsPanel.vue'
 
 const props = defineProps({ projectId: String })
 const emit = defineEmits(['dirty', 'saved'])
@@ -441,6 +447,18 @@ const workflowKind = ref('t2i')      // 't2i' | 'i2i_single' | 'i2i_double' | 'v
 const workflowRefCount = ref(0)
 // v1.4.3: i2i_multi 支持任意张参考图（>=3）
 const isI2I = computed(() => /^i2i_(single|double|multi)$/.test(workflowKind.value))
+
+// v1.4.4: SD 工作流（sd_default_workflow）专用高级参数
+const isSdWorkflow = computed(() => selectedWorkflow.value === 'sd_default_workflow')
+const sdParams = ref({
+  checkpoint:   '',
+  loras:        [],          // [{name, strength}]
+  steps:        0,
+  cfg:          0,
+  sampler_name: '',
+  scheduler:    '',
+})
+const sdNegativePrompt = ref('')   // SD 工作流的负面提示词（所有镜次共用）
 
 async function loadWorkflowInfo() {
   workflowKind.value = 't2i'; workflowRefCount.value = 0
@@ -944,11 +962,12 @@ async function generateSceneSlots(scene, { skipExisting = false } = {}) {
       body: JSON.stringify({
         workflow_name:   selectedWorkflow.value,
         gen_count:       genCount.value,
-        negative_prompt: '',
+        negative_prompt: isSdWorkflow.value ? sdNegativePrompt.value : '',
         width:           imgWidth.value,
         height:          imgHeight.value,
         frames,
         project_id:      props.projectId,   // A1: 让后端持久化失败镜次
+        ...(isSdWorkflow.value ? { sd_params: sdParams.value } : {}),
       })
     })
   } catch (e) {
@@ -1176,9 +1195,11 @@ async function runSingleSlot(sceneId, frameType, slotIndex, prompt) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         workflow_name: selectedWorkflow.value, positive_prompt: prompt,
-        negative_prompt: '', width: imgWidth.value, height: imgHeight.value,
+        negative_prompt: isSdWorkflow.value ? sdNegativePrompt.value : '',
+        width: imgWidth.value, height: imgHeight.value,
         scene_id: sceneId, frame_type: frameType, slot_index: slotIndex,
         refs,
+        ...(isSdWorkflow.value ? { sd_params: sdParams.value } : {}),
       })
     })
     const reader = response.body.getReader()

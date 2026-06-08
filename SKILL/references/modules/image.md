@@ -7,7 +7,8 @@
 | 方法 | 路径                                          | 流式 | 用途                                            |
 |------|-----------------------------------------------|------|-------------------------------------------------|
 | GET  | `/api/image-engine/test`                      | ✗    | 探活 ComfyUI                                    |
-| GET  | `/api/image-engine/workflows`                 | ✗    | **v1.4.2** bundled + 硬白名单（仅 3 个：`t2i-lumicreate / image_flux2_text_to_image_9b / image_flux2_klein_image_edit_9b_base`） |
+| GET  | `/api/image-engine/workflows`                 | ✗    | **v1.4.4** bundled + 硬白名单（4 个：`t2i-lumicreate / image_flux2_text_to_image_9b / image_flux2_klein_image_edit_9b_base / sd_default_workflow`） |
+| GET  | `/api/image-engine/model-info`                | ✗    | **v1.4.4** SD 面板用：从 ComfyUI `/object_info` 抽 `{checkpoints, loras, samplers, schedulers}` 枚举 |
 | GET  | `/api/image-engine/workflows-all`             | ✗    | 不过滤全量（调试用）                            |
 | GET  | `/api/image-engine/workflow-info?workflow_name=X` | ✗ | **v1.4.3** `{kind, ref_count, ref_nodes}`；kind ∈ `t2i / i2i_single / i2i_double / i2i_multi / unknown` |
 | GET  | `/api/image-engine/workflow/{name}`           | ✗    | 取单个工作流 JSON                               |
@@ -162,6 +163,91 @@ UI 只显示 1 个参考图槽位，丢了第二张。
 ```
 
 `generate-batch-stream` 在每个 `frames[i]` 里也接受 `refs`。
+
+## SD 工作流参数化（v1.4.4）
+
+`sd_default_workflow` 是通用 Stable Diffusion t2i 工作流，含 **Checkpoint + 7 槽 LoRA 链 + 正/负提示词 + 尺寸 + KSampler**，**所有参数都通过 `sd_params` 字段在生成请求里动态打补丁**，无需改工作流文件。
+
+### 1) 查可选模型
+
+```http
+GET /api/image-engine/model-info
+→ {
+  "checkpoints": ["modelA.safetensors", "modelB.safetensors", ...],
+  "loras":       ["lora1.safetensors", ...],
+  "samplers":    ["euler", "euler_ancestral", "dpmpp_2m", "ddim", ...],
+  "schedulers":  ["normal", "karras", "simple", "exponential", ...]
+}
+```
+
+ComfyUI 离线时返回空列表 + `error` 字段，不抛 500。
+
+### 2) 生成请求里加 `sd_params`
+
+仅在 `workflow_name == "sd_default_workflow"` 时有效：
+
+```http
+POST /api/image-engine/generate-stream
+{
+  "workflow_name":   "sd_default_workflow",
+  "positive_prompt": "<英文 prompt>",
+  "negative_prompt": "worst quality, low quality, ...",  // 共享给整批
+  "width":           904, "height": 1600,
+  "scene_id": "...", "frame_type": "start", "slot_index": 0,
+  "sd_params": {
+    "checkpoint":   "modelA.safetensors",
+    "loras": [
+      {"name": "lora_a.safetensors", "strength": 0.8},
+      {"name": "lora_b.safetensors", "strength": 0.5}
+      // 0..7 个；可空数组（不用 LoRA），可少于 7 个（剩余槽位后端 mode=4 bypass）
+    ],
+    "steps":        25,
+    "cfg":          4.5,
+    "sampler_name": "dpmpp_2m",
+    "scheduler":    "karras"
+  }
+}
+```
+
+### 3) LoRA 链 bypass 机制
+
+工作流固定 7 个 `LoraLoaderModelOnly` 链式连接（`ckpt → L10 → L11 → L13 → L12 → L14 → L15 → L16 → KSampler`）。后端补丁规则：
+
+- 用户传 N 个 LoRA（N ≤ 7）→ 链头 N 个槽写 `widgets_values = [name, strength]` 且 `mode=0`
+- 剩余 `7-N` 个槽设 `mode=4`（bypass），借 `_litegraph_to_api` 的链路穿透机制让 model 引用绕过这些节点
+- LoRA 条目中 `name == "None"/"none"` 或 `strength == 0` 同样视为禁用 + bypass
+
+**对智能体的意义**：调用方只传想用的 LoRA，不用关心"工作流到底有几个槽"。批量生成 30 个分镜的 SD 出图，`sd_params` 整批共用（不需要逐镜复制），后端确认是同一批补丁。
+
+### 4) 批量端点同样接受 sd_params
+
+```http
+POST /api/image-engine/generate-batch-stream
+{
+  "workflow_name": "sd_default_workflow",
+  "gen_count": 3,
+  "negative_prompt": "...",
+  "width": 904, "height": 1600,
+  "frames": [{"scene_id":"s1","frame_type":"start","prompt":"..."}, ...],
+  "project_id": "<pid>",
+  "sd_params": { ... }   // 顶层，所有 frames 共用
+}
+```
+
+### 5) 关键节点 ID
+
+如需进一步自定义（如改用其它 t2i 工作流并复用 `patch_sd_workflow`），节点 ID 映射定义在 `backend/services/sd_workflow.py::SD_NODES`：
+
+```python
+{
+  "checkpoint":  17,  # CheckpointLoaderSimple
+  "positive":     2,  # CLIPTextEncode (正面)
+  "negative":     3,  # CLIPTextEncode (负面)
+  "ksampler":    20,  # KSampler
+  "latent_size":  6,  # EmptyLatentImage
+  "lora_chain": [10, 11, 13, 12, 14, 15, 16],  # 链头到链尾
+}
+```
 
 ## 失败处理
 

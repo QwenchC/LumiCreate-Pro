@@ -393,6 +393,7 @@ SUPPORTED_IMAGE_WORKFLOWS: frozenset = frozenset({
     "t2i-lumicreate",
     "image_flux2_text_to_image_9b",
     "image_flux2_klein_image_edit_9b_base",
+    "sd_default_workflow",   # v1.4.4: 通用 SD t2i + 多 LoRA 链
 })
 
 SUPPORTED_VIDEO_WORKFLOWS: frozenset = frozenset({
