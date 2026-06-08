@@ -176,6 +176,31 @@ SKILL/
 
 ## 更新日志
 
+### v1.4.6
+本版本以 **无 GPU 通路（图片放映视频）** 为主线，并附带一次大型 **WMP 兼容 + 音画同步** 修复，覆盖 ffmpeg 全链路（每镜次 → 合并 → 字幕烧录）。
+
+- ✅ **新模块 `backend/services/slideshow_video.py`**：图片放映视频生成器（不走 ComfyUI / LTX，纯 ffmpeg）。给低显存 / 无 GPU 用户的轻量通路，输出与 LTX 同 schema（`<project>/video/<scene_id>.mp4` + `videos.json`），后续 merge / 字幕烧录无感复用
+- ✅ **新端点 `POST /api/video-engine/render-slideshow`**：参数含 `width / height / fps / intra_transition / motion_effect / parallel`；Ken Burns 7 种动态（zoom_in/out + pan_left/right/up/down）+ 转场预设映射到 xfade；`parallel=0` 自动按 `cpu_count // 4` 选 worker（capped at 1-4），16 核机能撑到 60%+ 利用率
+- ✅ **抖动修复（4× lanczos 预放大）**：zoompan 直接在目标分辨率上跑会因整像素取整在帧间"震动"，改 4× 大画布采样 + 下采样 → 单像素增量映射到 0.25 输出像素，画面丝滑
+- ✅ **音画同步根治（贯穿全链）**：
+  - 每镜次时长一律以 **ffprobe 实测音频时长**为准（不再信 SQLite metadata.duration_ms — TTS 目标长度与实际产出差几十-几百 ms 累积成"音频先于字幕结束"）
+  - 每镜次 `-shortest` → 显式 `-t duration_s`：音视频末尾对齐到精确时间戳
+  - 加 `-af aresample=async=1000:first_pts=0`：填补 AAC 编码器 priming 静音
+  - 全链统一 48kHz 立体声（消除跨阶段重采样累积漂移）
+  - merge 路径 filter_complex 末尾追加 aresample 节点（**v1.4.5 之前**：用户报"10min 视频音频比视频早 1min 结束"，本版本根治）
+  - 字幕烧录 `-c:a copy` → `-c:a aac -ar 48000`：音频与视频共享 demux→encode 通路，杜绝 PTS 漂移
+- ✅ **Windows Media Player 兼容（贯穿全链）**：用户报"合并视频和烧字幕视频本地播放器打不开"，root cause 是混合 LTX/slideshow 的 concat -c copy 产物 mvhd timescale 不一致 + 瞬时码率超 Level 4.0 上限：
+  - **移除 merge 快路径的 `-c copy`**，改成清编码 + 统一 `-video_track_timescale 90000`
+  - **全链强制保守编码**：`-profile:v main -level 4.0 -preset fast -crf 22 -pix_fmt yuv420p`
+  - **全链 bitrate cap**：`-maxrate 8M -bufsize 16M`（Level 4.0 硬上限 ~25 Mbps，留足边距防 WMP 拒播）
+  - 色彩空间显式 tag `bt709`（避免播放器猜色域偏色）
+  - `+faststart` 落到所有 4 条 ffmpeg 输出路径（per-scene / merge 快慢路径 / 字幕烧录 / BGM 混音）
+- ✅ **前端：图片导入 + 比例裁剪（v1.4.6）**：每个图片槽旁新增 📥 导入按钮，本地选图后弹 `ImageCropDialog.vue`（Canvas，4 角拖动+移动+自动居中），裁剪比例锁死 `settings.image_engine.image_width/height`；用户不再需要外部工具预裁剪
+- ✅ **前端：图片生成页比例提醒条**：顶部显示当前 settings 的输出比例，避免出图后才发现比例不对
+- ✅ **前端：视频生成页两种模式 radio**：LTX-2.3（高质量 AI 视频）↔ 图片放映（无 GPU），slideshow 模式有 Ken Burns 下拉 + 转场 + 时长 + 分辨率 + fps + 一键生成
+- ✅ **SKILL 同步**：`modules/video.md` 新增 render-slideshow 全文 + v1.4.6 merge 重构说明 + 视频生成路径决策树；`modules/subtitle.md` 新增 burn A/V sync 修复历史；`modules/image.md` 新增导入+裁剪段；SKILL.md 模块表 + 决策树更新
+- ✅ **测试**：后端 **263 / 263 pytest 通过**（v1.4.5 时 236 个），新增 27 个回归测覆盖单镜命令构造 / 转场+动态映射 / 音频静音注入 / videos.json 落盘 / 并行 worker 推荐 / Windows-safe 编码档 / ffprobe 优先于 metadata / 显式 `-t` 同步 / 跨链路 `+faststart` / merge 路径 bitrate cap / aresample 同步节点 / 字幕烧录重编码音频
+
 ### v1.4.5
 本版本以 **Pollinations 云端图片生成引擎** 为主线，让无 GPU 用户也能跑漫剧出图。同时收紧布局/参数防御。
 

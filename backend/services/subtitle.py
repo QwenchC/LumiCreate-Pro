@@ -152,11 +152,38 @@ def embed_subtitles(
             "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
             "Outline=1,Shadow=0,Alignment=2,MarginV=20"
         )
+    # v1.4.6+ 音画同步修复：
+    # 之前 `-c:a copy` + 重编码视频 —— 对 LTX(非标准帧率/坏 PTS) 还能勉强对齐
+    # （因为 SRT 时间戳是按 Whisper 在标准化后的 CFR 视频上算的），但对图片放映
+    # 视频（已经是 24/25 标准 CFR）反而 drift：
+    #   * 视频经 subtitles filter + libx264 重新生成 PTS（从 0 开始等步长）
+    #   * 音频保留原始 PTS（concat 阶段累计的浮点偏移）
+    #   → 音频更短就会"提前播完"，字幕走过音频末尾继续显示
+    #
+    # 修复：
+    #  1) `-fflags +genpts` 在 demux 时重生成 PTS，消除上游浮点累计误差
+    #  2) `-c:a aac -ar 48000 -ac 2` 让音频走同一条 demux→encode 通路，与视频共
+    #     享时基；末尾对齐保证不会出现"音频早于字幕"
+    #  3) Windows-safe 编码档 + 强制 CFR + 统一 timescale，配合上游合并阶段
     cmd = [
-        ffmpeg, '-i', video_path,
+        ffmpeg,
+        '-fflags', '+genpts',
+        '-i', video_path,
         '-vf', f"subtitles='{srt_escaped}':force_style='{style}'",
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
-        '-c:a', 'copy',
+        '-c:v', 'libx264',
+        '-profile:v', 'main', '-level', '4.0',
+        '-preset', 'fast', '-crf', '22',
+        '-pix_fmt', 'yuv420p',
+        '-colorspace', 'bt709',
+        '-color_primaries', 'bt709',
+        '-color_trc', 'bt709',
+        # v1.4.6++ WMP 拒播：用户主诉"数据速率和总比特率过高"。Level 4.0 上限
+        # ~25Mbps，烧字幕的视频再次编码后可能瞬时冲高 → 加保险
+        '-maxrate', '8M', '-bufsize', '16M',
+        '-vsync', 'cfr',
+        '-video_track_timescale', '90000',
+        '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2',
+        '-movflags', '+faststart',
         '-progress', 'pipe:1',
         '-nostats',
         '-y', output_path,

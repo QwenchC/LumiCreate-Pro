@@ -520,7 +520,12 @@ async def merge_project_video(req: MergeVideoRequest):
     video_dir.mkdir(parents=True, exist_ok=True)
     out_path = video_dir / "final_video.mp4"
 
-    # ─── 快路径：无过渡 & 无 BGM → concat demuxer + copy（最快） ───
+    # ─── 快路径：无过渡 & 无 BGM → concat demuxer + 干净再编码 ───
+    # v1.4.6+ WMP 兼容修复：之前用 `-c copy`，但 concat demuxer + copy 要求所有输入
+    # 流的 SPS/PPS/timebase/timescale 完全一致 —— LTX 视频和 slideshow 静态/动态分
+    # 镜混合时往往不一致，产出 mp4 浏览器能解析但 WMP 拒播（"编码设置不受支持"）。
+    # 改为 concat 协议 → 真实再编码（同 Windows-safe 编码档），单次操作即可消除
+    # 所有跨镜次时基差异。代价：合并慢几十秒（值得换 WMP 可播）。
     if not use_xfade and not use_bgm:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
             for p in ordered_files:
@@ -530,12 +535,32 @@ async def merge_project_video(req: MergeVideoRequest):
             cmd = [
                 ffmpeg, "-y",
                 "-f", "concat", "-safe", "0", "-i", concat_list,
-                "-c", "copy",
+                # 视频：保守 H.264 档 + 强 CFR + 统一 timescale
+                "-c:v", "libx264",
+                "-profile:v", "main", "-level", "4.0",
+                "-preset", "fast", "-crf", "22",
+                "-pix_fmt", "yuv420p",
+                "-colorspace", "bt709",
+                "-color_primaries", "bt709",
+                "-color_trc", "bt709",
+                # v1.4.6++ WMP 拒播：用户主诉"数据速率和总比特率过高"。
+                # Level 4.0 硬上限 ~25Mbps，加 maxrate 8M / bufsize 16M 留足边距
+                "-maxrate", "8M", "-bufsize", "16M",
+                "-vsync", "cfr",
+                "-video_track_timescale", "90000",
+                # v1.4.6++ A/V 严重不同步（10min 视频音频早 1min 结束）修复：
+                # `aresample=async=1000:first_pts=0` 让重采样器在跨镜次边界用
+                # 静音填补 PTS 间隙，并把所有镜次音频拉平到 48kHz —— 之前每镜次
+                # 因 AAC 编码器 priming + concat 边界没填，每镜次"丢"~50-100ms，
+                # 200 镜次累积到 60s drift。
+                "-af", "aresample=async=1000:first_pts=0",
+                "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                "-movflags", "+faststart",
                 str(out_path),
             ]
-            # B2: 走线程池，避免阻塞 event loop（最长 300s）
             from services.exec_pool import run_blocking
-            result = await run_blocking(subprocess.run, cmd, capture_output=True, timeout=300)
+            # 再编码可能更慢，把超时拉到 900s 与慢路径一致
+            result = await run_blocking(subprocess.run, cmd, capture_output=True, timeout=900)
             if result.returncode != 0:
                 err = result.stderr.decode(errors="replace")[-500:]
                 raise HTTPException(status_code=500, detail=f"ffmpeg 合并失败: {err}")
@@ -614,16 +639,34 @@ async def merge_project_video(req: MergeVideoRequest):
         fc_parts.append(f"{last_a_label}[bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]")
         final_audio_label = "[aout]"
 
+    # v1.4.6++ A/V sync 兜底：在 filter_complex 末尾给 final_audio_label 追加
+    # aresample=async —— filter_complex 映射后的标签上不能用 `-af` 输出选项，
+    # 必须把 aresample 作为 filter 节点。补齐 acrossfade / amix 输出可能留下的
+    # PTS 间隙（每镜次 50-100ms × N 镜次 = 用户主诉的 60s drift 来源）。
+    fc_parts.append(f"{final_audio_label}aresample=async=1000:first_pts=0[afinal]")
+    final_audio_label = "[afinal]"
+
     filter_complex = ";".join(fc_parts)
 
+    # v1.4.6++ 慢路径也用 Windows-safe 编码档 + bitrate 上限，
+    # 跟快路径保持一致的产出格式（避免"快路径能播慢路径不能播"的诡异情形）
     cmd = [
         ffmpeg, "-y",
         *inputs,
         "-filter_complex", filter_complex,
         "-map", last_v_label,
         "-map", final_audio_label,
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-c:a", "aac", "-b:a", "192k",
+        "-c:v", "libx264",
+        "-profile:v", "main", "-level", "4.0",
+        "-preset", "medium", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-colorspace", "bt709",
+        "-color_primaries", "bt709",
+        "-color_trc", "bt709",
+        "-maxrate", "8M", "-bufsize", "16M",
+        "-vsync", "cfr",
+        "-video_track_timescale", "90000",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart",
         str(out_path),
     ]
@@ -775,6 +818,8 @@ async def mix_bgm_into_video(req: MixBgmRequest):
         "-map", "0:v", "-map", "[mixed]",
         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
         "-shortest",
+        # v1.4.6: 把 moov atom 放文件开头，让 Windows Media Player / 系统播放器可播
+        "-movflags", "+faststart",
         str(out_path),
     ]
 
@@ -803,3 +848,76 @@ async def mix_bgm_into_video(req: MixBgmRequest):
         duration_secs=float(duration or 0.0),
         bgm_track_id=req.track_id,
     )
+
+
+# ── v1.4.6: 图片放映视频（不走 LTX，给低 GPU 用户用）───────────────────────
+
+
+class RenderSlideshowRequest(BaseModel):
+    project_id:          str
+    scene_order:         list[str]                  # scene_id 顺序
+    width:               int = 1920
+    height:              int = 1080
+    fps:                 int = 25
+    # 单镜内 2 张图之间的转场
+    intra_transition:    str = "fade"
+    intra_transition_ms: int = 800
+    # 无音频镜次的默认时长
+    default_no_audio_ms: int = 4000
+    # v1.4.6: Ken Burns 画面动态
+    # 可选：none / zoom_in / zoom_out / pan_left / pan_right / pan_up / pan_down
+    motion_effect:       str = "none"
+    # v1.4.6+: 并行渲染镜次数。0 = 按 CPU 自动选；1 = 顺序（兼容旧行为）；≥2 = 显式
+    parallel:            int = 0
+
+
+@router.post("/render-slideshow")
+async def render_slideshow(req: RenderSlideshowRequest):
+    """逐个分镜生成 mp4 子片（图片 + 音频，按音频时长，可加镜内转场）。
+    每个 <project>/video/<scene_id>.mp4 与 LTX 输出同 schema —— 后续可直接
+    复用 /merge-project-video 合并（含镜间转场 + BGM）。"""
+    cfg  = load_settings()
+    vcfg = cfg.video_engine
+    icfg = cfg.image_engine
+    wdir = vcfg.workflow_dir or icfg.workflow_dir
+    ffmpeg = _find_ffmpeg(vcfg.comfyui_input_dir, wdir)
+    if not ffmpeg:
+        raise HTTPException(500, detail="未找到 ffmpeg")
+
+    from pathlib import Path as _P
+    proj_dir = _P(cfg.projects_dir) / req.project_id
+    if not proj_dir.exists():
+        raise HTTPException(404, detail="项目不存在")
+    if not req.scene_order:
+        raise HTTPException(400, detail="scene_order 不能为空")
+
+    from services.slideshow_video import render_slideshow_project
+    from services.exec_pool import run_blocking
+    result = await run_blocking(
+        render_slideshow_project,
+        req.project_id,
+        proj_dir=proj_dir,
+        scene_order=req.scene_order,
+        ffmpeg_path=ffmpeg,
+        width=req.width, height=req.height, fps=req.fps,
+        intra_transition=req.intra_transition,
+        intra_transition_ms=req.intra_transition_ms,
+        default_no_audio_ms=req.default_no_audio_ms,
+        motion_effect=req.motion_effect,
+        parallel=req.parallel,
+    )
+
+    # task_history
+    try:
+        from services.task_history import append as _th_append
+        _th_append(
+            "slideshow", req.project_id,
+            items=len(req.scene_order),
+            errors=len(result.get("errors") or []),
+            status="ok" if result.get("ok") else "partial",
+            note=f"transition={req.intra_transition}, dur={req.intra_transition_ms}ms",
+        )
+    except Exception as e:
+        print(f"[slideshow] task_history append failed: {e}", flush=True)
+
+    return result

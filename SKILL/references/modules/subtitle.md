@@ -147,6 +147,40 @@ SSE：`{step:"embedding",pct:0~100}` → `done` 或 `error`，最后 `[DONE]`。
 
 烧录耗时上限 600 秒，超时报 `嵌入超时`。
 
+## v1.4.6 烧录 A/V sync 重大修复
+
+**用户报障历史**：
+- 老版本（≤ v1.4.5）烧字幕后，**音频比视频早结束**——10min 视频可累积到 1min drift
+- 同时 **WMP 无法打开**烧字幕产物（数据速率过高）
+
+**根因**：
+1. 老 burn cmd 用 `-c:a copy`：视频被 libx264 重生成 PTS（从 0 等步长），音频沿用合并阶段累计的浮点偏移 PTS → standard fps（24/25）的 slideshow 上 drift 累积明显
+2. 没有 `-fflags +genpts`：上游 PTS 漂移直接进 burn
+3. 没有 bitrate cap：CRF=20 在 1080p Ken Burns 上瞬时码率破 25 Mbps → WMP 拒播
+
+**修复（v1.4.6 burn cmd）**：
+```python
+ffmpeg
+  -fflags +genpts                # 消除上游 PTS 漂移
+  -i <video>
+  -vf "subtitles='...':force_style='...'"
+  -c:v libx264 -profile:v main -level 4.0 -preset fast -crf 22
+  -pix_fmt yuv420p -colorspace bt709 -color_primaries bt709 -color_trc bt709
+  -maxrate 8M -bufsize 16M       # bitrate cap — WMP 兼容
+  -vsync cfr -video_track_timescale 90000
+  -c:a aac -b:a 192k -ar 48000 -ac 2     # 同步重编码 → 视频 / 音频共享 demux→encode 通路
+  -movflags +faststart            # moov atom 提前
+  -y output.mp4
+```
+
+**关键改动点**：
+- `-c:a copy` → `-c:a aac -ar 48000`：音频也再编码，与视频共享 PTS 时间线
+- 加 `-fflags +genpts`：让 demux 阶段统一 PTS 起点
+- 加 `-maxrate/bufsize`：H.264 Level 4.0 上限合规
+- 加 `-video_track_timescale 90000` + `-vsync cfr`：所有产出 mp4 头字段一致
+
+⚠️ **历史脚本如果手动调过 burn cmd 的，注意 v1.4.6 已统一参数**。回归测试覆盖见 `backend/tests/test_slideshow_video.py::test_subtitle_burn_reencodes_audio_to_fix_av_drift`。
+
 ## 实操建议
 
 - 默认路径 + 默认字体 + base 模型对 5 分钟内的视频效果最佳

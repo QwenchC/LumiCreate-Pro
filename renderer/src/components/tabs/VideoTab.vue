@@ -173,7 +173,24 @@
 
     <!-- ── Config ── -->
     <div class="video-config card" v-if="!running">
+      <!-- v1.4.6: 视频引擎模式 -->
       <div class="config-row">
+        <div class="config-group" style="flex:1">
+          <label class="cfg-label">视频引擎</label>
+          <div class="vt-mode-toggle">
+            <label :class="{ active: videoMode === 'ltx' }">
+              <input type="radio" v-model="videoMode" value="ltx" />
+              🎬 AI 视频生成 (LTX/i2v) — 需 GPU
+            </label>
+            <label :class="{ active: videoMode === 'slideshow' }">
+              <input type="radio" v-model="videoMode" value="slideshow" />
+              📺 图片放映 — 无 GPU 也能跑，按音频时长拼图片+转场
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="config-row" v-if="videoMode === 'ltx'">
         <div class="config-group">
           <label class="cfg-label">工作流</label>
           <select class="input select-compact" v-model="selectedWorkflow">
@@ -217,9 +234,87 @@
           🔇 无音频模式（每分镜单独设时长）
         </label>
       </div>
-      <p class="config-hint">
+      <p v-if="videoMode === 'ltx'" class="config-hint">
         ⚠ 视频分辨率限制在 1280px 以内（本地算力有限），每边自动对齐至 32px 倍数
       </p>
+
+      <!-- v1.4.6: 图片放映模式的转场设置 + 一键渲染 -->
+      <div v-if="videoMode === 'slideshow'" class="config-row" style="align-items:flex-end">
+        <div class="config-group">
+          <label class="cfg-label">画面动态（Ken Burns）</label>
+          <select class="input select-compact" v-model="slideshowMotion">
+            <option value="none">无 — 静帧</option>
+            <option value="zoom_in">缓慢放大</option>
+            <option value="zoom_out">缓慢缩小</option>
+            <option value="pan_left">向左平移</option>
+            <option value="pan_right">向右平移</option>
+            <option value="pan_up">向上平移</option>
+            <option value="pan_down">向下平移</option>
+          </select>
+        </div>
+        <div class="config-group">
+          <label class="cfg-label">镜内转场（首帧→末帧）</label>
+          <select class="input select-compact" v-model="slideshowTransition">
+            <option value="fade">淡入淡出</option>
+            <option value="fadeblack">淡入淡出（经黑）</option>
+            <option value="fadewhite">淡入淡出（经白）</option>
+            <option value="dissolve">溶解</option>
+            <option value="slideleft">左滑</option>
+            <option value="slideright">右滑</option>
+            <option value="slideup">上滑</option>
+            <option value="slidedown">下滑</option>
+            <option value="wipeleft">左拭</option>
+            <option value="wiperight">右拭</option>
+            <option value="zoomin">放大</option>
+          </select>
+        </div>
+        <div class="config-group">
+          <label class="cfg-label">转场时长 (ms)</label>
+          <input type="number" min="100" max="3000" step="100"
+                 v-model.number="slideshowTransitionMs"
+                 class="input" style="width:100px" />
+        </div>
+        <div class="config-group">
+          <label class="cfg-label">分辨率（宽×高）</label>
+          <select class="input select-compact" v-model="resolution">
+            <option value="1920x1080">1920×1080</option>
+            <option value="1280x720">1280×720</option>
+            <option value="1080x1920">1080×1920（竖屏）</option>
+            <option value="720x1280">720×1280（竖屏）</option>
+          </select>
+        </div>
+        <div class="config-group">
+          <label class="cfg-label">帧率</label>
+          <select class="input select-compact" v-model.number="fps" style="width:90px">
+            <option :value="24">24fps</option>
+            <option :value="25">25fps</option>
+            <option :value="30">30fps</option>
+          </select>
+        </div>
+        <button class="btn btn-primary"
+                :disabled="slideshowRunning || !scenes.length"
+                @click="runSlideshow">
+          {{ slideshowRunning ? '⏳ 渲染中…' : '▶ 一键生成所有分镜视频' }}
+        </button>
+      </div>
+      <p v-if="videoMode === 'slideshow'" class="config-hint">
+        ℹ 每镜时长 = 该镜音频时长；1 张图静帧、2 张图按选定转场过渡。结束后可去合并视频 + 烧字幕。
+      </p>
+      <div v-if="slideshowResult" class="config-hint" style="background:rgba(104,211,145,.08);padding:8px;border-radius:4px">
+        ✓ 已渲染 {{ slideshowResult.rendered?.length || 0 }} 镜；
+        跳过 {{ slideshowResult.skipped?.length || 0 }}，失败 {{ slideshowResult.errors?.length || 0 }}
+        <details v-if="(slideshowResult.errors||[]).length || (slideshowResult.skipped||[]).length">
+          <summary style="cursor:pointer;font-size:11px">详情</summary>
+          <ul style="font-size:11px;margin:4px 0 0 16px">
+            <li v-for="e in slideshowResult.errors" :key="'e'+e.scene_id">
+              ⚠ {{ e.scene_id }}: {{ e.message }}
+            </li>
+            <li v-for="s in slideshowResult.skipped" :key="'s'+s.scene_id">
+              – {{ s.scene_id }}: {{ s.reason }}
+            </li>
+          </ul>
+        </details>
+      </div>
     </div>
 
     <!-- ── Loading / Empty ── -->
@@ -532,6 +627,52 @@ const sceneProgress   = ref({})   // id → {value, max}
 const sceneVideos     = ref({})   // id → base64 mp4
 const mergeResult     = ref(null) // { output_path, output_dir } once merged
 const merging         = ref(false)
+
+// v1.4.6: 视频模式 + 图片放映状态
+const videoMode             = ref('ltx')                  // 'ltx' | 'slideshow'
+const slideshowTransition   = ref('fade')
+const slideshowTransitionMs = ref(800)
+const slideshowMotion       = ref('none')   // v1.4.6: 画面动态
+const slideshowRunning      = ref(false)
+const slideshowResult       = ref(null)
+
+async function runSlideshow() {
+  if (slideshowRunning.value || !scenes.value.length) return
+  slideshowRunning.value = true
+  slideshowResult.value  = null
+  try {
+    const [w, h] = String(resolution.value || '1920x1080').split('x').map(Number)
+    const r = await fetch(`${API}/video-engine/render-slideshow`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        project_id:          props.projectId,
+        scene_order:         scenes.value.map(s => String(s.id)),
+        width:               w || 1920,
+        height:              h || 1080,
+        fps:                 fps.value || 25,
+        intra_transition:    slideshowTransition.value,
+        intra_transition_ms: slideshowTransitionMs.value,
+        motion_effect:       slideshowMotion.value,
+      }),
+    })
+    if (!r.ok) {
+      let detail = 'HTTP ' + r.status
+      try { const j = await r.json(); detail = j.detail || detail } catch {}
+      throw new Error(detail)
+    }
+    slideshowResult.value = await r.json()
+    // 刷新已有视频映射：让分镜卡片显示新出的 .mp4
+    try {
+      const { data } = await axios.get(`${API}/projects/${props.projectId}/videos`)
+      sceneVideos.value = data || sceneVideos.value
+    } catch {}
+  } catch (e) {
+    alert('图片放映渲染失败: ' + (e.message || e))
+  } finally {
+    slideshowRunning.value = false
+  }
+}
 const scenePrompts    = ref({})   // scene_id → prompt string
 const promptVisible   = ref({})   // scene_id → bool (expanded)
 let _promptSaveTimer  = null
@@ -1404,6 +1545,21 @@ async function showMergedInFolder() {
   font-size: 12px; color: var(--text-muted, #aaa); cursor: pointer;
 }
 .no-audio-toggle input { margin: 0; }
+
+/* v1.4.6: 视频引擎模式切换 */
+.vt-mode-toggle { display: flex; gap: 10px; flex-wrap: wrap; }
+.vt-mode-toggle label {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border: 1px solid var(--border);
+  border-radius: 6px; cursor: pointer; font-size: 12px;
+  background: var(--bg-input); color: var(--text-muted);
+  transition: border-color .15s, color .15s, background .15s;
+}
+.vt-mode-toggle label.active {
+  border-color: var(--accent); color: var(--text); font-weight: 600;
+  background: rgba(99,179,237,.08);
+}
+.vt-mode-toggle input { margin: 0; }
 
 .duration-tag {
   display: inline-flex; align-items: center; gap: 4px;

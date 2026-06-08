@@ -25,6 +25,7 @@ description: 驱动 LumiCreate-Pro 本地 AI 视频创作流水线（文案 → 
 | 视频 audio_b64 来源       | **直接用 ms-tts 返回的 mp3 base64**（不需要 stitch）          | video-engine 接受 mp3                          |
 | **视频分辨率**           | **`720x1280`（竖屏 HD）**                                     | video-engine `resolution` 字段                 |
 | 视频帧率                 | `25`                                                          | video-engine `fps` 字段                        |
+| **视频生成路径**         | **有 GPU → LTX-2.3；无 GPU/低显存 → render-slideshow（图片放映 v1.4.6）** | `POST /api/video-engine/generate-stream` 或 `POST /api/video-engine/render-slideshow` |
 | **字幕脚本来源**         | **`POST /api/subtitle-engine/preprocess-text`(manuscript 原文)** → lines | 比 `script/{id}` 切得更细（含逗号断句），符合字幕阅读节奏 |
 | **字幕字号（按方向）**   | **竖屏 `720x1280` → `font_size=10`**<br>**横屏 `1280x720` → `font_size=16`** | `POST /api/subtitle-engine/embed` 的 `font_size` |
 | 字幕字体                 | `等线 Bold`                                                   | embed `font_name`                              |
@@ -77,7 +78,7 @@ description: 驱动 LumiCreate-Pro 本地 AI 视频创作流水线（文案 → 
 | `text`       | LLM 生成文案、分镜、首/尾帧提示词、视频提示词、角色描述、出镜建议    | [text.md](./references/modules/text.md)               |
 | `image`      | ComfyUI 图片生成（单张/批量并发 SSE），工作流管理                     | [image.md](./references/modules/image.md)             |
 | `audio`      | IndexTTS-2.0 / GPT-SoVITS / Microsoft Edge TTS 语音合成与场景拼接   | [audio.md](./references/modules/audio.md)             |
-| `video`      | LTX-2.3 首帧→末帧→音频驱动视频生成，分镜 ffmpeg 合并                 | [video.md](./references/modules/video.md)             |
+| `video`      | LTX-2.3 视频生成；**v1.4.6** 新增 render-slideshow（无 GPU 通路）+ 合并通路 WMP 兼容修复 | [video.md](./references/modules/video.md)             |
 | `subtitle`   | stable-whisper 字幕生成 + 烧录                                       | [subtitle.md](./references/modules/subtitle.md)       |
 | `music`      | **v1.4.2** ACE-Step v1.5 音乐生成 + 全局音乐库 + 项目 BGM 直通       | [music.md](./references/modules/music.md)             |
 
@@ -98,7 +99,7 @@ SSE 事件格式速查见 [sse-events.md](./references/sse-events.md)。
 用户提到"角色 / 角色设定 / 角色描述 / 角色外观 / 出镜角色检测" → `text` (generate-character-* / suggest-scene-characters)
 用户提到"出图 / 生成图片 / 批量出图 / ComfyUI 跑图" → `image` (generate-stream / generate-batch-stream)
 用户提到"配音 / TTS / 朗读 / 音色克隆 / IndexTTS / Edge TTS" → `audio` (generate-stream / ms-tts) → `audio` (stitch-scene)
-用户提到"视频生成 / LTX / 首末帧驱动视频 / 分镜视频 / 合并视频" → `video` (generate-stream → merge-project-video)
+用户提到"视频生成 / LTX / 首末帧驱动视频 / 分镜视频 / 合并视频" → `video` (generate-stream → merge-project-video)；**用户说"无 GPU / 显存不够 / 跑不动 LTX / 图片放映视频"** → **`video render-slideshow`（v1.4.6）** → merge-project-video
 用户提到"字幕 / SRT / 烧字幕 / Whisper / 硬字幕" → `subtitle`（**漫剧**：manuscript → `preprocess-text` → generate-srt → embed；**非漫剧**：`script` → generate-srt → embed）
 用户提到"配置 / 模型 / 引擎 / API key / ComfyUI 地址" → `settings`
 

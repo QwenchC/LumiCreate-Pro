@@ -325,3 +325,26 @@ GET https://gen.pollinations.ai/image/{url-encoded-prompt}?model={m}&width={w}&h
 - 工作流名不存在：返回 404 `工作流 '<name>' 未找到`
 - ComfyUI 报模型/节点缺失：在 SSE 中作为 `error{message}` 事件传回，**该任务跳过，其他任务继续**
 - VRAM 不足：批量并发应降低 `gen_count`；视频引擎有自动重试，图片引擎无
+
+## 图片导入 + 裁剪（v1.4.6）
+
+**前端功能，无新后端端点**。每个图片槽位旁有 📥 导入按钮：
+
+1. 选本地图片 → 弹 `ImageCropDialog` Canvas 裁剪窗
+2. 裁剪框比例**锁死为 settings.image_engine.image_width / image_height**（不可拖出比例）
+3. 用户拖动 4 角调节 + 移动裁剪框，或点"自动居中"按钮一键中心裁
+4. 确认 → Canvas `toDataURL('image/png')` → 用现有的 `PUT /api/projects/{id}/images/slot` 持久化
+
+**为什么强制比例锁死**：
+- ComfyUI 工作流的 LoadImage + resize 节点假设输入与目标分辨率比例一致
+- 比例不一致时 i2i 会"挤压"或留黑边，作为参考图效果极差
+- v1.4.6 之前用户只能手动调外部工具裁好再上传，体验差
+
+**智能体引导**：
+- 如果用户问"能不能用我自己的图片当首帧/末帧/参考图" → 回答可以，引导他点槽位旁的 📥
+- 如果用户的图比例与 settings 不一致，**裁剪是必须的**——客户端不会跳过
+
+**关键路径**：
+- `renderer/src/components/ImageCropDialog.vue` — Canvas 裁剪窗口
+- `renderer/src/components/tabs/ImagesTab.vue::triggerImport/onFilePicked/onCropped` — 触发链路
+- 比例来自 `settings.image_engine.image_width / image_height`（用 `GET /api/settings`）

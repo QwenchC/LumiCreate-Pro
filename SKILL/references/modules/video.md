@@ -1,6 +1,11 @@
-# video 模块（LTX-2.3 视频生成）
+# video 模块（视频生成）
 
-通过 ComfyUI 加载 LTX-2.3 工作流，输入"首帧 + 末帧 + 音频"生成单分镜视频，最后用 ffmpeg concat 合并为成片。
+两条产出路径，**输出协议完全一致**（`<project>/video/<scene_id>.mp4` + `videos.json`）：
+
+1. **LTX-2.3（v1.4.0+）**：ComfyUI 工作流"首帧 + 末帧 + 音频" → AI 视频。需要 GPU/VRAM。
+2. **图片放映（v1.4.6+）**：图片+音频→ffmpeg 渲染静态/Ken Burns 画面。**无 GPU 也能跑**，给低显存用户用。
+
+两路产出的子片 schema 相同，merge 流程统一。
 
 ## 接口
 
@@ -10,7 +15,8 @@
 | GET  | `/api/video-engine/workflows`              | ✗    | **v1.4.2** 列工作流：bundled + 硬白名单，仅 `flfa2i-lumicreate` / `video_ltx2_3_i2v` |
 | GET  | `/api/video-engine/workflow-info?workflow_name=X` | ✗ | **v1.4.1+** `{kind, requires_start_image, requires_end_image, supports_audio, supports_duration, label}` |
 | POST | `/api/video-engine/generate-stream`        | ✓    | 按 kind 分发到 flfa2i / i2v driver           |
-| POST | `/api/video-engine/merge-project-video`    | ✗    | ffmpeg 合并为 `final_video.mp4`             |
+| POST | `/api/video-engine/render-slideshow`       | ✗    | **v1.4.6** 图片放映视频：图片+音频 → ffmpeg 渲染（无 GPU 通路） |
+| POST | `/api/video-engine/merge-project-video`    | ✗    | ffmpeg 合并为 `final_video.mp4` —— **v1.4.6 改为清编码**（移除 -c copy，统一 WMP 兼容）|
 | POST | `/api/video-engine/mix-bgm`                | ✗    | **v1.4.2** 在已成视频上叠加音乐库 BGM       |
 | PUT  | `/api/video-engine/bgm/{pid}`              | ✗    | 上传 BGM (`bgm.<ext>`)，merge 通道用        |
 | GET / DELETE | `/api/video-engine/bgm/{pid}`      | ✗    | 查 / 删 BGM                                  |
@@ -69,6 +75,75 @@ GET /api/video-engine/workflow-info?workflow_name=video_ltx2_3_i2v
 - ❌ 仅生成音频后直接进入视频生成，但**没有先生成图片** → 每镜 `scene_error: 缺少首帧图片`
 - ❌ 直接把 `__ms_reading__{id}` 的 audio 在视频请求里再 base64 一次（双重编码）
 - ✅ 正确流程：图片批量生成 → 等待全部 `completed` 落盘 → 取每镜 selected slot 的 PNG 转 base64 → 调 `ms-tts` 拿 mp3 base64 → 三件套传给 video-engine
+
+## render-slideshow（v1.4.6）
+
+**给没 GPU 或不想跑 LTX 的用户的轻量通路**：用每镜次的图片 + 音频通过 ffmpeg 直接渲染。
+输出与 LTX 同 schema → 后续 `merge-project-video` / `subtitle-engine/embed` 都能直接复用。
+
+```http
+POST /api/video-engine/render-slideshow
+{
+  "project_id":          "<pid>",
+  "scene_order":         ["scene_001","scene_002",...],
+  "width":               1920,            // 输出宽度
+  "height":              1080,            // 输出高度
+  "fps":                 25,              // 24|25|30 标准帧率
+  "intra_transition":    "fade",          // 单镜内 2 张图之间的转场
+  "intra_transition_ms": 800,
+  "default_no_audio_ms": 4000,            // 无音频镜次默认时长
+  "motion_effect":       "none",          // Ken Burns 画面动态
+  "parallel":            0                // 0=按 CPU 自动；1=顺序；≥2=显式
+}
+→ {
+  "ok": true,
+  "rendered": ["scene_001","scene_002"],
+  "skipped":  [{"scene_id":"scene_003","reason":"缺首帧图"}],
+  "errors":   [],
+  "output_dir": ".../<project>/video",
+  "scene_files": {"scene_001":"scene_001.mp4", ...},
+  "parallel_workers": 4
+}
+```
+
+`motion_effect` ∈ `none / zoom_in / zoom_out / pan_left / pan_right / pan_up / pan_down`：
+- `none` → 纯静帧（最快）
+- 其它 → Ken Burns，**4× lanczos 预放大 + zoompan + 下采样** 防整像素抖动
+- 无 GPU 用户优先 `none` 或 `zoom_in/zoom_out`，平移类的 GPU/CPU 开销略高
+
+**镜次资产解析**：
+- 首帧：从 `scene_assets.image_start`（优先 selected slot）
+- 末帧：可选；存在则单镜内做转场
+- 音频：从 `scene_assets.audio`（同样选 selected slot）
+- **时长**：v1.4.6+ 一律以 **ffprobe 实测音频时长** 为准，**不再信** `scene_assets.metadata.duration_ms`（TTS 请求时的目标时长，与产出常差几十-几百 ms，累积到字幕拖尾/音画错位）
+
+**ffmpeg 编码档**（每镜次 + 合并 + 烧字幕全链统一）：
+- `-c:v libx264 -profile:v main -level 4.0 -preset fast -crf 22`
+- `-pix_fmt yuv420p -colorspace bt709 -color_primaries bt709 -color_trc bt709`
+- `-maxrate 8M -bufsize 16M` ← 关键：Level 4.0 上限 ~25 Mbps，CRF 撞顶会让 WMP 拒播
+- `-video_track_timescale 90000 -vsync cfr -g 30 -keyint_min 30 -sc_threshold 0`（concat 边界对齐）
+- `-c:a aac -b:a 192k -ar 48000 -ac 2`（48k 与 merge/burn 对齐）
+- `-af aresample=async=1000:first_pts=0`（修复 AAC priming 累积 drift）
+- `-movflags +faststart`（moov atom 提前，WMP / Movies & TV 可播）
+
+**典型组合**：
+```python
+# 低显存用户漫剧默认（720x1280 竖屏 + 静帧 + 1s 转场）
+await api.post("/api/video-engine/render-slideshow", {
+    "project_id": pid,
+    "scene_order": [s["id"] for s in scenes],
+    "width": 720, "height": 1280, "fps": 25,
+    "intra_transition": "fade", "intra_transition_ms": 800,
+    "motion_effect": "none",
+})
+# → 直接接 merge-project-video 合并成片
+```
+
+⚠️ **画面是否动态**与目标用户群有关：用 Ken Burns 增加动态会让"图片放映"看起来更像 AI 视频，但 motion=`pan_*` 在 16 核机器上每镜次仍要 5-15s。如果用户机器是 4 核以下，建议默认 `motion_effect="none"` + 仅靠镜间转场撑动感。
+
+⚠️ **并行渲染**：默认 `parallel=0` 时按 `cpu_count // 4` 自动选 worker 数（capped at 1-4）。libx264 单进程内部已用 4-6 核 → 多开 4 个进程在 16 核上能撑到 60%+ 利用率。机器很弱时显式 `parallel=1` 跑串行。
+
+⚠️ **必须先有图 + 音频**：图片来自 `images` 模块（手动分镜每镜 ≥ 1 张首帧图），音频来自 `audio` 模块（reading 模式 `__ms_reading__{sceneId}`）。否则镜次进 `skipped`。
 
 ## mix-bgm（v1.4.2）
 
@@ -160,14 +235,57 @@ PUT /api/projects/{id}/videos
 POST /api/video-engine/merge-project-video
 {
   "project_id": "<id>",
-  "scene_order": ["scene_001","scene_002","scene_003"]
+  "scene_order": ["scene_001","scene_002","scene_003"],
+  "transition":             "cut",      // cut|fade|dissolve|wipeleft|wiperight|slideleft|slideright
+  "transition_duration_ms": 300,
+  "bgm_volume_db":          -20.0,      // -100 表示关闭 BGM
+  "bgm_fade_in_ms":         1000,
+  "bgm_fade_out_ms":        1500
 }
 → {"output_path":".../video/final_video.mp4","output_dir":".../<project>"}
 ```
 
-执行 `ffmpeg -f concat -safe 0 -i list.txt -c copy final_video.mp4`，要求：
-- 所有分镜视频 codec / 分辨率 / fps 一致（由 LTX 工作流保证）
-- 缺任意一镜的 mp4 会报 400 `分镜 X 尚无视频`
+**v1.4.6 重大改造**：移除 `-c copy` 快路径，统一改为**清编码**。两条路径产出同样的 Windows-safe mp4：
+
+| 场景 | 路径 | 编码 |
+|------|------|------|
+| 无 BGM / 无 xfade | "快路径" concat demuxer → libx264 re-encode | 同下面编码档 |
+| 有 BGM 或 xfade  | "慢路径" filter_complex(xfade/acrossfade/amix) → libx264 re-encode | 同下面编码档 |
+
+**关键编码（v1.4.6）**：
+- `libx264 -profile:v main -level 4.0 -crf 20~22 -maxrate 8M -bufsize 16M`
+- `-vsync cfr -video_track_timescale 90000`
+- 音频 **aresample=async=1000:first_pts=0 → aac -ar 48000 -ac 2**（消除跨镜次 PTS 间隙累积的 drift）
+
+**为什么不再用 `-c copy`**（重要历史背景，diagnoses 见 [audio-video-sync.md](./audio-video-sync.md)）：
+- `concat demuxer + -c copy` 要求所有输入 SPS/PPS/timebase/timescale 完全一致
+- LTX 视频 + slideshow 静态/动态分镜混合时往往不一致 → 浏览器/VLC 能播，**WMP 拒播**
+- 用户报告"数据速率和总比特率过高"是 WMP 的拒播信号
+- 清编码 + bitrate cap 一次性消除所有跨镜次时基差异，多花 30s-数分钟换 100% 兼容
+
+**先决条件**：
+- 所有分镜视频已就位（缺任意一镜 → 400 `分镜 X 尚无视频`）
+- 来自 LTX 或 slideshow 都可，schema 一致
+
+## 视频生成路径选择决策树（v1.4.6）
+
+```
+用户机器有支持 LTX-2.3 的 GPU？  ──否──> render-slideshow（图片放映）
+                              │
+                              是
+                              │
+            用户要做漫剧/朗读视频，只需要静态画面？
+                ├──是──> render-slideshow（更快、可控）
+                │
+                ├──否──> 用户明确要"动态镜头" → LTX-2.3 generate-stream
+                │
+                └──不确定 → 默认 LTX；用户反馈"生成太慢/显存不够"再降级到 slideshow
+```
+
+**漫剧 / 朗读视频的默认建议**：
+- 高端 GPU（24G+）：LTX-2.3，画面有 AI 动态
+- 中端 GPU（8-16G）：LTX-2.3 + 单镜短时长（≤ 5s）
+- 低端 / 无 GPU：**render-slideshow + motion=`zoom_in` + 1s 转场**，体验已经很接近"AI 视频"
 
 ## ffmpeg 定位
 

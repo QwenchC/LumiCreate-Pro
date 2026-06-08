@@ -40,6 +40,14 @@
       </div>
     </div>
 
+    <!-- v1.4.6: 比例提醒 banner -->
+    <div class="ratio-info-banner">
+      📐 当前画面尺寸 <code>{{ imgWidth }} × {{ imgHeight }}</code>
+      （{{ (imgWidth / imgHeight).toFixed(3) }}:1）
+      — 导入图片会被剪裁到此比例；要改请去
+      <a href="#" @click.prevent="goSettings">设置 → 图片引擎</a>
+    </div>
+
     <!-- A1: 上次失败镜次提示 + 一键重试 -->
     <div v-if="lastErrorCount && !running" class="last-errors-banner">
       <span>⚠ 上次失败：{{ lastErrorCount }} 个分镜</span>
@@ -218,6 +226,11 @@
             <button class="image-slot slot-add"
               :disabled="running || !!sceneGenerating[activeScene.id] || !selectedWorkflow"
               @click="addOneMore(activeScene,'start')" :title="'再生成一张'">＋</button>
+            <!-- v1.4.6: 导入本地图片（自动按设置页比例剪裁） -->
+            <button class="image-slot slot-import"
+              :disabled="running"
+              @click="triggerImport(activeScene, 'start')"
+              :title="'导入本地图片（自动按比例剪裁）'">📥</button>
           </div>
         </div>
 
@@ -292,6 +305,11 @@
             <button class="image-slot slot-add"
               :disabled="running || !!sceneGenerating[activeScene.id] || !selectedWorkflow"
               @click="addOneMore(activeScene,'end')" :title="'再生成一张'">＋</button>
+            <!-- v1.4.6 -->
+            <button class="image-slot slot-import"
+              :disabled="running"
+              @click="triggerImport(activeScene, 'end')"
+              :title="'导入本地图片（自动按比例剪裁）'">📥</button>
           </div>
         </div>
 
@@ -353,6 +371,16 @@
       @picked="onRefPicked"
       @close="refPickerOpen = false"
     />
+
+    <!-- v1.4.6: 导入图片用的隐藏 file input + 剪裁对话框 -->
+    <input ref="importFileInput" type="file" accept="image/*"
+           style="display:none" @change="onFilePicked" />
+    <ImageCropDialog v-if="cropOpen"
+                     :src="cropSrc"
+                     :target-w="imgWidth"
+                     :target-h="imgHeight"
+                     @cropped="onCropped"
+                     @cancel="cancelCrop" />
   </div>
 </template>
 
@@ -361,6 +389,78 @@ import { ref, computed, onMounted, onUnmounted, watch, onActivated } from 'vue'
 import axios from 'axios'
 import ReferencePicker from '../ReferencePicker.vue'
 import SdParamsPanel from '../SdParamsPanel.vue'
+import ImageCropDialog from '../ImageCropDialog.vue'
+import { useRouter } from 'vue-router'
+
+// v1.4.6: 导入图片 + 比例剪裁
+const importFileInput = ref(null)
+const cropOpen   = ref(false)
+const cropSrc    = ref('')
+let _importTarget = null   // { scene, frameType, slotIndex } — 选好图后写入这里
+const router = useRouter()
+
+function goSettings() {
+  router.push('/settings?tab=image')
+}
+
+function triggerImport(scene, frameType) {
+  // 自动写到该帧的下一个空槽（追加在末尾）
+  const slotIndex = getFrameSlotCount(scene.id, frameType)
+  _importTarget = { sceneId: scene.id, frameType, slotIndex }
+  importFileInput.value?.click()
+}
+
+function onFilePicked(ev) {
+  const f = ev.target.files?.[0]
+  ev.target.value = ''
+  if (!f) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    cropSrc.value = String(reader.result || '')
+    cropOpen.value = true
+  }
+  reader.onerror = () => alert('图片读取失败')
+  reader.readAsDataURL(f)
+}
+
+function cancelCrop() {
+  cropOpen.value = false
+  cropSrc.value  = ''
+  _importTarget  = null
+}
+
+async function onCropped({ base64, dataUrl }) {
+  if (!_importTarget) return
+  const { sceneId, frameType, slotIndex } = _importTarget
+  // 写入 slotImages + 落盘
+  const key = slotKey(sceneId, frameType, slotIndex)
+  slotImages.value[key] = dataUrl
+  // 扩槽 + 自动选中
+  setFrameSlotCount(sceneId, frameType, slotIndex + 1)
+  const scene = scenes.value.find(s => s.id === sceneId)
+  if (scene) {
+    if (frameType === 'start') scene._selected_start = slotIndex
+    else                       scene._selected_end   = slotIndex
+  }
+  // PUT 到后端落盘
+  try {
+    await axios.put(API + '/projects/' + props.projectId + '/images/slot', {
+      scene_id:   sceneId,
+      frame_type: frameType,
+      slot_index: slotIndex,
+      data:       base64,
+    })
+    emit('dirty')
+    // 同时 update images/metadata 让 counts 持久化
+    await saveImages()
+  } catch (e) {
+    alert('保存失败: ' + (e.message || e))
+  } finally {
+    cropOpen.value = false
+    cropSrc.value  = ''
+    _importTarget  = null
+  }
+}
 
 const props = defineProps({ projectId: String })
 const emit = defineEmits(['dirty', 'saved'])
@@ -1531,6 +1631,31 @@ async function addOneMore(scene, frameType) {
 .image-slot:hover .slot-overlay { opacity: 1; pointer-events: auto; }
 /* v1.4.3: 空槽 / 错误槽的 overlay 透明度更低（只有删除按钮），避免遮挡 slot 编号 */
 .slot-overlay-empty { background: rgba(0,0,0,.35); }
+
+/* v1.4.6: 比例提醒 banner + 导入按钮 */
+.ratio-info-banner {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 5px 12px;
+  background: rgba(99,179,237,.06);
+  border-bottom: 1px solid rgba(99,179,237,.2);
+  font-size: 12px; color: var(--text-muted);
+}
+.ratio-info-banner code {
+  background: var(--bg-input); padding: 1px 6px;
+  border-radius: 3px; font-size: 11px; color: var(--text);
+}
+.ratio-info-banner a { color: #63b3ed; text-decoration: none; }
+.ratio-info-banner a:hover { text-decoration: underline; }
+.slot-import {
+  background: transparent;
+  border: 2px dashed var(--border);
+  color: var(--text-muted); font-size: 18px; cursor: pointer;
+  width: 192px; height: 128px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color .15s, color .15s;
+}
+.slot-import:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.slot-import:disabled { opacity: .4; cursor: not-allowed; }
 .slot-overlay-btn {
   background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.35);
   color: #fff; border-radius: 4px; width: 32px; height: 32px; font-size: 15px;
