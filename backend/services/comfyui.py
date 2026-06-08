@@ -305,10 +305,20 @@ async def _inject_ref_images(workflow: dict, ref_paths: list[str], *,
     )
     if not loadimage_nodes:
         raise RuntimeError("工作流缺少 LoadImage 节点（i2i 工作流必备）")
+    if not ref_paths:
+        raise RuntimeError("i2i 工作流至少需要 1 张参考图")
     if len(ref_paths) > len(loadimage_nodes):
         raise RuntimeError(
             f"参考图数 ({len(ref_paths)}) 超过工作流支持的 LoadImage 节点数 ({len(loadimage_nodes)})"
         )
+    # v1.4.3: 当参考图少于 LoadImage 节点数时，复制最后一张填满剩余节点。
+    # 这样双图工作流（Flux.2 image-edit 等）也能只用单张参考图驱动 —— 模型
+    # 看到两个相同输入，效果等同"单图编辑"，比 ComfyUI 默认 widget 文件名
+    # （指向不存在的文件，会直接 400）健壮。
+    effective_paths = list(ref_paths)
+    while len(effective_paths) < len(loadimage_nodes):
+        effective_paths.append(ref_paths[-1])
+    ref_paths = effective_paths
 
     # 3) meta 覆盖
     from services.workflow_meta import load_meta

@@ -176,6 +176,15 @@ SKILL/
 
 ## 更新日志
 
+### v1.4.3
+本版本聚焦 **i2i 工作流的灵活参考图支持** + **UI 槽位清理**。
+
+- ✅ **i2i 工作流分类修复**：`classify_workflow` 改为节点数优先于名字关键词。`image_flux2_klein_image_edit_9b_base` 之前因名字含 `image_edit` 被强行判 `i2i_single`（只显示 1 个参考图槽位），现在按真实 LoadImage 数（展平 subgraph 后）正确识别为 `i2i_double`
+- ✅ **新增 `i2i_multi` kind**：支持 3+ LoadImage 节点的工作流，`ref_count` 按真实节点数（上限 8 防 UI 撑爆）；`get_image_workflow_ref_count` 单一来源决定槽位数
+- ✅ **单图驱动双图工作流**：参考图数 < LoadImage 节点数时，后端 `_inject_ref_images` 自动**复制最后一张 ref 填满剩余节点**。双图工作流既可单参考（语义=单图编辑）也可双参考（语义=双图合成）；前端验证从"严格等于"放宽到"≥ 1"
+- ✅ **空槽自动剪枝 + 手动删除**：`getFrameSlotCount` 自动剪掉尾部 N 个空槽（保留中间断档以免位置错位），仍以 `genCount` 为下限；空槽 / 错误槽 hover 出现 🗑 删除按钮（之前只有图片槽可删）
+- ✅ **测试 + 集成**：后端 **215 / 215 pytest 通过**（v1.4.2 时 207 个），新增 8 个回归测覆盖 Flux.2 强制 i2i_double / i2i_multi 节点扫描 / N 上限 / 硬名单 / 单图复制填槽 / 0 张拒绝 / 超出节点数拒绝
+
 ### v1.4.2
 本版本以 **音乐生成（ACE-Step v1.5）** + **后期 BGM 混音** + **LLM 真实并发突破 Chromium 连接上限** 为主线。
 

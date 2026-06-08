@@ -318,3 +318,69 @@ def test_classify_strict_keeps_real_image_workflows():
         wf = json.loads((wd / f"{name}.json").read_text(encoding="utf-8-sig"))
         assert is_supported_image_workflow(name, workflow=wf), \
             f"{name} should still pass image classifier"
+
+
+def test_classify_flux2_image_edit_returns_double_not_single():
+    """v1.4.3 真实 bug：Flux.2 image_edit 工作流有 2 个 LoadImage，但因为名字含 'image_edit'
+    被早期 return 强行判为 i2i_single（不看节点数）。UI 因此只显示 1 个参考图槽位。
+    """
+    from services.workflow_meta import classify_workflow, get_image_workflow_ref_count
+    wf = _load_wf("image_flux2_klein_image_edit_9b_base.json")
+    kind = classify_workflow("image_flux2_klein_image_edit_9b_base",
+                              workflow=wf)
+    assert kind == "i2i_double", f"expected i2i_double, got {kind}"
+    assert get_image_workflow_ref_count(kind, workflow=wf) == 2
+
+
+def test_classify_i2i_multi_5_loadimage():
+    """3+ LoadImage 节点的 i2i 工作流应识别为 i2i_multi，ref_count = N（上限 8）。"""
+    from services.workflow_meta import classify_workflow, get_image_workflow_ref_count
+    wf = {"nodes": [
+        {"id": 1, "type": "KSampler"},
+        {"id": 2, "type": "CLIPTextEncode"},
+    ] + [{"id": 100 + i, "type": "LoadImage"} for i in range(5)]}
+    kind = classify_workflow("my_custom_i2i_5ref", workflow=wf)
+    assert kind == "i2i_multi"
+    assert get_image_workflow_ref_count(kind, workflow=wf) == 5
+
+
+def test_i2i_multi_ref_count_capped_at_8():
+    """防止 UI 撑爆：ref_count 上限 8（即使工作流有 20 个 LoadImage）。"""
+    from services.workflow_meta import classify_workflow, get_image_workflow_ref_count
+    wf = {"nodes": [
+        {"id": 1, "type": "KSampler"},
+        {"id": 2, "type": "CLIPTextEncode"},
+    ] + [{"id": 100 + i, "type": "LoadImage"} for i in range(20)]}
+    kind = classify_workflow("my_huge_i2i_20ref", workflow=wf)
+    assert kind == "i2i_multi"
+    assert get_image_workflow_ref_count(kind, workflow=wf) == 8
+
+
+def test_i2i_multi_is_supported_image_workflow():
+    """硬名单 + 分类器：i2i_multi 必须能通过 is_supported_image_workflow。
+    （否则 i2i_multi 工作流永远不出现在下拉里）"""
+    from services.workflow_meta import is_supported_image_workflow, SUPPORTED_IMAGE_WORKFLOWS
+    # 模拟一个 i2i_multi 工作流（白名单内 + 节点扫描判定）—— 因为白名单是名字白名单，
+    # 这里直接用 image_flux2_klein_image_edit_9b_base 这个已在白名单的，但用合成的
+    # 工作流 dict 让它过节点扫描走 i2i_multi 分支
+    fake_multi_wf = {"nodes": [
+        {"id": 1, "type": "KSampler"},
+        {"id": 2, "type": "CLIPTextEncode"},
+    ] + [{"id": 100 + i, "type": "LoadImage"} for i in range(4)]}
+    # 工作流名字必须在白名单
+    name = "image_flux2_klein_image_edit_9b_base"
+    assert is_supported_image_workflow(name, workflow=fake_multi_wf)
+
+
+def test_workflow_info_returns_real_ref_count_for_flux2(isolated_app, tmp_path):
+    """workflow-info 端点应返 ref_count=2 给 Flux.2 image-edit（不是 1）。"""
+    client = isolated_app["client"]
+    r = client.get(
+        "/api/image-engine/workflow-info?workflow_name=image_flux2_klein_image_edit_9b_base"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["found"] is True
+    assert body["kind"] == "i2i_double", f"expected i2i_double, got {body['kind']}"
+    assert body["ref_count"] == 2, f"expected 2 ref slots, got {body['ref_count']}"
+    assert len(body["ref_nodes"]) == 2

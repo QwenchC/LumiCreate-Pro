@@ -256,3 +256,62 @@ def test_resolve_unknown_kind(isolated_app):
         assert False
     except HTTPException as e:
         assert e.status_code == 400
+
+
+# ── v1.4.3: 单图驱动双图工作流（用户主诉）─────────────────────────────────
+
+
+def test_inject_single_ref_duplicates_to_fill_double_workflow(tmp_path):
+    """v1.4.3 用户主诉：1 张参考图 + 双 LoadImage 工作流 → 后端自动把这张图
+    复制填满所有 LoadImage 槽位（语义 = 单图编辑），不再拒绝。"""
+    import asyncio, json
+    from services.comfyui import _inject_ref_images
+
+    input_dir = tmp_path / "ci"; input_dir.mkdir()
+    src = tmp_path / "a.png"; src.write_bytes(b"REF")
+
+    wf = _mk_workflow_two_loadimage()
+    cfg = _FakeCfg(input_dir)
+
+    out = asyncio.run(_inject_ref_images(wf, [str(src)], cfg=cfg))
+
+    loads = [n for n in out["nodes"] if n["type"] == "LoadImage"]
+    assert len(loads) == 2
+    name1, name2 = loads[0]["widgets_values"][0], loads[1]["widgets_values"][0]
+    # 两个 LoadImage 的文件名都被改写过（不是工作流默认值）
+    assert name1.startswith("lumi_ref_")
+    assert name2.startswith("lumi_ref_")
+    # 物理上同一文件内容（两个文件名都指向同一参考图的拷贝）
+    assert (input_dir / name1).read_bytes() == b"REF"
+    assert (input_dir / name2).read_bytes() == b"REF"
+
+
+def test_inject_empty_refs_still_rejected(tmp_path):
+    """0 张参考图必须报错（无意义生成）。"""
+    import asyncio
+    from services.comfyui import _inject_ref_images
+    input_dir = tmp_path / "ci"; input_dir.mkdir()
+    wf = _mk_workflow_two_loadimage()
+    cfg = _FakeCfg(input_dir)
+    try:
+        asyncio.run(_inject_ref_images(wf, [], cfg=cfg))
+        assert False, "should reject 0 refs"
+    except RuntimeError as e:
+        assert "至少" in str(e) or "1 张" in str(e)
+
+
+def test_inject_too_many_refs_still_rejected(tmp_path):
+    """v1.4.3 ref 数 > 节点数仍然要报错（防止用户误传）。"""
+    import asyncio
+    from services.comfyui import _inject_ref_images
+    input_dir = tmp_path / "ci"; input_dir.mkdir()
+    a = tmp_path / "a.png"; a.write_bytes(b"A")
+    b = tmp_path / "b.png"; b.write_bytes(b"B")
+    c = tmp_path / "c.png"; c.write_bytes(b"C")
+    wf = _mk_workflow_two_loadimage()   # 只有 2 个 LoadImage
+    cfg = _FakeCfg(input_dir)
+    try:
+        asyncio.run(_inject_ref_images(wf, [str(a), str(b), str(c)], cfg=cfg))
+        assert False
+    except RuntimeError as e:
+        assert "超过" in str(e)

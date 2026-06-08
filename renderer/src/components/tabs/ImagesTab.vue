@@ -202,6 +202,12 @@
                 <button class="slot-overlay-btn" @click.stop="openPreview(activeScene,'start',slot-1)" :title="'预览'">⛶</button>
                 <button class="slot-overlay-btn slot-overlay-del" @click.stop="deleteSlot(activeScene,'start',slot-1)" :title="'删除'">🗑</button>
               </div>
+              <!-- v1.4.3: 空槽 / 错误槽也允许删除（用户主诉：失败遗留空槽无法清理）-->
+              <div v-else-if="!isLoading(activeScene.id,'start',slot-1)" class="slot-overlay slot-overlay-empty">
+                <button class="slot-overlay-btn slot-overlay-del"
+                        @click.stop="deleteSlot(activeScene,'start',slot-1)"
+                        :title="'删除此槽位'">🗑</button>
+              </div>
               <div class="selected-badge" v-if="activeScene._selected_start === slot-1">✓</div>
             </div>
             <button class="image-slot slot-add"
@@ -269,6 +275,12 @@
               <div v-if="getImage(activeScene.id,'end',slot-1)" class="slot-overlay">
                 <button class="slot-overlay-btn" @click.stop="openPreview(activeScene,'end',slot-1)" :title="'预览'">⛶</button>
                 <button class="slot-overlay-btn slot-overlay-del" @click.stop="deleteSlot(activeScene,'end',slot-1)" :title="'删除'">🗑</button>
+              </div>
+              <!-- v1.4.3: 空槽 / 错误槽也允许删除 -->
+              <div v-else-if="!isLoading(activeScene.id,'end',slot-1)" class="slot-overlay slot-overlay-empty">
+                <button class="slot-overlay-btn slot-overlay-del"
+                        @click.stop="deleteSlot(activeScene,'end',slot-1)"
+                        :title="'删除此槽位'">🗑</button>
               </div>
               <div class="selected-badge" v-if="activeScene._selected_end === slot-1">✓</div>
             </div>
@@ -427,7 +439,8 @@ const regenPromptingId = ref('')   // "{sceneId}:start" or "{sceneId}:end" while
 // 轮 5: 工作流类型检测（决定是否需要参考图）
 const workflowKind = ref('t2i')      // 't2i' | 'i2i_single' | 'i2i_double' | 'video'
 const workflowRefCount = ref(0)
-const isI2I = computed(() => workflowKind.value === 'i2i_single' || workflowKind.value === 'i2i_double')
+// v1.4.3: i2i_multi 支持任意张参考图（>=3）
+const isI2I = computed(() => /^i2i_(single|double|multi)$/.test(workflowKind.value))
 
 async function loadWorkflowInfo() {
   workflowKind.value = 't2i'; workflowRefCount.value = 0
@@ -606,7 +619,19 @@ const slotError     = ref({})
 const slotProgress  = ref({})
 
 function getFrameSlotCount(sceneId, frameType) {
-  return frameSlotCounts.value[sceneId + ':' + frameType] ?? genCount.value
+  // v1.4.3: 自动剪掉尾部空槽（如 stored=3 但只有 slot 0/1 有图，剪到 2）。
+  // 仍保持 ≥ genCount.value 以便空网格有合理占位。
+  // 中间被删的空槽（如 slot 1 是空、slot 2 有图）保留，避免位置错位。
+  const stored = frameSlotCounts.value[sceneId + ':' + frameType]
+  if (stored == null) return genCount.value
+  let lastActive = -1
+  for (let s = 0; s < stored; s++) {
+    const k = slotKey(sceneId, frameType, s)
+    if (slotImages.value[k] || slotLoading.value[k] || slotError.value[k]) {
+      lastActive = s
+    }
+  }
+  return Math.max(lastActive + 1, genCount.value)
 }
 function setFrameSlotCount(sceneId, frameType, n) {
   frameSlotCounts.value = { ...frameSlotCounts.value, [sceneId + ':' + frameType]: n }
@@ -851,14 +876,15 @@ async function generateSceneSlots(scene, { skipExisting = false } = {}) {
   }
   if (!frames.length) return
 
-  // 轮 5: i2i 模式下，缺参考图直接报错——避免无意义生成
+  // v1.4.3: i2i 模式下至少要 1 张参考图（不再强制等于槽位数）；
+  // 后端会自动把单张 ref 复制填满所有 LoadImage 槽（用作"单图编辑"语义），
+  // 双图工作流照样可只用 1 张参考图驱动。
   if (isI2I.value) {
     for (const f of frames) {
-      const need = workflowRefCount.value
       const got = (f.refs || []).length
-      if (got < need) {
+      if (got < 1) {
         const which = f.frame_type === 'start' ? '首帧' : '尾帧'
-        const msg = `${which} 需要 ${need} 张参考图（当前 ${got} 张）— 请先在参考图槽位选择`
+        const msg = `${which} 至少需要 1 张参考图 — 请先在参考图槽位选择`
         alert(msg)
         throw new Error(msg)
       }
@@ -1133,13 +1159,13 @@ async function regenPromptOnly(scene, frameType) {
 
 async function runSingleSlot(sceneId, frameType, slotIndex, prompt) {
   const key = slotKey(sceneId, frameType, slotIndex)
-  // 轮 5: 单 slot 重生也带上 refs
+  // v1.4.3: 单 slot 重生也带 refs；i2i 模式只要 ≥ 1 张就放行（后端会复制填满槽位）
   let refs = []
   if (isI2I.value) {
     const sc = scenes.value.find(s => s.id === sceneId)
     if (sc) refs = getFrameRefsForBackend(sc, frameType)
-    if (refs.length < workflowRefCount.value) {
-      slotError.value[key] = `需要 ${workflowRefCount.value} 张参考图`
+    if (refs.length < 1) {
+      slotError.value[key] = '至少需要 1 张参考图'
       slotLoading.value[key] = false
       return
     }
@@ -1458,6 +1484,8 @@ async function addOneMore(scene, frameType) {
   opacity: 0; transition: opacity .15s; border-radius: 4px; pointer-events: none;
 }
 .image-slot:hover .slot-overlay { opacity: 1; pointer-events: auto; }
+/* v1.4.3: 空槽 / 错误槽的 overlay 透明度更低（只有删除按钮），避免遮挡 slot 编号 */
+.slot-overlay-empty { background: rgba(0,0,0,.35); }
 .slot-overlay-btn {
   background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.35);
   color: #fff; border-radius: 4px; width: 32px; height: 32px; font-size: 15px;

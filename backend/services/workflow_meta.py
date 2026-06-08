@@ -163,7 +163,7 @@ def classify_workflow(workflow_name: str, *, workflow: Optional[dict] = None,
             if mp.exists():
                 data = json.loads(mp.read_text(encoding="utf-8-sig"))
                 explicit = (data.get("kind") or "").lower()
-                if explicit in ("t2i", "i2i_single", "i2i_double", "video"):
+                if explicit in ("t2i", "i2i_single", "i2i_double", "i2i_multi", "video"):
                     return explicit
         except Exception:
             pass
@@ -180,8 +180,29 @@ def classify_workflow(workflow_name: str, *, workflow: Optional[dict] = None,
     if any(k in name_l for k in _VIDEO_HINTS):
         return "video"
 
-    # 3) 名字含"明显是图生图"的关键词
+    # 工具：数 LoadImage 节点数（包括展平 subgraph 内部，因为 Flux.2 image-edit 等
+    # 工作流的参考图节点藏在 subgraph 里）
+    def _count_loadimage(wf: Optional[dict]) -> int:
+        if not isinstance(wf, dict):
+            return 0
+        try:
+            from services.comfyui import _flatten_subgraphs as _flatten
+            flat = _flatten(wf)
+        except Exception:
+            flat = wf
+        return sum(1 for n in (flat.get("nodes") or []) if n.get("type") == "LoadImage")
+
+    # 3) 名字含"明显是图生图"的关键词 —— 然后**靠节点数挑 single/double/multi**
+    #    （名字里仅出现 image_edit/i2i 等无法判断到底几张参考图）
     if any(k in name_l for k in ("image_edit", "i2i", "img2img")):
+        n_loadimage = _count_loadimage(workflow)
+        if n_loadimage >= 3:
+            return "i2i_multi"
+        if n_loadimage == 2:
+            return "i2i_double"
+        # 名字 hint 兜底（节点扫不到时，名字里如果说 double/two/multi 就用之）
+        if any(k in name_l for k in ("multi", "n_ref", "_multi_", "manyref")):
+            return "i2i_multi"
         if any(k in name_l for k in ("double", "two_ref", "_two_", "2ref")):
             return "i2i_double"
         return "i2i_single"
@@ -216,7 +237,7 @@ def classify_workflow(workflow_name: str, *, workflow: Optional[dict] = None,
             return "unknown"
 
         # 图生图：有 LoadImage + 标准 sampling 签名
-        n_loadimage = sum(1 for n in nodes if n.get("type") == "LoadImage")
+        n_loadimage = _count_loadimage(workflow)
         has_sampler = bool(node_types & {
             "KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced",
         })
@@ -229,7 +250,9 @@ def classify_workflow(workflow_name: str, *, workflow: Optional[dict] = None,
         # 严格：必须有 sampler + clip text encode + latent init/参考图
         full_image_gen = has_sampler and has_clip_text
         if full_image_gen:
-            if n_loadimage >= 2:
+            if n_loadimage >= 3:
+                return "i2i_multi"
+            if n_loadimage == 2:
                 return "i2i_double"
             if n_loadimage == 1:
                 return "i2i_single"
@@ -238,6 +261,26 @@ def classify_workflow(workflow_name: str, *, workflow: Optional[dict] = None,
 
     # 6) 既无名字证据也无完整节点签名 → unknown
     return "unknown"
+
+
+def get_image_workflow_ref_count(kind: str, workflow: Optional[dict] = None) -> int:
+    """v1.4.3: 返回该 kind 应当显示的参考图槽位数。
+    i2i_multi 时按实际展平后的 LoadImage 节点数（上限 8 防 UI 撑爆）。
+    """
+    if kind == "t2i":         return 0
+    if kind == "i2i_single":  return 1
+    if kind == "i2i_double":  return 2
+    if kind == "i2i_multi":
+        if not isinstance(workflow, dict):
+            return 3
+        try:
+            from services.comfyui import _flatten_subgraphs as _flatten
+            flat = _flatten(workflow)
+        except Exception:
+            flat = workflow
+        n = sum(1 for n in (flat.get("nodes") or []) if n.get("type") == "LoadImage")
+        return max(3, min(n, 8))
+    return 0
 
 
 # i2i 工作流 meta 扩展：要让后端能注入参考图，需要知道哪个 LoadImage
@@ -366,7 +409,7 @@ def is_supported_image_workflow(name: str, workflow: Optional[dict] = None,
     if name not in SUPPORTED_IMAGE_WORKFLOWS:
         return False
     kind = classify_workflow(name, workflow=workflow, workflow_path=workflow_path)
-    return kind in ("t2i", "i2i_single", "i2i_double")
+    return kind in ("t2i", "i2i_single", "i2i_double", "i2i_multi")
 
 
 def is_supported_video_workflow(name: str, workflow: Optional[dict] = None,

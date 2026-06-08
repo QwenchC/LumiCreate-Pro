@@ -79,8 +79,11 @@ async def workflow_info(workflow_name: str):
     - 图片生成页是否显示"参考图选择器"
     - 显示几个参考图槽位
     """
-    from services.comfyui import get_workflow_json, bundled_workflow_dir
-    from services.workflow_meta import classify_workflow, load_meta, get_ref_image_nodes
+    from services.comfyui import get_workflow_json, bundled_workflow_dir, _flatten_subgraphs
+    from services.workflow_meta import (
+        classify_workflow, load_meta, get_ref_image_nodes,
+        get_image_workflow_ref_count,
+    )
     from pathlib import Path
     cfg = load_settings().image_engine
     workflow = await get_workflow_json(cfg, workflow_name)
@@ -97,18 +100,29 @@ async def workflow_info(workflow_name: str):
         if wf_dir.exists():
             wf_path = wf_dir / f"{workflow_name}.json"
 
-    kind = classify_workflow(workflow_name, workflow=workflow, workflow_path=str(wf_path) if wf_path else None)
+    kind = classify_workflow(workflow_name, workflow=workflow,
+                              workflow_path=str(wf_path) if wf_path else None)
     meta = load_meta(str(wf_path), type_="image") if wf_path else {}
-    ref_nodes = get_ref_image_nodes(meta, workflow=workflow)
-    ref_count = {"t2i": 0, "i2i_single": 1, "i2i_double": 2}.get(kind, 0)
-    # 工作流实际 LoadImage 节点数可能多于声明（如 single 工作流里有 2 个 LoadImage 一个不用）
-    # 优先用 kind 推断的 ref_count，但提供 actual 给前端做诊断
+
+    # ref_count 按 kind 决定（i2i_multi 时按真实 LoadImage 节点数，上限 8）
+    ref_count = get_image_workflow_ref_count(kind, workflow=workflow)
+
+    # ref_nodes: 优先 meta 显式，否则在展平后的 workflow 上扫
+    try:
+        flat = _flatten_subgraphs(workflow)
+    except Exception:
+        flat = workflow
+    ref_nodes = get_ref_image_nodes(meta, workflow=flat)
+
+    # 实际 LoadImage 节点数（含 subgraph 内部，供前端诊断）
+    actual = sum(1 for n in (flat.get("nodes") or [])
+                  if n.get("type") == "LoadImage")
+
     return {
         "kind": kind,
         "ref_count": ref_count,
-        "ref_nodes": ref_nodes[:max(ref_count, 1)] if ref_count else [],
-        "actual_loadimage_count": sum(1 for n in (workflow.get("nodes") or [])
-                                       if n.get("type") == "LoadImage"),
+        "ref_nodes": ref_nodes[:ref_count] if ref_count else [],
+        "actual_loadimage_count": actual,
         "found": True,
     }
 
