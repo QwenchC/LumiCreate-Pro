@@ -250,6 +250,75 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 
 _GLOBAL_KEY = "__global_elements__"
+_GLOBAL_MUSIC_KEY = "__global_music__"
+
+
+# ── 全局音乐库（v1.4.2）─────────────────────────────────────────────────────────
+# ACE-Step 生成的音乐落到 APPDATA/LumiCreate-Pro/music/ 下；元数据用 SQLite
+# 记录（参数 json + 项目归属，便于"我在哪个项目生成的"查询和清理）
+
+_GLOBAL_MUSIC_DDL = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tracks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT    NOT NULL DEFAULT '',
+    file_path    TEXT    NOT NULL DEFAULT '',
+    mime         TEXT    NOT NULL DEFAULT 'audio/mpeg',
+    project_id   TEXT    NOT NULL DEFAULT '',
+    seed         INTEGER NOT NULL DEFAULT 0,
+    duration_secs INTEGER NOT NULL DEFAULT 0,
+    bpm          INTEGER NOT NULL DEFAULT 120,
+    time_signature TEXT  NOT NULL DEFAULT '4',
+    language     TEXT    NOT NULL DEFAULT 'zh',
+    key_scale    TEXT    NOT NULL DEFAULT 'C major',
+    tags         TEXT    NOT NULL DEFAULT '',
+    lyrics       TEXT    NOT NULL DEFAULT '',
+    bytes        INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tracks_project ON tracks(project_id);
+CREATE INDEX IF NOT EXISTS idx_tracks_created ON tracks(created_at DESC);
+"""
+
+
+def _global_music_path() -> Path:
+    return SETTINGS_PATH.parent / "music.sqlite"
+
+
+def _ensure_global_music_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(_GLOBAL_MUSIC_DDL)
+    row = conn.execute("SELECT COALESCE(MAX(version), 0) AS v FROM schema_version").fetchone()
+    if int(row["v"] or 0) < 1:
+        from datetime import datetime, timezone
+        conn.execute(
+            "INSERT INTO schema_version(version, applied_at) VALUES(?, ?)",
+            (1, datetime.now(timezone.utc).isoformat()),
+        )
+    conn.commit()
+
+
+def get_global_music_conn() -> sqlite3.Connection:
+    """全局音乐库连接（同进程单例）。"""
+    with _CONN_LOCK:
+        c = _CONNS.get(_GLOBAL_MUSIC_KEY)
+        if c is not None:
+            return c
+        path = _global_music_path()
+        c = _make_conn(path)
+        _ensure_global_music_schema(c)
+        _CONNS[_GLOBAL_MUSIC_KEY] = c
+        return c
+
+
+def global_music_root() -> Path:
+    """全局音乐文件存储根目录。"""
+    p = SETTINGS_PATH.parent / "music"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def _global_elements_path() -> Path:

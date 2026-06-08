@@ -20,8 +20,20 @@
           class="btn btn-secondary btn-sm"
           @click="openEmbedded"
         >📂 打开嵌字幕视频</button>
+        <button
+          v-if="hasEmbedded"
+          class="btn btn-secondary btn-sm"
+          @click="bgmMixerOpen = true"
+          title="给 final_video_subbed.mp4 叠加背景音乐"
+        >🎵 添加 BGM</button>
       </div>
     </div>
+
+    <!-- v1.4.2: BGM 混音对话框 -->
+    <BgmMixerDialog v-if="bgmMixerOpen"
+                    :project-id="projectId"
+                    source="final_video_subbed"
+                    @close="bgmMixerOpen = false" />
 
     <!-- ── Not ready ── -->
     <div v-if="!hasFinalVideo" class="empty-state">
@@ -253,6 +265,10 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
+import BgmMixerDialog from '../BgmMixerDialog.vue'
+
+// v1.4.2: BGM 混音对话框可见性
+const bgmMixerOpen = ref(false)
 
 const props = defineProps({ projectId: String })
 

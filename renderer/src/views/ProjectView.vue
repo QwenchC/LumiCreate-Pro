@@ -6,10 +6,11 @@
         v-for="tab in TABS"
         :key="tab.key"
         class="tab-btn"
-        :class="{ active: activeTab === tab.key }"
+        :class="{ active: activeTab === tab.key, 'icon-only': tab.iconOnly }"
+        :title="tab.iconOnly ? tab.label : ''"
         @click="activeTab = tab.key"
       >
-        <span>{{ tab.icon }}</span> {{ tab.label }}
+        <span>{{ tab.icon }}</span><template v-if="!tab.iconOnly"> {{ tab.label }}</template>
       </button>
       <div class="tab-bar-spacer" />
       <button class="btn btn-ghost btn-sm" :disabled="saving"
@@ -139,12 +140,14 @@ const activeTab = computed({
 const TABS = [
   { key: 'manuscript',  label: '文案创建', icon: '📝' },
   { key: 'characters',  label: '角色管理', icon: '🎭' },
-  { key: 'elements',    label: '元素库',   icon: '📦' },
   { key: 'scenes',      label: '分镜设计', icon: '🎞' },
   { key: 'images',      label: '图片生成', icon: '🖼' },
   { key: 'audio',       label: '音频生成', icon: '🎙' },
   { key: 'video',       label: '视频生成', icon: '🎬' },
   { key: 'subtitle',    label: '字幕生成', icon: '💬' },
+  // 元素库 / 音乐生成放在最右边作为图标钮，与主管线 7 tab 视觉分离
+  { key: 'elements',    label: '元素库',   icon: '📦', iconOnly: true },
+  { key: 'music',       label: '音乐生成', icon: '🎵', iconOnly: true },
 ]
 
 const TAB_COMPONENTS = {
@@ -156,6 +159,7 @@ const TAB_COMPONENTS = {
   audio:       defineAsyncComponent(() => import('../components/tabs/AudioTab.vue')),
   video:       defineAsyncComponent(() => import('../components/tabs/VideoTab.vue')),
   subtitle:    defineAsyncComponent(() => import('../components/tabs/SubtitleTab.vue')),
+  music:       defineAsyncComponent(() => import('../components/tabs/MusicTab.vue')),
 }
 
 const currentTabComponent = computed(() => TAB_COMPONENTS[activeTab.value])
@@ -199,7 +203,7 @@ function onProjectKey(e) {
     return
   }
   // Ctrl+1-7 切 tab —— inField 时跳过，避免覆盖编辑器内的常用功能
-  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && /^[1-8]$/.test(e.key) && !inField) {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && /^[1-9]$/.test(e.key) && !inField) {
     const idx = Number(e.key) - 1
     if (TABS[idx]) {
       e.preventDefault()
@@ -257,6 +261,13 @@ onUnmounted(() => {
   margin-bottom: -1px;
 }
 .tab-btn:hover:not(.active) { color: var(--color-text); background: var(--color-border); }
+/* v1.4.2: icon-only tabs（元素库 / 音乐生成）压缩为方形图标钮，hover 显示中文 title */
+.tab-btn.icon-only {
+  padding: 8px 10px;
+  font-size: 16px;
+  min-width: 38px;
+  justify-content: center;
+}
 .tab-bar-spacer { flex: 1; }
 .tab-save-btn { margin-bottom: 4px; }
 .unsaved-badge { font-size: 12px; color: var(--color-warning); margin-bottom: 4px; padding: 0 6px; }

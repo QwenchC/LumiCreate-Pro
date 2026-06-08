@@ -649,3 +649,157 @@ async def merge_project_video(req: MergeVideoRequest):
         output_path=str(out_path),
         output_dir=str(proj_dir),
     )
+
+# ── v1.4.2: 给已合并 / 已烧字幕的视频追加 BGM ───────────────────────────────
+#
+# 与 /merge-project-video 不同：这里不重新拼接、不重编码视频流（-c:v copy），
+# 只在音轨上做"原音 + BGM"混合。源文件保留，输出新文件，避免一次失败把原片
+# 也搞坏。
+#
+# 输入：project_id + source(=final_video|final_video_subbed) + 音乐库 track_id
+#       + 混音参数（BGM 音量 dB / 原音量 dB / 淡入淡出时长 / 是否循环 BGM）
+# 输出：<project>/video/<source>_with_bgm.mp4 + URL
+
+
+def _ffprobe_duration_seconds(ffmpeg_path: str, file_path: Path) -> float:
+    """从 ffmpeg 旁的 ffprobe 拿视频时长（秒），失败回 0。"""
+    import shutil as _sh, subprocess as _sp, os as _os
+    # ffprobe 跟 ffmpeg 一般同目录
+    ffprobe = _sh.which("ffprobe") or str(Path(ffmpeg_path).parent / "ffprobe.exe")
+    if not Path(ffprobe).is_file():
+        ffprobe = "ffprobe"
+    try:
+        out = _sp.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(file_path)],
+            capture_output=True, timeout=30,
+        )
+        if out.returncode == 0:
+            return float((out.stdout or b"").decode().strip() or "0")
+    except Exception:
+        pass
+    return 0.0
+
+
+class MixBgmRequest(BaseModel):
+    project_id:         str
+    source:             str = "final_video"   # 'final_video' | 'final_video_subbed'
+    track_id:           int                    # 来自 /api/music/tracks
+    bgm_volume_db:      float = -12.0
+    original_volume_db: float = 0.0
+    fade_in_ms:         int   = 800
+    fade_out_ms:        int   = 1500
+    loop_bgm:           bool  = True
+
+
+class MixBgmResult(BaseModel):
+    output_path:     str    # 绝对路径（Electron openPath 可直接用）
+    output_filename: str    # 仅文件名（前端拼 video/<file> 用）
+    duration_secs:   float
+    bgm_track_id:    int
+
+
+@router.post("/mix-bgm", response_model=MixBgmResult)
+async def mix_bgm_into_video(req: MixBgmRequest):
+    """在已完成的视频上叠加音乐库里的一首 BGM。视频流 -c:v copy 不重编码。"""
+    cfg  = load_settings()
+    vcfg = cfg.video_engine
+    icfg = cfg.image_engine
+    wdir = vcfg.workflow_dir or icfg.workflow_dir
+    ffmpeg = _find_ffmpeg(vcfg.comfyui_input_dir, wdir)
+    if not ffmpeg:
+        raise HTTPException(500, detail="未找到 ffmpeg")
+
+    # 源视频
+    if req.source not in ("final_video", "final_video_subbed"):
+        raise HTTPException(400, detail=f"非法 source: {req.source!r}")
+    proj_dir = Path(cfg.projects_dir) / req.project_id
+    vid_dir  = proj_dir / "video"
+    source_path = vid_dir / f"{req.source}.mp4"
+    if not source_path.is_file():
+        raise HTTPException(404, detail=f"源视频不存在: {source_path.name}")
+
+    # 音乐 track
+    from services.db import get_global_music_conn, global_music_root
+    conn = get_global_music_conn()
+    row = conn.execute(
+        "SELECT file_path, mime, name FROM tracks WHERE id = ?", (req.track_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, detail=f"音乐 track {req.track_id} 不存在")
+    bgm_path = global_music_root() / row["file_path"]
+    if not bgm_path.is_file():
+        raise HTTPException(404, detail=f"音乐文件丢失: {bgm_path.name}")
+
+    # 视频时长（用于淡出对齐）
+    duration = _ffprobe_duration_seconds(ffmpeg, source_path)
+    if duration <= 0:
+        # 兜底：靠 ffmpeg -shortest 自动截断，淡出按 fade_out_ms 在视频结尾
+        duration = 0.0
+
+    # ── filter_complex 构造 ──
+    fi = max(0, int(req.fade_in_ms))  / 1000.0
+    fo = max(0, int(req.fade_out_ms)) / 1000.0
+    # 淡出起始：max(0, duration - fo)
+    fade_out_start = max(0.0, duration - fo) if duration > 0 else 0.0
+
+    # BGM 链：volume → 可选 fade in → 可选 fade out
+    bgm_filters = [f"volume={req.bgm_volume_db}dB"]
+    if fi > 0:
+        bgm_filters.append(f"afade=t=in:st=0:d={fi:.3f}")
+    if fo > 0 and duration > 0:
+        bgm_filters.append(f"afade=t=out:st={fade_out_start:.3f}:d={fo:.3f}")
+    bgm_chain = ",".join(bgm_filters)
+
+    # 原音轨：仅音量
+    orig_chain = f"volume={req.original_volume_db}dB"
+
+    filter_complex = (
+        f"[1:a]{bgm_chain}[bgm];"
+        f"[0:a]{orig_chain}[orig];"
+        f"[orig][bgm]amix=inputs=2:duration=first:dropout_transition=0[mixed]"
+    )
+
+    # 输出
+    out_path = vid_dir / f"{req.source}_with_bgm.mp4"
+
+    # 构 ffmpeg 命令
+    bgm_input_flags = []
+    if req.loop_bgm:
+        bgm_input_flags += ["-stream_loop", "-1"]
+    cmd = [
+        ffmpeg, "-y",
+        "-i", str(source_path),
+        *bgm_input_flags, "-i", str(bgm_path),
+        "-filter_complex", filter_complex,
+        "-map", "0:v", "-map", "[mixed]",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+        "-shortest",
+        str(out_path),
+    ]
+
+    import subprocess as _sp
+    from services.exec_pool import run_blocking
+    result = await run_blocking(_sp.run, cmd, capture_output=True, timeout=600)
+    if result.returncode != 0:
+        err = (result.stderr or b"").decode(errors="replace")[-800:]
+        raise HTTPException(500, detail=f"ffmpeg BGM 混音失败: {err}")
+
+    # 任务历史
+    try:
+        from services.task_history import append as _th_append
+        _th_append(
+            "bgm-mix", req.project_id,
+            items=1, errors=0, status="ok",
+            note=(f"source={req.source}, track={req.track_id} ({row['name']}), "
+                  f"bgm_db={req.bgm_volume_db}, fade={req.fade_in_ms}/{req.fade_out_ms}ms"),
+        )
+    except Exception as e:
+        print(f"[bgm-mix] task_history append failed: {e}", flush=True)
+
+    return MixBgmResult(
+        output_path=str(out_path),
+        output_filename=out_path.name,
+        duration_secs=float(duration or 0.0),
+        bgm_track_id=req.track_id,
+    )

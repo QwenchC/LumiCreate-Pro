@@ -68,7 +68,7 @@ def isolated_app(tmp_path, monkeypatch):
         "routers.projects", "routers.image_engine", "routers.video_engine",
         "routers.audio_engine", "routers.subtitle_engine",
         "routers.orchestrator", "routers.task_history", "routers.templates",
-        "routers.tasks", "routers.text_engine",
+        "routers.tasks", "routers.text_engine", "routers.music",
     ):
         import sys as _sys
         mod = _sys.modules.get(modname)
@@ -79,6 +79,25 @@ def isolated_app(tmp_path, monkeypatch):
     from services import db
     db.close_all()
     db._CONNS.clear()                # 强制丢弃前面测试的连接
+
+    # v1.4.2: 全局音乐 / 元素 SQLite + 媒体目录跨测试残留会让"列表 / 清理"
+    # 类测试结果不可预测；每次起 fixture 时整体清空。
+    try:
+        import shutil as _sh
+        gm = db._global_music_path()
+        if gm.exists():
+            gm.unlink(missing_ok=True)
+        ge = db._global_elements_path()
+        if ge.exists():
+            ge.unlink(missing_ok=True)
+        music_root = db.SETTINGS_PATH.parent / "music"
+        if music_root.exists():
+            _sh.rmtree(music_root, ignore_errors=True)
+        elements_root = db.SETTINGS_PATH.parent / "elements"
+        if elements_root.exists():
+            _sh.rmtree(elements_root, ignore_errors=True)
+    except Exception:
+        pass
 
     # 清理 task_runner 跨测试的全局字典
     try:

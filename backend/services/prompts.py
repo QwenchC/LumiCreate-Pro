@@ -290,6 +290,73 @@ I2I_PROMPT_USER_TEMPLATE = (
 )
 
 
+# ── Music Prompt + Lyrics (ACE-Step v1.5)─────────────────────────────────────
+#
+# 用户给一段高层简介 → LLM 同时产出"标签段落"+"分段歌词"。
+# 标签段落直接喂给 ACE-Step 的 tags 输入（中文长描述，越具体越好）；
+# 歌词用 [Intro] / [Verse] / [Chorus] / [Outro] 等英文段落标记包裹内容，
+# 段落标记可携带英文环境描述（intro / outro 处尤其有效）。
+
+MUSIC_PROMPT_SYSTEM = (
+    "You are an expert music prompt + lyricist for ACE-Step v1.5 and similar "
+    "text-conditioned music models.\n\n"
+    "Given a user's high-level brief for a song, produce TWO outputs:\n"
+    "  1. tags — a SINGLE rich CHINESE paragraph (150-400 chars) describing the song's "
+    "GENRE, INSTRUMENTS, ARRANGEMENT details, VOCAL STYLE, MOOD, MIX DYNAMICS, and "
+    "INTRO / OUTRO flourishes. Use vivid sensory language — name specific instruments "
+    "and textures (失真电吉他 / 古筝扫弦 / 鼻音 / 强混声), describe section contrast, "
+    "describe instrument layering and panning. Richer stylistic descriptions reliably "
+    "produce better music.\n"
+    "  2. lyrics — sectioned with English-marker headers in brackets, e.g.:\n"
+    "       [Intro — descriptive English of the opening sound]\n"
+    "       [Verse 1]\n"
+    "       (Chinese / target-language verse content here)\n"
+    "       [Pre-Chorus]\n"
+    "       [Chorus]\n"
+    "       [Verse 2]\n"
+    "       [Bridge]\n"
+    "       [Outro — descriptive English of the closing sound]\n\n"
+    "STRUCTURE RULES (pick based on target duration):\n"
+    "  - < 45s: [Intro] + [Verse 1] + [Chorus] + [Outro]\n"
+    "  - 45-90s: + [Pre-Chorus] before Chorus\n"
+    "  - 90-150s: + [Verse 2] + [Chorus] (repeat)\n"
+    "  - 150s+: optionally + [Bridge] between repeats\n\n"
+    "LANGUAGE: verse / chorus body MUST be in the requested target language "
+    "(default 中文 if not specified). Section markers stay English. Intro/Outro "
+    "bracket descriptions stay English.\n\n"
+    "** TAGS — CRITICAL DO-NOT-INCLUDE LIST: **\n"
+    "Tempo / BPM / 速度 / 节拍数, time signature / 拍号 / 4/4 / 3/4, musical key / "
+    "key signature / 调式 / 大调 / 小调 / major / minor, target duration / 时长 / "
+    "song length, all live in SEPARATE structured form fields that the user already "
+    "configured. The tags paragraph is STYLE ONLY. DO NOT mention any specific BPM "
+    "number, any time signature, any key/scale name (e.g. 不要写 \"120 BPM\" / "
+    "\"4/4 拍\" / \"C 大调\" / \"A minor\"), and DO NOT mention duration in seconds. "
+    "If you need to convey energy / tempo feel use words like 急促 / 舒缓 / 鼓点密集 "
+    "WITHOUT a number. Violating this rule degrades music quality because parameters "
+    "get double-applied.\n\n"
+    "OUTPUT: Return ONLY a JSON object with keys \"tags\" and \"lyrics\". No prose, "
+    "no markdown fences, no extra commentary. Both values are strings; \"lyrics\" "
+    "is multi-line with \\n separators between sections."
+)
+
+# 节奏/调式/时长是结构化参数，传给 LLM 仅作"配套写歌结构 + 情绪"的隐式参考，
+# **不要让 LLM 把这些数字直接抄进 tags**。我们用 'hint' 而非显式 "BPM" / "key" 字样，
+# 并在每一项后加显式禁止说明。
+MUSIC_PROMPT_USER_TEMPLATE = (
+    "Brief (the only stylistic source — base tags + lyrics on this): {user_request}\n"
+    "Verse language: {language_display}\n"
+    "\n"
+    "Structural hints (use INTERNALLY to pick section count + rhythmic feel only — "
+    "DO NOT mention these numbers / labels in the tags output):\n"
+    "  - Duration hint: {duration_seconds}s\n"
+    "  - Tempo hint: {bpm} BPM (express as 急促/舒缓 etc., never write the number)\n"
+    "  - Time signature hint: {time_signature}/4 (never write \"4/4\" in tags)\n"
+    "  - Key hint: {key_scale} (never write the key name in tags)\n"
+    "{project_context}"
+    "\nReturn JSON only: {{\"tags\": \"...\", \"lyrics\": \"...\"}}"
+)
+
+
 # ── Video Prompt ───────────────────────────────────────────────────────────────
 
 VIDEO_PROMPT_SYSTEM = (

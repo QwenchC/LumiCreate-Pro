@@ -27,6 +27,8 @@ from services.prompts import (
     FRAME_PROMPT_USER_TEMPLATE,
     I2I_PROMPT_SYSTEM,
     I2I_PROMPT_USER_TEMPLATE,
+    MUSIC_PROMPT_SYSTEM,
+    MUSIC_PROMPT_USER_TEMPLATE,
     VIDEO_PROMPT_SYSTEM,
     VIDEO_PROMPT_USER_TEMPLATE,
 )
@@ -761,3 +763,376 @@ async def generate_video_prompt(req: GenerateVideoPromptRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ── v1.4.2: 音乐标签 + 歌词 AI 助写（ACE-Step）────────────────────────────────
+
+
+_LANGUAGE_LABEL = {
+    "zh": "Chinese (中文)",
+    "en": "English",
+    "ja": "Japanese (日本語)",
+    "ko": "Korean (한국어)",
+}
+
+
+class GenerateMusicPromptRequest(BaseModel):
+    user_request:     str                     # 用户的高层简介（必填）
+    language:         str = "zh"
+    duration_seconds: int = 60
+    bpm:              int = 120
+    time_signature:   str = "4"
+    key_scale:        str = "C major"
+    project_id:       str = ""                # 可选：拿项目文案做背景上下文
+    include_lyrics:   bool = True             # False = 仅给 tags（纯器乐）
+
+
+@router.post("/generate-music-prompt")
+async def generate_music_prompt(req: GenerateMusicPromptRequest):
+    if not req.user_request.strip():
+        raise HTTPException(400, detail="user_request 不能为空")
+
+    # 项目上下文：把文案前 800 字符塞进去，让歌词贴合剧情
+    project_context = ""
+    if req.project_id.strip():
+        try:
+            from pathlib import Path as _P
+            ppath = _P(load_settings().projects_dir) / req.project_id / "manuscript.txt"
+            if ppath.exists():
+                snippet = ppath.read_text(encoding="utf-8-sig").strip()[:800]
+                if snippet:
+                    project_context = f"\nProject manuscript context (excerpt):\n{snippet}\n"
+        except Exception:
+            pass
+
+    user_msg = MUSIC_PROMPT_USER_TEMPLATE.format(
+        user_request    = req.user_request.strip(),
+        language_display = _LANGUAGE_LABEL.get(req.language, req.language),
+        duration_seconds = max(10, int(req.duration_seconds)),
+        bpm             = int(req.bpm),
+        time_signature  = req.time_signature,
+        key_scale       = req.key_scale or "Not specified",
+        project_context = project_context,
+    )
+
+    # 纯器乐时让模型只给 tags
+    sys_msg = MUSIC_PROMPT_SYSTEM
+    if not req.include_lyrics:
+        sys_msg = sys_msg + (
+            "\n\n** This song is INSTRUMENTAL — return an empty string for "
+            "\"lyrics\" and put all detail into \"tags\". **"
+        )
+
+    cfg = load_settings().text_engine
+    full_text = ""
+    async for chunk in stream_chat(cfg, sys_msg, user_msg):
+        full_text += chunk
+
+    cleaned = re.sub(r"```(?:json)?\n?", "", full_text).strip()
+    obj: dict = {}
+    try:
+        obj = json.loads(cleaned)
+    except json.JSONDecodeError:
+        m = re.search(r"\{[\s\S]*\}", cleaned)
+        if m:
+            try:
+                obj = json.loads(m.group())
+            except json.JSONDecodeError:
+                obj = {}
+
+    return {
+        "tags":   str(obj.get("tags", "")).strip(),
+        "lyrics": str(obj.get("lyrics", "")).strip(),
+    }
+
+
+# ── v1.4.2: 批量 SSE 端点 ────────────────────────────────────────────────────
+#
+# 真实瓶颈：Chromium 对单 origin 的 HTTP/1.1 连接上限 = 6。前端就算 fire 50
+# 个 fetch，浏览器只放出 6 个连接，其它在浏览器内部排队，跟我们的 worker
+# pool 完全无关。Settings 里改 concurrency=50 在前端 fetch 模式下永远只能跑 ~5 个。
+#
+# 解决：单 connection / 多结果。前端开一个 SSE，发一个含 N 条任务的请求，
+# 后端用 asyncio.Semaphore(N_settings) 真正并发跑，每完成一条就 SSE push 出来。
+# 浏览器只占 1 个 origin slot，N 由后端 settings 完全控制。
+
+import asyncio as _asyncio
+
+
+def _build_char_block(characters: list) -> str:
+    """构建角色描述块（与 generate_frame_prompts / generate_video_prompt 同款）。"""
+    char_lines = []
+    for c in characters or []:
+        name = (c.get("name") or "").strip()
+        if not name:
+            continue
+        role       = (c.get("role")       or "").strip()
+        appearance = (c.get("appearance") or "").strip()
+        traits     = (c.get("traits")     or "").strip()
+        visual = appearance or traits or ""
+        line = f"  - {name}"
+        if role:   line += f" ({role})"
+        if visual: line += f": {visual}"
+        char_lines.append(line)
+    return "\n".join(char_lines)
+
+
+def _parse_json_object(text: str) -> dict:
+    cleaned = re.sub(r"```(?:json)?\n?", "", (text or "")).strip()
+    try:
+        obj = json.loads(cleaned)
+        return obj if isinstance(obj, dict) else {}
+    except json.JSONDecodeError:
+        m = re.search(r"\{[\s\S]*\}", cleaned)
+        if m:
+            try:
+                obj = json.loads(m.group())
+                return obj if isinstance(obj, dict) else {}
+            except json.JSONDecodeError:
+                pass
+    return {}
+
+
+def _parse_json_list(text: str) -> list:
+    cleaned = re.sub(r"```(?:json)?\n?", "", (text or "")).strip()
+    try:
+        arr = json.loads(cleaned)
+        return arr if isinstance(arr, list) else []
+    except json.JSONDecodeError:
+        m = re.search(r"\[[\s\S]*\]", cleaned)
+        if m:
+            try:
+                arr = json.loads(m.group())
+                return arr if isinstance(arr, list) else []
+            except json.JSONDecodeError:
+                pass
+    return []
+
+
+def _resolve_concurrency(req_value: int) -> int:
+    """req.concurrency=0 → 跟随 settings.text_engine.concurrency；上限 100。"""
+    if req_value and req_value > 0:
+        return max(1, min(int(req_value), 100))
+    try:
+        cfg = load_settings().text_engine
+        n = int(getattr(cfg, "concurrency", 4) or 4)
+        return max(1, min(n, 100))
+    except Exception:
+        return 4
+
+
+async def _run_batched_sse(items, gen_one):
+    """通用批量 SSE 跑路。gen_one(item) -> dict，必须含 scene_id 让前端定位结果。"""
+    queue: _asyncio.Queue = _asyncio.Queue()
+    total = len(items)
+
+    async def worker(item):
+        try:
+            result = await gen_one(item)
+            await queue.put({"event": "result", **result})
+        except Exception as e:
+            sid = item.get("scene_id") if isinstance(item, dict) else ""
+            await queue.put({"event": "item_error",
+                             "scene_id": sid, "message": str(e)[:500]})
+
+    async def producer():
+        await _asyncio.gather(*(worker(it) for it in items),
+                               return_exceptions=True)
+        await queue.put(None)   # sentinel
+
+    async def stream():
+        _asyncio.create_task(producer())
+        while True:
+            ev = await queue.get()
+            if ev is None: break
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'event': 'done', 'total': total}, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Batch: frame prompts (图片提示词)─────────────────────────────────────────
+
+
+class BatchFramePromptsRequest(BaseModel):
+    frames:       list[dict]
+    characters:   list = []
+    manuscript:   str  = ""
+    total_scenes: int  = 0
+    concurrency:  int  = 0
+
+
+@router.post("/generate-frame-prompts-batch")
+async def generate_frame_prompts_batch(req: BatchFramePromptsRequest):
+    concurrency = _resolve_concurrency(req.concurrency)
+    sem = _asyncio.Semaphore(concurrency)
+    cfg = load_settings().text_engine
+
+    def _build_char_block_text(chars: list) -> str:
+        inner = _build_char_block(chars)
+        if not inner: return ""
+        return ("Characters in this scene (ONLY these characters exist in this frame — "
+                "do not add any others):\n" + inner + "\n\n")
+
+    shared_char_block = _build_char_block_text(req.characters)
+
+    async def gen_one(frame: dict) -> dict:
+        async with sem:
+            # 优先用 frame 自带 characters（per-scene 子集），否则用共享集合
+            char_block = (_build_char_block_text(frame["characters"])
+                          if isinstance(frame.get("characters"), list)
+                          else shared_char_block)
+            dialogue_lines = ""
+            if frame.get("dialogues"):
+                parts = []
+                for d in frame["dialogues"]:
+                    text = (d.get("text") or "").strip()
+                    if not text: continue
+                    speaker = (d.get("character") or "").strip()
+                    parts.append(f"  [{speaker or 'Narration'}]: {text}")
+                if parts:
+                    dialogue_lines = (
+                        "Dialogues / narration (read in narrative order — earlier "
+                        "lines correspond to the start frame, later lines to the "
+                        "end frame):\n" + "\n".join(parts) + "\n"
+                    )
+            user_msg = FRAME_PROMPT_USER_TEMPLATE.format(
+                char_block=char_block,
+                description=frame.get("description", ""),
+                dialogue_lines=dialogue_lines,
+            )
+            full_text = ""
+            async for chunk in stream_chat(cfg, FRAME_PROMPT_SYSTEM, user_msg):
+                full_text += chunk
+            obj = _parse_json_object(full_text)
+            return {
+                "scene_id":           frame.get("scene_id", ""),
+                "start_frame_prompt": str(obj.get("start_frame_prompt", "")).strip(),
+                "end_frame_prompt":   str(obj.get("end_frame_prompt",   "")).strip(),
+            }
+
+    return await _run_batched_sse(req.frames, gen_one)
+
+
+# ── Batch: suggest scene characters (AI 自动选角色)────────────────────────────
+
+
+class BatchSuggestSceneCharsRequest(BaseModel):
+    scenes:      list[dict]
+    all_names:   list = []
+    manuscript:  str  = ""
+    concurrency: int  = 0
+
+
+@router.post("/suggest-scene-characters-batch")
+async def suggest_scene_characters_batch(req: BatchSuggestSceneCharsRequest):
+    concurrency = _resolve_concurrency(req.concurrency)
+    sem = _asyncio.Semaphore(concurrency)
+
+    if not req.all_names:
+        async def gen_one_empty(s: dict) -> dict:
+            return {"scene_id": s.get("scene_id", ""), "characters": []}
+        return await _run_batched_sse(req.scenes, gen_one_empty)
+
+    cfg = load_settings().text_engine
+    ms_truncated = (req.manuscript or "").strip()
+    if len(ms_truncated) > 2000:
+        ms_truncated = ms_truncated[:2000] + "... (截断)"
+    if not ms_truncated:
+        ms_truncated = "（未提供文案）"
+    all_names_str = "、".join(req.all_names)
+    valid_names = set(req.all_names)
+
+    async def gen_one(scene: dict) -> dict:
+        async with sem:
+            dialogue_lines = "\n".join(
+                f"  [{d.get('character','?')}]: {d.get('text','')}"
+                for d in (scene.get("dialogues") or [])
+            ) or "（无台词）"
+            user_msg = SUGGEST_CHARS_USER_TEMPLATE.format(
+                manuscript=ms_truncated,
+                description=scene.get("description", "") or "（无描述）",
+                dialogues=dialogue_lines,
+                all_names=all_names_str,
+            )
+            full_text = ""
+            async for chunk in stream_chat(cfg, SUGGEST_CHARS_SYSTEM, user_msg):
+                full_text += chunk
+            arr = _parse_json_list(full_text)
+            return {
+                "scene_id":   scene.get("scene_id", ""),
+                "characters": [n for n in arr if n in valid_names],
+            }
+
+    return await _run_batched_sse(req.scenes, gen_one)
+
+
+# ── Batch: video prompts (视频提示词)────────────────────────────────────────
+
+
+class BatchVideoPromptsRequest(BaseModel):
+    scenes:       list[dict]
+    characters:   list = []
+    manuscript:   str  = ""
+    total_scenes: int  = 0
+    concurrency:  int  = 0
+
+
+@router.post("/generate-video-prompts-batch")
+async def generate_video_prompts_batch(req: BatchVideoPromptsRequest):
+    concurrency = _resolve_concurrency(req.concurrency)
+    sem = _asyncio.Semaphore(concurrency)
+    cfg = load_settings().text_engine
+
+    def _build_char_block_text(chars: list) -> str:
+        inner = _build_char_block(chars)
+        if not inner: return ""
+        return ("Characters in this scene (ONLY these characters — do not add others):\n"
+                + inner + "\n\n")
+
+    shared_chars_block = _build_char_block_text(req.characters)
+
+    ms = (req.manuscript or "").strip()
+    if len(ms) > 3000:
+        ms = ms[:3000] + "... (truncated)"
+    if not ms:
+        ms = "（未提供文案）"
+
+    async def gen_one(scene: dict) -> dict:
+        async with sem:
+            characters_block = (_build_char_block_text(scene["characters"])
+                                if isinstance(scene.get("characters"), list)
+                                else shared_chars_block)
+            dlg_lines = [
+                f"  [{d.get('character','?')} / {d.get('emotion','平静')}]: {d.get('text','')}"
+                for d in (scene.get("dialogues") or [])
+                if d.get("text")
+            ]
+            dialogues_block = (
+                "Dialogues (with emotion):\n" + "\n".join(dlg_lines) + "\n\n"
+                if dlg_lines else ""
+            )
+            user_msg = VIDEO_PROMPT_USER_TEMPLATE.format(
+                manuscript=ms,
+                scene_index=scene.get("scene_index", 1) or 1,
+                total_scenes=req.total_scenes or 1,
+                description=scene.get("description", "") or "（无描述）",
+                characters_block=characters_block,
+                dialogues_block=dialogues_block,
+                start_frame_prompt=scene.get("start_frame_prompt", "") or "（未提供）",
+                end_frame_prompt=scene.get("end_frame_prompt", "") or "（未提供）",
+            )
+            full_text = ""
+            async for chunk in stream_chat(cfg, VIDEO_PROMPT_SYSTEM, user_msg):
+                full_text += chunk
+            return {
+                "scene_id": scene.get("scene_id", ""),
+                "text":     full_text.strip(),
+            }
+
+    return await _run_batched_sse(req.scenes, gen_one)

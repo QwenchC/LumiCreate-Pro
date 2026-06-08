@@ -353,10 +353,17 @@
         <div class="merge-dialog-actions">
           <button class="btn btn-primary" @click="openMergedVideo">▶ 打开视频</button>
           <button class="btn btn-secondary" @click="showMergedInFolder">📂 打开所在目录</button>
+          <button class="btn btn-secondary" @click="bgmMixerOpen = true">🎵 添加 BGM</button>
           <button class="btn btn-ghost" @click="mergeResult = null">关闭</button>
         </div>
       </div>
     </div>
+
+    <!-- v1.4.2: BGM 混音对话框（在 final_video.mp4 上叠加 BGM） -->
+    <BgmMixerDialog v-if="bgmMixerOpen"
+                    :project-id="projectId"
+                    source="final_video"
+                    @close="bgmMixerOpen = false" />
 
   </div>
 </template>
@@ -365,6 +372,10 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import axios from 'axios'
 import { useTabsStore } from '../../stores/tabs'
+import BgmMixerDialog from '../BgmMixerDialog.vue'
+
+// v1.4.2: BGM 混音对话框可见性
+const bgmMixerOpen = ref(false)
 
 const props = defineProps({ projectId: String })
 const emit  = defineEmits(['dirty', 'saved'])
@@ -853,38 +864,91 @@ function editPrompt(scene) {
 
 let _videoPromptAbort = null
 
-const _PROMPT_PARALLEL = 3   // concurrent LLM prompt requests
-
 async function generateAllPrompts() {
+  // v1.4.2: 单 SSE 批量端点。绕开 Chromium 单 origin 6 连接上限——前端只开
+  // 1 个 connection，并发完全由后端 settings.text_engine.concurrency 决定。
   if (generatingAllVideoPrompts.value) return
   generatingAllVideoPrompts.value = true
   videoPromptProgress.value = 0
   _videoPromptAbort = new AbortController()
 
   const allScenes = scenesWithData.value
-  for (let i = 0; i < allScenes.length; i += _PROMPT_PARALLEL) {
-    if (_videoPromptAbort?.signal.aborted) break
-    const batch = allScenes.slice(i, i + _PROMPT_PARALLEL)
-    await Promise.allSettled(batch.map(async s => {
-      if (_videoPromptAbort?.signal.aborted) return
-      try {
-        const text = await _fetchVideoPromptLLM(s, _videoPromptAbort.signal)
-        scenePrompts.value  = { ...scenePrompts.value,  [s.id]: text || _buildPromptFallback(s) }
-        promptVisible.value = { ...promptVisible.value, [s.id]: true }
-      } catch (e) {
-        if (e.name === 'AbortError') return
-        scenePrompts.value  = { ...scenePrompts.value,  [s.id]: _buildPromptFallback(s) }
-        promptVisible.value = { ...promptVisible.value, [s.id]: true }
-      } finally {
-        videoPromptProgress.value++
-        _scheduleSavePrompts()
-      }
-    }))
-  }
+  const allCharsByName = Object.fromEntries(
+    allCharacters.value.map(c => [c.name, c])
+  )
 
-  generatingVideoPromptId.value   = null
-  generatingAllVideoPrompts.value = false
-  _videoPromptAbort = null
+  // 组装每个 scene 的 payload（含 per-scene 角色子集）
+  const scenePayloads = allScenes.map(s => {
+    const selected = s._scene_characters || []
+    const sceneChars = selected.length
+      ? selected.map(n => allCharsByName[n]).filter(Boolean)
+      : null
+    return {
+      scene_id:           String(s.id),
+      description:        s.description,
+      dialogues:          s.dialogues || [],
+      start_frame_prompt: s.start_frame_prompt || '',
+      end_frame_prompt:   s.end_frame_prompt   || '',
+      scene_index:        s.index,
+      ...(sceneChars ? { characters: sceneChars } : {}),
+    }
+  })
+
+  try {
+    const resp = await fetch(`${API}/text-engine/generate-video-prompts-batch`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal:  _videoPromptAbort.signal,
+      body:    JSON.stringify({
+        scenes:       scenePayloads,
+        characters:   allCharacters.value,   // 共享兜底
+        manuscript:   manuscript.value,
+        total_scenes: allScenes.length,
+      }),
+    })
+    if (!resp.ok) throw new Error('HTTP ' + resp.status)
+    const sceneById = {}
+    allScenes.forEach((s, i) => { sceneById[String(s.id)] = s })
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      if (_videoPromptAbort?.signal.aborted) { try { reader.cancel() } catch {} ; break }
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') break
+        try {
+          const ev = JSON.parse(raw)
+          const s = ev.scene_id != null ? sceneById[String(ev.scene_id)] : null
+          if (ev.event === 'result' && s) {
+            const txt = ev.text || _buildPromptFallback(s)
+            scenePrompts.value  = { ...scenePrompts.value,  [s.id]: txt }
+            promptVisible.value = { ...promptVisible.value, [s.id]: true }
+            videoPromptProgress.value++
+            _scheduleSavePrompts()
+          } else if (ev.event === 'item_error' && s) {
+            scenePrompts.value  = { ...scenePrompts.value,  [s.id]: _buildPromptFallback(s) }
+            promptVisible.value = { ...promptVisible.value, [s.id]: true }
+            videoPromptProgress.value++
+            _scheduleSavePrompts()
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      console.warn('batch video-prompts failed', e)
+    }
+  } finally {
+    generatingVideoPromptId.value   = null
+    generatingAllVideoPrompts.value = false
+    _videoPromptAbort = null
+  }
 }
 
 function togglePrompt(sceneId) {

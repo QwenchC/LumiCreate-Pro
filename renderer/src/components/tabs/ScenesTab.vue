@@ -622,32 +622,84 @@ async function generateScenePrompt(scene, idx) {
 }
 
 async function generateAllPrompts() {
+  // v1.4.2: 单 SSE 批量端点。前端只开 1 个 connection，并发完全由后端
+  // settings.text_engine.concurrency 决定，绕开 Chromium 单 origin 6 连接上限。
   promptAbortController = new AbortController()
   generatingPrompts.value = true
   promptProgress.value = 0
   const total = scenes.value.length
-  const CONCURRENCY = await _resolveTextConcurrency()
-  let cursor = 0
-  async function worker() {
-    while (cursor < total) {
-      if (!promptAbortController) break
-      const i = cursor++
-      try {
-        const data = await _fetchFramePrompts(scenes.value[i])
-        scenes.value[i].start_frame_prompt = data.start_frame_prompt || scenes.value[i].start_frame_prompt
-        scenes.value[i].end_frame_prompt   = data.end_frame_prompt   || scenes.value[i].end_frame_prompt
-        markDirty()
-      } catch (e) {
-        if (e.name === 'AbortError') break
-      } finally {
-        promptProgress.value++
+  const sceneById = {}
+  scenes.value.forEach((s, i) => { sceneById[String(s.id)] = i })
+
+  // 收集每个 scene 用到的角色子集（与原单调用语义一致：传 _scene_characters）
+  const allCharsByName = Object.fromEntries(
+    (manuscriptConfig.value.characters || []).map(c => [c.name, c])
+  )
+  const buildFrames = () => scenes.value.map(s => {
+    const selected = s._scene_characters || []
+    const sceneChars = selected.length
+      ? selected.map(n => allCharsByName[n]).filter(Boolean)
+      : null   // null = 让后端用共享 characters（即"所有角色"）
+    return {
+      scene_id:    String(s.id),
+      description: s.description,
+      dialogues:   s.dialogues || [],
+      ...(sceneChars ? { characters: sceneChars } : {}),
+    }
+  })
+
+  try {
+    const resp = await fetch(`${API}/text-engine/generate-frame-prompts-batch`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal:  promptAbortController.signal,
+      body:    JSON.stringify({
+        frames:       buildFrames(),
+        characters:   manuscriptConfig.value.characters || [],
+        manuscript:   manuscript.value,
+        total_scenes: scenes.value.length,
+        // concurrency=0 → 后端跟 settings 走
+      }),
+    })
+    if (!resp.ok) throw new Error('HTTP ' + resp.status)
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      if (promptAbortController?.signal.aborted) { try { reader.cancel() } catch {} ; break }
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') break
+        try {
+          const ev = JSON.parse(raw)
+          if (ev.event === 'result' && ev.scene_id != null) {
+            const i = sceneById[String(ev.scene_id)]
+            if (i != null) {
+              scenes.value[i].start_frame_prompt = ev.start_frame_prompt || scenes.value[i].start_frame_prompt
+              scenes.value[i].end_frame_prompt   = ev.end_frame_prompt   || scenes.value[i].end_frame_prompt
+              markDirty()
+            }
+            promptProgress.value++
+          } else if (ev.event === 'item_error') {
+            promptProgress.value++
+          }
+        } catch {}
       }
     }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      console.warn('batch frame-prompts failed', e)
+    }
+  } finally {
+    generatingPromptIdx.value = null
+    generatingPrompts.value   = false
+    promptAbortController     = null
   }
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, worker))
-  generatingPromptIdx.value = null
-  generatingPrompts.value = false
-  promptAbortController = null
 }
 
 function stopPromptGeneration() {
@@ -675,43 +727,63 @@ async function autoDetectSceneCharacters() {
   detectAbortController = new AbortController()
 
   let changed = false
-  const total = scenes.value.length
-  const CONCURRENCY = await _resolveTextConcurrency()
-  let cursor = 0
-  async function worker() {
-    while (cursor < total) {
-      if (detectAbortController?.signal.aborted) break
-      const i = cursor++
-      const scene = scenes.value[i]
-      try {
-        const res = await fetch(`${API}/text-engine/suggest-scene-characters`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: detectAbortController.signal,
-          body: JSON.stringify({
-            description: scene.description,
-            dialogues:   scene.dialogues || [],
-            all_names:   allCharNames,
-            manuscript:  manuscript.value,
-          }),
-        })
-        if (res.ok) {
-          const data = await res.json()
-          const detected = (data.characters || []).sort()
-          const current  = [...(scene._scene_characters || [])].sort()
-          if (JSON.stringify(current) !== JSON.stringify(detected)) {
-            scene._scene_characters = data.characters || []
-            changed = true
+  const sceneById = {}
+  scenes.value.forEach((s, i) => { sceneById[String(s.id)] = i })
+
+  try {
+    const resp = await fetch(`${API}/text-engine/suggest-scene-characters-batch`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal:  detectAbortController.signal,
+      body:    JSON.stringify({
+        scenes: scenes.value.map(s => ({
+          scene_id:    String(s.id),
+          description: s.description,
+          dialogues:   s.dialogues || [],
+        })),
+        all_names:  allCharNames,
+        manuscript: manuscript.value,
+      }),
+    })
+    if (!resp.ok) throw new Error('HTTP ' + resp.status)
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      if (detectAbortController?.signal.aborted) { try { reader.cancel() } catch {} ; break }
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') break
+        try {
+          const ev = JSON.parse(raw)
+          if (ev.event === 'result' && ev.scene_id != null) {
+            const i = sceneById[String(ev.scene_id)]
+            if (i != null) {
+              const scene = scenes.value[i]
+              const detected = (ev.characters || []).sort()
+              const current  = [...(scene._scene_characters || [])].sort()
+              if (JSON.stringify(current) !== JSON.stringify(detected)) {
+                scene._scene_characters = ev.characters || []
+                changed = true
+              }
+            }
+            detectProgress.value++
+          } else if (ev.event === 'item_error') {
+            detectProgress.value++
           }
-        }
-      } catch (e) {
-        if (e.name === 'AbortError') break
-      } finally {
-        detectProgress.value++
+        } catch {}
       }
     }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      console.warn('batch suggest-chars failed', e)
+    }
   }
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, worker))
 
   if (changed) markDirty()
   detectingChars.value = false

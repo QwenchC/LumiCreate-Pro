@@ -709,9 +709,21 @@ def _litegraph_to_api(workflow: dict) -> dict:
                     if out_link_id is not None:
                         link_map[out_link_id] = source
 
-    # Nodes that exist only as LiteGraph helpers — skip them in API output
+    # Nodes that exist only as LiteGraph helpers — skip them in API output.
+    # PrimitiveNode is a legacy UI-only constant source: its widget value must be
+    # inlined into downstream consumers (handled below via `primitive_values`).
+    # Submitting it as a class_type makes ComfyUI 400 with "node not found".
     _VIRTUAL_TYPES = {"SetNode", "GetNode", "Note", "Reroute", "MarkdownNote",
-                      "Fast Groups Bypasser (rgthree)"}
+                      "Fast Groups Bypasser (rgthree)", "PrimitiveNode"}
+
+    # PrimitiveNode 节点 id (字符串) → 其常量值（widgets_values[0]）。下游消费者
+    # 不再走 link_map，直接拿这个字面量塞进 api_inputs。
+    primitive_values: dict = {}
+    for node in nodes:
+        if node.get("type") == "PrimitiveNode":
+            wvs = node.get("widgets_values") or []
+            if wvs:
+                primitive_values[str(node.get("id"))] = wvs[0]
 
     # Input types that are purely UI widgets — never sent to ComfyUI API
     _UI_ONLY_TYPES = {"IMAGEUPLOAD", "AUDIOUPLOAD", "AUDIO_UI", "VIDEO_UI", "MASK_UI"}
@@ -769,11 +781,22 @@ def _litegraph_to_api(workflow: dict) -> dict:
             # Resolve the link — but only if it points to a node that survives
             # the bypass/virtual filter. Otherwise the consumer must fall back
             # to its widget value (else ComfyUI 400s on "validating inner node").
-            resolved = None
+            resolved = None         # 形如 [node_id, slot] 的链接引用
+            literal_value = None    # 来自 PrimitiveNode 的内联常量（取代链接）
             if link_id is not None and link_id in link_map:
                 cand = link_map[link_id]
-                if cand[0] in alive_node_ids:
+                src_id = cand[0]
+                if src_id in primitive_values:
+                    # PrimitiveNode → 把常量塞进 inputs，跳过 ComfyUI 端节点查找
+                    literal_value = primitive_values[src_id]
+                elif src_id in alive_node_ids:
                     resolved = cand
+
+            if literal_value is not None:
+                api_inputs[inp_name] = literal_value
+                if has_widget and not isinstance(widgets_values, dict):
+                    wv_idx += 1
+                continue
 
             if resolved is not None:
                 api_inputs[inp_name] = resolved

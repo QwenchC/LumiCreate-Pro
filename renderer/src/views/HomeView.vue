@@ -78,19 +78,27 @@
           <button class="template-btn danger" title="删除模板" @click="confirmDeleteTemplate(t)">✕</button>
         </div>
       </div>
-      <div class="sidebar-footer">
-        <button v-if="!sidebarCollapsed" class="btn btn-ghost btn-sm" @click="globalElementsOpen = true">
-          📦 元素库
+      <div class="sidebar-footer" :class="{ collapsed: sidebarCollapsed }">
+        <button class="sidebar-footer-btn" title="全局元素库"
+                @click="globalElementsOpen = true">
+          <span class="sidebar-footer-icon">📦</span>
+          <span v-if="!sidebarCollapsed" class="sidebar-footer-label">元素库</span>
         </button>
-        <button v-else class="sidebar-settings-icon" title="全局元素库" @click="globalElementsOpen = true">📦</button>
-        <button v-if="!sidebarCollapsed" class="btn btn-ghost btn-sm" @click="taskHistoryOpen = true">
-          📊 任务历史
+        <button class="sidebar-footer-btn" title="音乐库"
+                @click="globalMusicOpen = true">
+          <span class="sidebar-footer-icon">🎵</span>
+          <span v-if="!sidebarCollapsed" class="sidebar-footer-label">音乐库</span>
         </button>
-        <button v-else class="sidebar-settings-icon" title="任务历史" @click="taskHistoryOpen = true">📊</button>
-        <button v-if="!sidebarCollapsed" class="btn btn-ghost btn-sm" @click="$router.push('/settings')">
-          ⚙ 引擎设置
+        <button class="sidebar-footer-btn" title="任务历史"
+                @click="taskHistoryOpen = true">
+          <span class="sidebar-footer-icon">📊</span>
+          <span v-if="!sidebarCollapsed" class="sidebar-footer-label">任务历史</span>
         </button>
-        <button v-else class="sidebar-settings-icon" title="引擎设置" @click="$router.push('/settings')">⚙</button>
+        <button class="sidebar-footer-btn" title="引擎设置"
+                @click="$router.push('/settings')">
+          <span class="sidebar-footer-icon">⚙</span>
+          <span v-if="!sidebarCollapsed" class="sidebar-footer-label">设置</span>
+        </button>
       </div>
     </aside>
 
@@ -99,6 +107,9 @@
 
     <!-- 轮 3: 全局元素库弹层 -->
     <GlobalElementsPanel v-if="globalElementsOpen" @close="globalElementsOpen = false" />
+
+    <!-- v1.4.2: 全局音乐库弹层 -->
+    <GlobalMusicPanel v-if="globalMusicOpen" @close="globalMusicOpen = false" />
 
     <!-- Main content -->
     <main class="main-content">
@@ -343,6 +354,7 @@ import { useProjectStore } from '../stores/projects'
 import { useTabsStore } from '../stores/tabs'
 import TaskHistoryPanel from '../components/TaskHistoryPanel.vue'
 import GlobalElementsPanel from '../components/GlobalElementsPanel.vue'
+import GlobalMusicPanel from '../components/GlobalMusicPanel.vue'
 
 const router = useRouter()
 const store = useProjectStore()
@@ -353,6 +365,8 @@ void router    // 模板里通过 $router 访问，避免编译器把 router 视
 const taskHistoryOpen = ref(false)
 // 轮 3: 全局元素库
 const globalElementsOpen = ref(false)
+// v1.4.2: 全局音乐库
+const globalMusicOpen = ref(false)
 
 const STEPS = { manuscript: '文案', scenes: '分镜', images: '图片', audio: '音频', video: '视频' }
 
@@ -740,14 +754,43 @@ onUnmounted(() => {
 .sidebar-toggle:hover { background: var(--color-surface-2); color: var(--color-text); }
 .sidebar.collapsed .sidebar-header { justify-content: center; }
 .sidebar-nav { flex: 1; padding: 8px; display: flex; flex-direction: column; overflow-y: auto; }
-.sidebar-footer { padding: 12px; border-top: 1px solid var(--color-border); display: flex; justify-content: center; }
-.sidebar-settings-icon {
-  width: 32px; height: 32px; border-radius: var(--radius); border: none;
-  background: transparent; cursor: pointer; font-size: 16px;
-  color: var(--color-text-muted); display: flex; align-items: center; justify-content: center;
-  transition: background var(--transition), color var(--transition);
+/* v1.4.2: 侧边栏底部按钮 — 2×2 紧凑布局，展开时显示图标 + 短文字，收起时仅图标 */
+.sidebar-footer {
+  padding: 8px;
+  border-top: 1px solid var(--color-border);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
 }
-.sidebar-settings-icon:hover { background: var(--color-surface-2); color: var(--color-text); }
+.sidebar-footer.collapsed {
+  grid-template-columns: 1fr;
+  padding: 6px 4px;
+}
+.sidebar-footer-btn {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 6px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+  min-width: 0;
+  white-space: nowrap;
+}
+.sidebar-footer-btn:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+.sidebar-footer-icon { font-size: 15px; line-height: 1; flex-shrink: 0; }
+.sidebar-footer-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-footer.collapsed .sidebar-footer-btn { padding: 6px 0; }
 
 /* Collapsed folder icons */
 .folders-section--collapsed { display: flex; flex-direction: column; align-items: center; gap: 4px; padding-top: 4px; }

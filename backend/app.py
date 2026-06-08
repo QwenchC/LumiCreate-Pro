@@ -1,13 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import settings, projects, text_engine, image_engine, audio_engine, video_engine, subtitle_engine, orchestrator, templates, logs, tasks, elements, project_elements
+from routers import settings, projects, text_engine, image_engine, audio_engine, video_engine, subtitle_engine, orchestrator, templates, logs, tasks, elements, project_elements, music
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title="LumiCreate-Pro API",
-        version="1.4.1",
+        version="1.4.2",
         docs_url="/docs",
     )
 
@@ -33,6 +33,7 @@ def create_app() -> FastAPI:
     app.include_router(tasks.router,            prefix="/api/tasks",            tags=["tasks"])
     app.include_router(elements.router,         prefix="/api/elements",         tags=["elements"])
     app.include_router(project_elements.router, prefix="/api/projects/{project_id}/elements", tags=["project-elements"])
+    app.include_router(music.router,            prefix="/api/music",            tags=["music"])
     from routers import task_history as th_router
     app.include_router(th_router.router,        prefix="/api/task-history",     tags=["task-history"])
 
@@ -67,6 +68,6 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     async def health():
-        return {"status": "ok", "version": "1.4.1"}
+        return {"status": "ok", "version": "1.4.2"}
 
     return app

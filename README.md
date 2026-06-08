@@ -176,6 +176,20 @@ SKILL/
 
 ## 更新日志
 
+### v1.4.2
+本版本以 **音乐生成（ACE-Step v1.5）** + **后期 BGM 混音** + **LLM 真实并发突破 Chromium 连接上限** 为主线。
+
+- ✅ **音乐生成页（ACE-Step v1.5）**：项目内 🎵 tab + 主屏「🎵 音乐库」入口共用 `MusicGenerator` 组件；6 个结构化字段（时长 / BPM / 拍号 / 语言 / 调式 / 名字）+ 标签 textarea + 歌词 textarea；强制注入随机 seed 避免重复出同一首；「🔒 固定 seed」复选框可复现一首；「🧹 清理失效」一键删除丢失文件 / 体积 < 1KB 的"幽灵"条目
+- ✅ **AI 助写**：「✨ AI 助写」按钮 → 用户输入简介 → LLM 同时产出"标签段落"+"分段歌词"（`[Intro] [Verse 1] [Chorus] [Outro]` 等英文标记，中文歌词主体）；系统提示双层禁止把 BPM / 拍号 / 调式 / 时长抄进标签段落（防参数双倍套用）；项目级可注入 `manuscript.txt` 片段让歌词贴合剧情
+- ✅ **后期 BGM 混音**：合并视频 / 烧字幕完成后「🎵 添加 BGM」→ 共用 `BgmMixerDialog`；从音乐库选歌 → BGM/原音量滑块 + 淡入淡出 + 循环开关 → ffmpeg `-c:v copy` 不重编码视频流、只重编码音轨，秒级完成；输出 `<source>_with_bgm.mp4`
+- ✅ **项目 BGM 直通**：音乐库每首歌「📌 设为 BGM」一键复制到 `<project>/bgm/bgm.<ext>`，下次合并视频时由 merge 端点自带 BGM 通道处理
+- ✅ **真实 LLM 并发突破 Chromium 单 origin 连接上限**：发现批量提示词生成卡在 ~5 并发的真实原因 —— Chromium 对单 origin HTTP/1.1 连接数限制 = 6，前端就算 fire 50 个 fetch 也只放 6 个出去；新增 3 个**批量 SSE 端点** `/generate-frame-prompts-batch` / `/suggest-scene-characters-batch` / `/generate-video-prompts-batch`，前端只开 1 个连接吃 N 条任务，后端用 `asyncio.Semaphore(settings.concurrency)` 真并发；30 个分镜的视频提示词生成提速 ~6×
+- ✅ **PrimitiveNode 内联**：修复 ComfyUI 400 "Node 'Song Duration' not found" —— 老式 `PrimitiveNode` 是 LiteGraph UI-only 常量源，必须把 `widgets_values[0]` 内联到下游消费者，不能作为节点提交
+- ✅ **工作流硬名单 + 严格分类器**：图片 / 视频 / 音乐工作流下拉用三层防御（bundled 目录 + 严格分类器 + 硬名单 frozenset），确保只显示真正驱动的 6 个工作流；分类器默认从 `t2i` 改成 `unknown`，杜绝乱认
+- ✅ **HomeView 侧边栏底部 2×2 grid**：📦 元素库 / 🎵 音乐库 / 📊 任务历史 / ⚙ 引擎设置 紧凑布局
+- ✅ **ProjectView tab 行**：📦 / 🎵 移到最右、压缩成图标钮，主管线 7 tab 不再拥挤
+- ✅ **测试 + 集成**：后端 **207 / 207 pytest 通过**（v1.4.1 时 169 个），新增 AI 音乐写作 / 批量 SSE 并发证明（in-flight 计数）/ PrimitiveNode 内联 / BGM 混音命令构造 / 死 track 过滤 / 设为项目 BGM 等 38 个回归测
+
 ### v1.4.1
 本版本以 **视频引擎扩展 + ComfyUI 工作流真子图驱动稳定性** 为主线，配合一系列生产 bug 根因修复。
 
