@@ -7,10 +7,12 @@
 | 方法 | 路径                                          | 流式 | 用途                                            |
 |------|-----------------------------------------------|------|-------------------------------------------------|
 | GET  | `/api/image-engine/test`                      | ✗    | 探活 ComfyUI                                    |
-| GET  | `/api/image-engine/workflows`                 | ✗    | 列工作流名（先本地目录，再 ComfyUI HTTP）       |
+| GET  | `/api/image-engine/workflows`                 | ✗    | **v1.4.2** bundled + 硬白名单（仅 3 个：`t2i-lumicreate / image_flux2_text_to_image_9b / image_flux2_klein_image_edit_9b_base`） |
+| GET  | `/api/image-engine/workflows-all`             | ✗    | 不过滤全量（调试用）                            |
+| GET  | `/api/image-engine/workflow-info?workflow_name=X` | ✗ | **v1.4.1+** `{kind, ref_count, ref_nodes}`；kind ∈ `t2i / i2i_single / i2i_double / unknown` |
 | GET  | `/api/image-engine/workflow/{name}`           | ✗    | 取单个工作流 JSON                               |
-| POST | `/api/image-engine/generate-stream`           | ✓    | 单张生成                                        |
-| POST | `/api/image-engine/generate-batch-stream`     | ✓    | 全分镜 × N 并发                                 |
+| POST | `/api/image-engine/generate-stream`           | ✓    | 单张生成；支持 `refs[]`（i2i 参考图）           |
+| POST | `/api/image-engine/generate-batch-stream`     | ✓    | 全分镜 × N 并发；每 frame 可带 `refs`           |
 
 ## 单张：generate-stream
 

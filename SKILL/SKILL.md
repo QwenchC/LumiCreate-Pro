@@ -1,6 +1,6 @@
 ---
 name: lumicreate
-description: 驱动 LumiCreate-Pro 本地 AI 视频创作流水线（文案 → 分镜 → 图片 → 音频 → 视频 → 字幕）。当用户要求"用 LumiCreate / 用本地 AI 工具 创作视频"、"生成短剧/漫剧/解说/朗读视频"、"做 AI 文案+分镜+配音"、"调用 ComfyUI/IndexTTS/LTX-2.3 生成内容"、"批量出图/出视频/拼字幕"，或对话中出现项目目录 LumiCreate-Pro / LumiCreate-Projects、API 端口 18520 时使用本 Skill。
+description: 驱动 LumiCreate-Pro 本地 AI 视频创作流水线（文案 → 分镜 → 图片 → 音频 → 视频 → 字幕 → 音乐 / BGM）。当用户要求"用 LumiCreate / 用本地 AI 工具 创作视频"、"生成短剧/漫剧/解说/朗读视频"、"做 AI 文案+分镜+配音"、"调用 ComfyUI / IndexTTS / LTX-2.3 / ACE-Step 生成内容"、"批量出图/出视频/拼字幕"、"用 AI 写歌 / 生成 BGM / 给视频加背景音乐"，或对话中出现项目目录 LumiCreate-Pro / LumiCreate-Projects、API 端口 18520 时使用本 Skill。
 ---
 
 # LumiCreate-Pro Skill
@@ -79,6 +79,7 @@ description: 驱动 LumiCreate-Pro 本地 AI 视频创作流水线（文案 → 
 | `audio`      | IndexTTS-2.0 / GPT-SoVITS / Microsoft Edge TTS 语音合成与场景拼接   | [audio.md](./references/modules/audio.md)             |
 | `video`      | LTX-2.3 首帧→末帧→音频驱动视频生成，分镜 ffmpeg 合并                 | [video.md](./references/modules/video.md)             |
 | `subtitle`   | stable-whisper 字幕生成 + 烧录                                       | [subtitle.md](./references/modules/subtitle.md)       |
+| `music`      | **v1.4.2** ACE-Step v1.5 音乐生成 + 全局音乐库 + 项目 BGM 直通       | [music.md](./references/modules/music.md)             |
 
 通用约定与流水线骨架见 [pipeline.md](./references/pipeline.md)。
 SSE 事件格式速查见 [sse-events.md](./references/sse-events.md)。

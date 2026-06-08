@@ -7,9 +7,34 @@
 | 方法 | 路径                                       | 流式 | 用途                                       |
 |------|--------------------------------------------|------|--------------------------------------------|
 | GET  | `/api/video-engine/test`                   | ✗    | 探活视频 ComfyUI                            |
-| GET  | `/api/video-engine/workflows`              | ✗    | 列工作流（先 video.workflow_dir，再 image） |
-| POST | `/api/video-engine/generate-stream`        | ✓    | 顺序生成所有分镜视频                       |
+| GET  | `/api/video-engine/workflows`              | ✗    | **v1.4.2** 列工作流：bundled + 硬白名单，仅 `flfa2i-lumicreate` / `video_ltx2_3_i2v` |
+| GET  | `/api/video-engine/workflow-info?workflow_name=X` | ✗ | **v1.4.1+** `{kind, requires_start_image, requires_end_image, supports_audio, supports_duration, label}` |
+| POST | `/api/video-engine/generate-stream`        | ✓    | 按 kind 分发到 flfa2i / i2v driver           |
 | POST | `/api/video-engine/merge-project-video`    | ✗    | ffmpeg 合并为 `final_video.mp4`             |
+| POST | `/api/video-engine/mix-bgm`                | ✗    | **v1.4.2** 在已成视频上叠加音乐库 BGM       |
+| PUT  | `/api/video-engine/bgm/{pid}`              | ✗    | 上传 BGM (`bgm.<ext>`)，merge 通道用        |
+| GET / DELETE | `/api/video-engine/bgm/{pid}`      | ✗    | 查 / 删 BGM                                  |
+
+## workflow-info（v1.4.1+）
+
+调用 `generate-stream` **之前**先查 kind 决定走哪条管线：
+
+```http
+GET /api/video-engine/workflow-info?workflow_name=video_ltx2_3_i2v
+→ {
+  "kind": "video_i2v",
+  "requires_start_image": true,
+  "requires_end_image":   false,
+  "supports_audio":       false,
+  "supports_duration":    true,
+  "label": "单帧 + 时长 (LTX-2.3 i2v)"
+}
+```
+
+| kind            | 必填资产          | 说明                                                            |
+|-----------------|-------------------|-----------------------------------------------------------------|
+| `video_flfa2i`  | 首帧 + 末帧 + 音频 | 默认。`audio_b64=""` 时**自动注入等长静音 WAV**（绕过 LoadAudio 严格校验）|
+| `video_i2v`     | 仅首帧            | 单图 + duration_ms 控制时长；不接受音频                          |
 
 ## generate-stream 请求
 
@@ -44,6 +69,38 @@
 - ❌ 仅生成音频后直接进入视频生成，但**没有先生成图片** → 每镜 `scene_error: 缺少首帧图片`
 - ❌ 直接把 `__ms_reading__{id}` 的 audio 在视频请求里再 base64 一次（双重编码）
 - ✅ 正确流程：图片批量生成 → 等待全部 `completed` 落盘 → 取每镜 selected slot 的 PNG 转 base64 → 调 `ms-tts` 拿 mp3 base64 → 三件套传给 video-engine
+
+## mix-bgm（v1.4.2）
+
+合并视频 / 烧字幕完成后在已成视频上叠加音乐库 BGM。**视频流 `-c:v copy` 不重编码**，
+30 秒成片秒级完成（只编码音轨）。源视频保留，输出新文件 `<source>_with_bgm.mp4`。
+
+```http
+POST /api/video-engine/mix-bgm
+{
+  "project_id":         "<pid>",
+  "source":             "final_video",        // 或 "final_video_subbed"（烧字幕版）
+  "track_id":           42,                    // 来自 /api/music/tracks
+  "bgm_volume_db":      -12.0,                 // 推荐 -10 ~ -15
+  "original_volume_db": 0.0,                   // 推荐 0 或略提
+  "fade_in_ms":         800,
+  "fade_out_ms":        1500,
+  "loop_bgm":           true                   // BGM 短于视频时循环
+}
+→ {
+  "output_path":     "<abs path>",
+  "output_filename": "final_video_with_bgm.mp4",
+  "duration_secs":   45.0,
+  "bgm_track_id":    42
+}
+```
+
+⚠️ `source` 只接受 `"final_video"` 或 `"final_video_subbed"`；其它字符串 400。
+⚠️ ffmpeg `filter_complex` 自动按 ffprobe 出的视频时长对齐淡出起点 `st=duration-fade_out`。
+
+**何时用 mix-bgm vs merge 内置 BGM？**
+- **合并前注入**（`PUT /api/video-engine/bgm/{pid}` 或 `POST /api/music/track/{id}/set-as-bgm`）→ 下次合并视频时由 merge 端点的 BGM 通道处理。需要重新合并。
+- **后期叠加**（mix-bgm）→ 不重新合并，直接在已成片上加 BGM。视频流不重编码。推荐用于"先做完字幕烧录、再选首歌叠 BGM"的工作流。
 
 ## SSE 事件
 

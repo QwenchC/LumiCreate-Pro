@@ -159,6 +159,12 @@ selected = set(scene.get("_scene_characters") or [])
 chars_for_prompt = [c for c in all_chars if c["name"] in selected]   # 0 或 1 个
 ```
 
+**v1.4.2 批量优化**：调用方有 N 个 scene 要批量跑时，**强烈推荐改用单 SSE 批量端点**
+`POST /api/text-engine/generate-frame-prompts-batch`（每 frame 可带 `characters` 子集），
+N 个 fetch 同时走会被 Chromium 单 origin HTTP/1.1 连接上限（6）卡住，30 个分镜的
+批量生成 ≈ 6× 慢。批量端点用单连接 + SSE 流式回吐，后端 `settings.concurrency`
+真生效。详见 [modules/text.md](./modules/text.md#批量-sse-端点-v142)。
+
 ### 4.3 出镜角色建议
 ```http
 POST /api/text-engine/suggest-scene-characters
@@ -317,16 +323,28 @@ POST /api/text-engine/generate-video-prompt
 }
 ```
 返回 SSE 流式英文 prompt（强调镜头运动 + 角色开口对白）。
+
+**v1.4.2 批量**：批量 30 镜推荐用 `POST /api/text-engine/generate-video-prompts-batch`
+（单 SSE 连接，N 条结果），见 [modules/text.md](./modules/text.md#批量-sse-端点-v142)。
+
 可选：保存到 `PUT /api/projects/{id}/video-prompts` 以便下次复用：
 ```json
 { "scene_001": "...", "scene_002": "..." }
 ```
 
-### 7.2 工作流
+### 7.2 工作流（v1.4.2 硬白名单）
 ```http
 GET /api/video-engine/workflows
-→ ["flfa2i-lumicreate",...]
+→ ["flfa2i-lumicreate", "video_ltx2_3_i2v"]
 ```
+仅这两个；用户 ComfyUI 目录里其它视频工作流不会出现在列表。
+
+**提交前先查 kind**：
+```http
+GET /api/video-engine/workflow-info?workflow_name=video_ltx2_3_i2v
+→ {kind:"video_i2v", requires_end_image:false, supports_audio:false, ...}
+```
+`video_i2v` 不需要末帧也不需要音频，仅靠首帧 + duration 出片。
 
 ### 7.3 分镜视频生成（顺序，单 GPU 不并发）
 ```http
@@ -444,6 +462,41 @@ SSE 中 `pct` 字段为 0~100 进度。
 | 其它 `WxH`          | `W<H` → 竖屏 10；`W>H` → 横屏 16 | — |
 
 读取当前分辨率：先查 `GET /api/projects/{id}` 或之前发起视频生成时用的 `resolution` 字段；找不到时默认竖屏（漫剧默认走竖屏）。
+
+## 8.6 可选：音乐 / BGM（v1.4.2）
+
+不是主管线步骤，但智能体若需要"AI 写歌"、"给视频加 BGM"应当用：
+
+```http
+# 1. AI 助写：根据简介 + 项目剧情自动产出 tags + 分段歌词
+POST /api/text-engine/generate-music-prompt
+{ "user_request":"...","language":"zh","duration_seconds":60,"bpm":120,
+  "time_signature":"4","key_scale":"A minor","project_id":"<pid>","include_lyrics":true }
+→ { "tags":"...", "lyrics":"[Intro]\n[Verse 1]\n..." }
+
+# 2. ACE-Step 生成 mp3
+POST /api/music/generate-stream
+{ "duration_seconds":60,"bpm":120,"time_signature":"4","language":"zh","key_scale":"A minor",
+  "tags":"...","lyrics":"...","project_id":"<pid>","seed":null }
+→ SSE: queued → progress → completed{track_id,url}
+
+# 3a. 把生成结果设为项目 BGM（下次合并视频时自动用，全程混响）
+POST /api/music/track/{track_id}/set-as-bgm
+{ "project_id":"<pid>" }
+
+# 3b. 或在已成视频上后期叠加（视频流不重编码，秒级完成）
+POST /api/video-engine/mix-bgm
+{ "project_id":"<pid>","source":"final_video","track_id":<id>,
+  "bgm_volume_db":-12,"original_volume_db":0,"fade_in_ms":800,"fade_out_ms":1500,"loop_bgm":true }
+→ { "output_filename":"final_video_with_bgm.mp4", "duration_secs":... }
+```
+
+**关键点**：
+- ACE-Step `seed` 字段：**`null` 必传**或省略 —— 后端会注入新随机数，不然每次出同一首
+- AI 助写的 tags 不会写 BPM / 调式数字（结构化字段会被双倍套用）
+- BGM 两条路：**3a 重合并**（与镜间过渡 + 全程 BGM 同源） vs **3b 后期叠加**（不重编码视频流）
+
+完整接口见 [modules/music.md](./modules/music.md)。
 
 ## 9. 设置 (settings)
 

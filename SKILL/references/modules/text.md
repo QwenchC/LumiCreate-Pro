@@ -16,6 +16,10 @@
 | POST | `/api/text-engine/generate-character-profile`     | ✗        | 由角色名 + 文案反推 role/traits                      |
 | POST | `/api/text-engine/suggest-scene-characters`       | ✗        | 根据分镜描述/台词推荐出镜角色（仅返回 all_names 子集）|
 | POST | `/api/text-engine/generate-video-prompt`          | ✓        | 单镜视频英文 prompt（强调镜头运动 + 角色对白）       |
+| POST | `/api/text-engine/generate-music-prompt`          | ✗        | v1.4.2 音乐助写：用户简介 → tags + 分段歌词           |
+| POST | `/api/text-engine/generate-frame-prompts-batch`   | ✓ batch  | v1.4.2 **批量**：N 个分镜一次推送结果（绕开浏览器 6 连接上限）|
+| POST | `/api/text-engine/suggest-scene-characters-batch` | ✓ batch  | v1.4.2 **批量**：同上                                  |
+| POST | `/api/text-engine/generate-video-prompts-batch`   | ✓ batch  | v1.4.2 **批量**：同上                                  |
 
 ## 关键请求 body
 
@@ -116,6 +120,82 @@
 }
 ```
 返回 `{characters: ["林夏"]}`，**只会包含 all_names 中的合法名**。
+
+### generate-music-prompt (v1.4.2)
+```json
+{
+  "user_request":     "一首武侠燃曲，开场低沉笛声，副歌爆发",
+  "language":         "zh",
+  "duration_seconds": 60,
+  "bpm":              120,
+  "time_signature":   "4",
+  "key_scale":        "A minor",
+  "project_id":       "<pid>",      // 可选：读 manuscript.txt 注入剧情上下文
+  "include_lyrics":   true           // false = 纯器乐
+}
+→ {"tags": "...", "lyrics": "[Intro]\n[Verse 1]\n..."}
+```
+LLM 提示词**显式禁止**把 BPM / 拍号 / 调式 / 时长写进 tags（这些都有独立结构化字段；
+重复会被 ACE-Step 双倍套用）。
+
+## 批量 SSE 端点（v1.4.2）
+
+**为什么有批量版**：Chromium 单 origin HTTP/1.1 连接上限 = 6。即使后端 `settings.text_engine.concurrency=50`，
+前端 N 个 fetch 也只能 6 个同时跑。批量端点用**单 connection + SSE 流式回吐**绕开这个限制，
+后端用 `asyncio.Semaphore(settings.concurrency)` 真并发，所以"50"才真正生效。
+
+### generate-frame-prompts-batch
+```json
+{
+  "frames": [
+    {"scene_id": "s1", "description": "...", "dialogues": [],
+     "characters": [{"name":"林夏", "appearance":"..."}]},   // 可选 per-scene 子集
+    {"scene_id": "s2", "description": "...", "dialogues": []}
+  ],
+  "characters":   [...],   // 共享兜底（scene 未带 characters 时用）
+  "manuscript":   "...",
+  "total_scenes": 30,
+  "concurrency":  0         // 0 = 跟 settings.text_engine.concurrency；显式正整数覆盖
+}
+```
+
+SSE 事件（顺序与提交无关，谁先做完谁先回）：
+```
+data: {"event":"result", "scene_id":"s1", "start_frame_prompt":"...", "end_frame_prompt":"..."}
+data: {"event":"result", "scene_id":"s3", ...}
+data: {"event":"item_error", "scene_id":"s2", "message":"..."}
+data: {"event":"done", "total":30}
+data: [DONE]
+```
+
+### suggest-scene-characters-batch
+```json
+{
+  "scenes":     [{"scene_id":"s1", "description":"...", "dialogues":[]}, ...],
+  "all_names":  ["林夏","张川"],
+  "manuscript": "...",
+  "concurrency": 0
+}
+```
+每个 result：`{"event":"result", "scene_id":"sN", "characters":["林夏"]}`。
+`all_names=[]` 时跳过 LLM，直接给每个 scene 返 `characters:[]`。
+
+### generate-video-prompts-batch
+```json
+{
+  "scenes": [
+    {"scene_id":"s1", "description":"...", "dialogues":[...],
+     "start_frame_prompt":"...", "end_frame_prompt":"...", "scene_index":1,
+     "characters":[...]},   // 可选 per-scene 子集
+    ...
+  ],
+  "characters":   [...],     // 共享兜底
+  "manuscript":   "...",
+  "total_scenes": 30,
+  "concurrency":  0
+}
+```
+每个 result：`{"event":"result", "scene_id":"sN", "text":"<英文 video prompt>"}`。
 
 ## 错误恢复
 
