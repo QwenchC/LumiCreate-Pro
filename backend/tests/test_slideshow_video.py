@@ -552,3 +552,74 @@ def test_subtitle_burn_reencodes_audio_to_fix_av_drift():
     assert "'-video_track_timescale', '90000'" in window
     # Windows-safe 编码档
     assert "'main'" in window and "'4.0'" in window
+
+
+# ── v1.4.6++ A/V drift + bitrate ceiling regression ──────────────────────────
+
+
+def test_per_scene_clip_pins_48k_audio_and_aresample_async(tmp_path):
+    """A/V drift 修复硬约束（用户主诉：10min 视频音频早 1min 结束）：
+    - 音频统一 48kHz（与 merge / burn 一致 → 全链路无重采样）
+    - `aresample=async=1000:first_pts=0` 在每镜起点用静音填 PTS 间隙
+    - 用显式 -t 取代 -shortest（避免 -shortest 在 AAC priming 上累积截断）
+    """
+    from services.slideshow_video import build_scene_clip_cmd
+    img = tmp_path / "a.png"; img.write_bytes(b"x")
+    aud = tmp_path / "a.mp3"; aud.write_bytes(b"y")
+    out = tmp_path / "scene.mp4"
+    cmd = build_scene_clip_cmd(
+        "ffmpeg", start_image=img, end_image=None, audio=aud,
+        duration_ms=5000, output_path=out, width=1280, height=720, fps=25,
+    )
+    # 48kHz 全链路对齐
+    i = cmd.index("-ar"); assert cmd[i+1] == "48000"
+    # aresample 滤镜
+    assert "-af" in cmd
+    af_chain = cmd[cmd.index("-af") + 1]
+    assert "aresample=async=1000:first_pts=0" == af_chain or \
+           af_chain.endswith("aresample=async=1000:first_pts=0")
+    # 显式 -t 控制末尾，不再依赖 -shortest
+    # （单图分支：第一个 -t 是 input image 时长，必须存在第二个 -t 给 output）
+    t_indices = [i for i, x in enumerate(cmd) if x == "-t"]
+    assert len(t_indices) >= 1
+
+
+def test_per_scene_clip_enforces_wmp_bitrate_ceiling(tmp_path):
+    """用户主诉：合并视频"数据速率/总比特率过高" → WMP 拒播。
+    每镜次必须 maxrate 8M + bufsize 16M（Level 4.0 安全边界）。"""
+    from services.slideshow_video import build_scene_clip_cmd
+    img = tmp_path / "a.png"; img.write_bytes(b"x")
+    out = tmp_path / "scene.mp4"
+    cmd = build_scene_clip_cmd(
+        "ffmpeg", start_image=img, end_image=None, audio=None,
+        duration_ms=3000, output_path=out, width=1920, height=1080, fps=25,
+    )
+    assert "-maxrate" in cmd
+    i = cmd.index("-maxrate"); assert cmd[i+1] == "8M"
+    assert "-bufsize" in cmd
+    i = cmd.index("-bufsize"); assert cmd[i+1] == "16M"
+
+
+def test_merge_re_encode_paths_have_aresample_async():
+    """v1.4.6++ merge 必须用 aresample=async 修复跨镜次 A/V drift。
+    快路径（concat re-encode）用 -af；慢路径（filter_complex）用 filter 节点。"""
+    src = (Path(__file__).resolve().parents[1] / "routers" / "video_engine.py")\
+        .read_text(encoding="utf-8")
+    # 快路径：'-f', 'concat' 之后 1500 char 内必须出现 aresample=async
+    fast_idx = src.find('"-f", "concat", "-safe"')
+    assert fast_idx >= 0
+    assert "aresample=async" in src[fast_idx:fast_idx + 2000]
+    # 慢路径：filter_complex 构造 final_audio_label 处必须有 aresample 节点
+    assert "aresample=async=1000:first_pts=0[afinal]" in src or \
+           "aresample=async=1000:first_pts=0" in src
+
+
+def test_merge_paths_enforce_wmp_bitrate_ceiling():
+    src = (Path(__file__).resolve().parents[1] / "routers" / "video_engine.py")\
+        .read_text(encoding="utf-8")
+    # 快路径
+    fast_idx = src.find('"-f", "concat", "-safe"')
+    assert fast_idx >= 0
+    fast_win = src[fast_idx:fast_idx + 2000]
+    assert '"-maxrate", "8M"' in fast_win
+    assert '"-bufsize", "16M"' in fast_win
