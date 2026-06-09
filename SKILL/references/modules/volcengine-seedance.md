@@ -31,16 +31,34 @@ Driver 暴露 **同样的 SSE 事件 schema**（queued / progress / completed / 
 | 2. 轮询状态 | `GET  {base_url}/contents/generations/tasks/{task_id}` | 直到 `status == "succeeded"` |
 | 3. 下载视频 | `GET  <response.content.video_url>` | mp4 字节流 |
 
-**Content 数组**（按 Ark 多模态约定）：
+**Content 数组**（按官方文档 v1.4.10 对齐）：
 ```json
 [
-  {"type": "text", "text": "a dragon flies over mountains --resolution 720p --duration 5"},
-  {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+  {"type": "text", "text": "a dragon flies over mountains"},
+  {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}, "role": "first_frame"},
+  {"type": "image_url", "image_url": {"url": "..."}, "role": "last_frame"}
 ]
 ```
 
-- 分辨率 / 时长以 `--key value` hint 形式贴在 prompt 末尾（Seedance 习惯做法）
-- 首末帧用 base64 data URL 或 https URL（驱动会自动判断+加前缀）
+- text 保持干净的提示词，**不再贴 `--key value` hint**（生成参数走 request body）
+- 单图（图生视频-首帧）：1 个 image_url，role 显式打 `first_frame`（更稳）
+- 双图（图生视频-首尾帧）：2 个 image_url，role 必填 `first_frame` + `last_frame`
+- url 字段接受 base64 data URL（`data:image/png;base64,xxx`）或公网 https URL；驱动自动判断+加前缀
+
+**生成参数走 request body**（新方式，强校验；旧方式 prompt --hints 仍兼容）：
+```json
+{
+  "model": "doubao-seedance-2-0-260128",
+  "content": [...],
+  "resolution": "720p",          // 480p / 720p / 1080p
+  "ratio": "adaptive",           // 16:9 / 9:16 / 1:1 / 4:3 / 3:4 / 21:9 / adaptive
+  "duration": 5,                 // 整数秒；Seedance 2.0/1.5 范围 4-15
+  "seed": -1,                    // -1 随机；其它复现
+  "generate_audio": false,       // 漫剧 reading 模式 = false（TTS 独立产出）
+  "watermark": false,            // AI 生成水印
+  "camera_fixed": false          // 固定摄像头（Seedance 2.0 不支持）
+}
+```
 
 **状态收敛**：driver 把 `success / completed → succeeded`，`processing / in_progress
 → running` 等同义词都映射到固定 5 状态 `queued / running / succeeded / failed /
@@ -53,10 +71,15 @@ cancelled`。
 | `engine_type` | `"comfyui"` | 切换：`"comfyui"` ↔ `"volcengine_seedance"` |
 | `volcengine_base_url` | `https://ark.cn-beijing.volces.com/api/v3` | Ark 端点；用户在控制台看自己区域 |
 | `volcengine_api_key` | `""` | ARK_API_KEY，控制台 → API Key 管理 |
-| `volcengine_model_id` | `""` | endpoint ID（典型 `ep-2024...-xxxxx`）或官方模型别名 |
-| `volcengine_duration_secs` | `5` | 单镜时长，整数（5 / 10 常见档位） |
-| `volcengine_resolution` | `"720p"` | 档位字符串（480p / 720p / 1080p） |
+| `volcengine_model_id` | `""` | endpoint ID（典型 `ep-2024...-xxxxx`）或模型别名（如 `doubao-seedance-2-0-260128`） |
+| `volcengine_duration_secs` | `5` | 单镜时长，整数秒；Seedance 2.0/1.5 范围 4-15 |
+| `volcengine_resolution` | `"720p"` | 480p / 720p / 1080p（Seedance 2.0 fast 不支持 1080p） |
+| `volcengine_ratio` | `"adaptive"` | 16:9 / 9:16 / 1:1 / 4:3 / 3:4 / 21:9 / adaptive |
 | `volcengine_use_image` | `true` | 是否走 i2v / flf2v；`false` 则纯 t2v |
+| `volcengine_generate_audio` | `false` | 漫剧 reading 模式 = false（TTS 独立产出）；非漫剧 = true 让模型自带音频 |
+| `volcengine_watermark` | `false` | 视频右下角 "AI 生成" 水印 |
+| `volcengine_camera_fixed` | `false` | 固定摄像头（Seedance 2.0 暂不支持） |
+| `volcengine_seed` | `-1` | -1 随机；其它整数复现 |
 | `volcengine_poll_interval` | `5` | 轮询间隔（秒） |
 | `volcengine_poll_timeout` | `600` | 轮询总超时（秒） |
 

@@ -77,10 +77,22 @@ class VideoEngineConfig(BaseModel):
     volcengine_poll_interval: int = Field(default=5, ge=1, le=60)
     # 单条视频时长（秒，整数）—— Seedance 2.0 常见档位 5 / 10 秒
     volcengine_duration_secs: int = Field(default=5, ge=2, le=10)
-    # 分辨率（"720p" / "1080p" 这种档位字符串，具体可选值在控制台/文档里看）
+    # 分辨率（480p / 720p / 1080p；Seedance 2.0 fast 不支持 1080p）
     volcengine_resolution: str = "720p"
+    # 宽高比（16:9 / 4:3 / 1:1 / 3:4 / 9:16 / 21:9 / adaptive）；
+    # adaptive = 模型按输入图片自动选最接近的比例（Seedance 2.0/1.5 推荐）
+    volcengine_ratio: str = "adaptive"
     # 是否使用首末帧驱动（Seedance i2v / flf2v）；False 即纯文生视频
     volcengine_use_image: bool = True
+    # 是否让 Seedance 自带生成音频（漫剧 reading 模式 = False，由 TTS 独立产出
+    # → 后期 ffmpeg 合成；非漫剧场景可以开 True 让模型自带音频）
+    volcengine_generate_audio: bool = False
+    # 输出视频是否带"AI 生成"水印
+    volcengine_watermark: bool = False
+    # 是否固定摄像头（Seedance 2.0 暂不支持，此项仅对老模型生效）
+    volcengine_camera_fixed: bool = False
+    # seed：-1 = 随机；其它整数 = 复现
+    volcengine_seed: int = -1
 
 
 class AppSettings(BaseModel):

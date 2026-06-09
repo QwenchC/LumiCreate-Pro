@@ -69,7 +69,12 @@ def isolated_app(tmp_path, monkeypatch):
             "volcengine_poll_interval": 5,
             "volcengine_duration_secs": 5,
             "volcengine_resolution": "720p",
+            "volcengine_ratio": "adaptive",
             "volcengine_use_image": True,
+            "volcengine_generate_audio": False,
+            "volcengine_watermark": False,
+            "volcengine_camera_fixed": False,
+            "volcengine_seed": -1,
         })()
 
     fake = _Cfg()

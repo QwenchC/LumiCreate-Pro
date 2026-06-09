@@ -305,15 +305,20 @@ async def generate_video_stream(req: VideoGenerateRequest):
                 if getattr(vcfg, "engine_type", "comfyui") == "volcengine_seedance":
                     from services.volcengine_seedance import generate_video_seedance
                     return generate_video_seedance(
-                        base_url       = vcfg.volcengine_base_url,
-                        api_key        = vcfg.volcengine_api_key,
-                        model_id       = vcfg.volcengine_model_id,
+                        base_url        = vcfg.volcengine_base_url,
+                        api_key         = vcfg.volcengine_api_key,
+                        model_id        = vcfg.volcengine_model_id,
                         first_frame_b64 = scene.start_image_b64,
                         last_frame_b64  = scene.end_image_b64,
                         positive_prompt = scene.positive_prompt,
                         duration_secs   = vcfg.volcengine_duration_secs,
                         resolution      = vcfg.volcengine_resolution,
+                        ratio           = getattr(vcfg, "volcengine_ratio", "adaptive"),
                         use_image       = vcfg.volcengine_use_image,
+                        generate_audio  = getattr(vcfg, "volcengine_generate_audio", False),
+                        watermark       = getattr(vcfg, "volcengine_watermark", False),
+                        camera_fixed    = getattr(vcfg, "volcengine_camera_fixed", False),
+                        seed            = getattr(vcfg, "volcengine_seed", -1),
                         poll_interval   = vcfg.volcengine_poll_interval,
                         poll_timeout    = vcfg.volcengine_poll_timeout,
                         scene_id        = scene.scene_id,

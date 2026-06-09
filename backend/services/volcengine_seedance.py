@@ -101,42 +101,36 @@ def _build_content_payload(
     *,
     first_frame_b64: str = "",
     last_frame_b64:  str = "",
-    duration_secs:   int = 5,
-    resolution:      str = "720p",
     use_image:       bool = True,
 ) -> list[dict]:
     """组装 Ark 视频生成的 `content` 数组。
 
-    Ark 多模态约定：content 是有序的"片段"列表，每片可以是 text / image_url。
-    Seedance 习惯做法：
-      - text：prompt + "[--ratio 16:9] [--resolution 720p] [--duration 5]" 这种
-        参数指令（部分模型支持把生成参数贴在 prompt 末尾的 hint 语法）
-      - image_url：首帧（i2v）/ 首+末帧（flf2v）
+    按官方文档 v1.4.10+：
+      - text：纯提示词文本，**不再贴 --hints**（生成参数走 request body 强校验）
+      - image_url.role：图生视频-首帧 → 'first_frame'（或省略）；
+        图生视频-首尾帧 → 'first_frame' + 'last_frame' 两张
     """
-    text = prompt or ""
-    # 把生成参数贴在 prompt 末尾，按 Ark/Seedance 常用的 `--key value` 语法
-    hints: list[str] = []
-    if resolution: hints.append(f"--resolution {resolution}")
-    if duration_secs: hints.append(f"--duration {int(duration_secs)}")
-    if hints:
-        text = (text + " " + " ".join(hints)).strip()
-
-    parts: list[dict] = [{"type": "text", "text": text}]
-    if use_image and first_frame_b64:
+    parts: list[dict] = [{"type": "text", "text": prompt or ""}]
+    if not use_image:
+        return parts
+    # 双图：必须同时给 role，文档约定 "图生视频-首尾帧" 场景 role 必填
+    if first_frame_b64 and last_frame_b64:
         parts.append({
             "type": "image_url",
-            "image_url": {
-                "url": _ensure_data_url(first_frame_b64),
-                # "role": "first_frame",   # 如果官方文档要求显式 role，再开启
-            },
+            "image_url": {"url": _ensure_data_url(first_frame_b64)},
+            "role": "first_frame",
         })
-    if use_image and last_frame_b64:
         parts.append({
             "type": "image_url",
-            "image_url": {
-                "url": _ensure_data_url(last_frame_b64),
-                # "role": "last_frame",
-            },
+            "image_url": {"url": _ensure_data_url(last_frame_b64)},
+            "role": "last_frame",
+        })
+    elif first_frame_b64:
+        # 单图：文档允许省略 role；显式 first_frame 更稳
+        parts.append({
+            "type": "image_url",
+            "image_url": {"url": _ensure_data_url(first_frame_b64)},
+            "role": "first_frame",
         })
     return parts
 
@@ -155,12 +149,23 @@ def _ensure_data_url(image_b64: str) -> str:
 
 
 async def _post_create_task(
-    base_url: str, api_key: str, *,
-    model_id: str,
-    content:  list[dict],
-    seed:     Optional[int] = None,
+    base_url:        str,
+    api_key:         str, *,
+    model_id:        str,
+    content:         list[dict],
+    resolution:      str = "720p",
+    duration:        int = 5,
+    ratio:           str = "adaptive",
+    seed:            Optional[int] = None,
+    camera_fixed:    bool = False,
+    watermark:       bool = False,
+    generate_audio:  bool = True,
 ) -> tuple[Optional[str], str]:
-    """POST 创建任务，返回 (task_id, raw_error_msg)。"""
+    """POST 创建任务，返回 (task_id, raw_error_msg)。
+
+    v1.4.10 文档对齐：新方式（推荐）把 resolution / ratio / duration / seed /
+    camera_fixed / watermark / generate_audio 直接放 request body，**强校验**。
+    """
     url = f"{base_url.rstrip('/')}/contents/generations/tasks"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -170,14 +175,23 @@ async def _post_create_task(
         "model":   model_id,
         "content": content,
     }
-    if seed is not None and seed > 0:
+    # 生成参数（新方式，request body 直传）
+    if resolution:           body["resolution"]   = resolution
+    if ratio:                body["ratio"]        = ratio
+    if duration:             body["duration"]     = int(duration)
+    if seed is not None and int(seed) >= 0:
         body["seed"] = int(seed)
+    if camera_fixed:         body["camera_fixed"] = True
+    if watermark:            body["watermark"]    = True
+    # generate_audio 默认 true（文档默认），漫剧 reading 模式建议设 false，
+    # 因为我们的 TTS 已经独立产出音频，后续 ffmpeg 合成
+    body["generate_audio"] = bool(generate_audio)
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             r = await client.post(url, headers=headers, json=body)
         if r.status_code in (200, 201, 202):
             j = r.json()
-            # 常见形态：{"id": "task_...","status":"queued",...}
+            # 文档明确：响应顶层 `id` 字段即任务 ID
             task_id = j.get("id") or j.get("task_id") or (j.get("data") or {}).get("id")
             if not task_id:
                 return None, f"未识别 task id（响应：{json.dumps(j, ensure_ascii=False)[:300]}）"
@@ -247,7 +261,11 @@ async def generate_video_seedance(
     positive_prompt: str = "",
     duration_secs:   int = 5,
     resolution:      str = "720p",
+    ratio:           str = "adaptive",
     use_image:       bool = True,
+    generate_audio:  bool = False,   # 漫剧 reading：TTS 独立产出 → 默认 false
+    watermark:       bool = False,
+    camera_fixed:    bool = False,
     seed:            Optional[int] = None,
     poll_interval:   int = 5,
     poll_timeout:    int = 600,
@@ -278,12 +296,13 @@ async def generate_video_seedance(
         positive_prompt,
         first_frame_b64=first_frame_b64,
         last_frame_b64=last_frame_b64,
-        duration_secs=duration_secs,
-        resolution=resolution,
         use_image=use_image,
     )
     task_id, err = await _post_create_task(
-        base_url, api_key, model_id=model_id, content=content, seed=seed,
+        base_url, api_key, model_id=model_id, content=content,
+        resolution=resolution, duration=duration_secs, ratio=ratio,
+        seed=seed, camera_fixed=camera_fixed, watermark=watermark,
+        generate_audio=generate_audio,
     )
     if err or not task_id:
         yield {"event": "error",

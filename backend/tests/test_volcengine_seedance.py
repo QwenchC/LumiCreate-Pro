@@ -158,8 +158,8 @@ def test_driver_happy_path_with_mocked_http():
     create_calls = []
     poll_calls = [0]
 
-    async def _fake_create(base_url, api_key, *, model_id, content, seed=None):
-        create_calls.append({"model": model_id, "content": content})
+    async def _fake_create(base_url, api_key, *, model_id, content, **kw):
+        create_calls.append({"model": model_id, "content": content, "kwargs": kw})
         return "task_abc123", ""
 
     async def _fake_poll(base_url, api_key, task_id):
@@ -200,22 +200,97 @@ def test_driver_happy_path_with_mocked_http():
     content = create_calls[0]["content"]
     assert any(p["type"] == "text" for p in content)
     assert any(p["type"] == "image_url" for p in content)
+    # 验证生成参数走 request body（新方式）而不是塞 prompt
+    kwargs = create_calls[0]["kwargs"]
+    assert kwargs["resolution"] == "720p"
+    assert kwargs["duration"] == 5
+    # prompt 末尾不能再有 --hint
+    text = next(p for p in content if p["type"] == "text")["text"]
+    assert "--resolution" not in text
+    assert "--duration" not in text
 
 
-def test_content_builder_injects_resolution_and_duration_hints():
-    """构造 content 时把分辨率 / 时长贴在 prompt 末尾的 `--key value` hint 里。"""
+def test_content_builder_does_not_inject_hints_in_prompt():
+    """v1.4.10 文档对齐：生成参数走 request body 强校验，prompt 保持干净。"""
     from services.volcengine_seedance import _build_content_payload
     parts = _build_content_payload(
         "a cat walks",
         first_frame_b64="ab",
-        duration_secs=10, resolution="1080p",
         use_image=True,
     )
     text = parts[0]["text"]
-    assert "--resolution 1080p" in text
-    assert "--duration 10" in text
+    assert text == "a cat walks"
     # image_url 必须出现且是 data: URL 形态
     assert parts[1]["image_url"]["url"].startswith("data:image/")
+
+
+def test_content_builder_sets_role_on_first_last_frame():
+    """文档约定：图生视频-首尾帧场景必须给 role；首帧 role='first_frame'，
+    尾帧 role='last_frame'。"""
+    from services.volcengine_seedance import _build_content_payload
+    parts = _build_content_payload(
+        "scene",
+        first_frame_b64="first_b64",
+        last_frame_b64="last_b64",
+        use_image=True,
+    )
+    img_parts = [p for p in parts if p["type"] == "image_url"]
+    assert len(img_parts) == 2
+    assert img_parts[0].get("role") == "first_frame"
+    assert img_parts[1].get("role") == "last_frame"
+    # 单图（首帧）也显式打 role=first_frame —— 文档说"或不填"，我们显式更稳
+    parts2 = _build_content_payload("s", first_frame_b64="f", use_image=True)
+    img2 = [p for p in parts2 if p["type"] == "image_url"]
+    assert len(img2) == 1
+    assert img2[0].get("role") == "first_frame"
+
+
+def test_post_body_includes_new_way_parameters():
+    """request body 必须包含 resolution / ratio / duration / generate_audio
+    等顶层字段（新方式，强校验）。"""
+    from services import volcengine_seedance as vs
+
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+        def json(self): return {"id": "task_x"}
+
+    class _FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, *, headers, json):
+            captured["url"]     = url
+            captured["headers"] = headers
+            captured["body"]    = json
+            return _FakeResp()
+
+    with patch.object(vs.httpx, "AsyncClient", return_value=_FakeClient()):
+        async def _go():
+            return await vs._post_create_task(
+                "https://ark.cn-beijing.volces.com/api/v3",
+                "sk_test",
+                model_id="doubao-seedance-2-0-260128",
+                content=[{"type": "text", "text": "hello"}],
+                resolution="1080p", duration=10,
+                ratio="9:16", seed=42,
+                camera_fixed=False, watermark=False,
+                generate_audio=False,
+            )
+        asyncio.run(_go())
+
+    body = captured["body"]
+    assert body["model"] == "doubao-seedance-2-0-260128"
+    assert body["resolution"] == "1080p"
+    assert body["duration"]   == 10
+    assert body["ratio"]      == "9:16"
+    assert body["seed"]       == 42
+    assert body["generate_audio"] is False
+    assert "watermark" not in body or body["watermark"] is False
+    # auth 头
+    assert captured["headers"]["Authorization"] == "Bearer sk_test"
+    # 端点 URL
+    assert captured["url"].endswith("/contents/generations/tasks")
 
 
 def test_status_mapping_recognizes_synonyms():

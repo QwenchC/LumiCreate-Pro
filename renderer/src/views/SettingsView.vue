@@ -410,11 +410,9 @@
           <div class="form-group form-row">
             <div style="flex:1">
               <label>单镜时长（秒）</label>
-              <select v-model.number="settings.video_engine.volcengine_duration_secs"
-                      class="input select">
-                <option :value="5">5 秒</option>
-                <option :value="10">10 秒</option>
-              </select>
+              <input type="number" v-model.number="settings.video_engine.volcengine_duration_secs"
+                     class="input" min="2" max="15" />
+              <p class="hint">Seedance 2.0/1.5: 4-15；Seedance 1.0: 2-12</p>
             </div>
             <div style="flex:1">
               <label>分辨率</label>
@@ -422,7 +420,20 @@
                       class="input select">
                 <option value="480p">480p</option>
                 <option value="720p">720p</option>
-                <option value="1080p">1080p（更贵）</option>
+                <option value="1080p">1080p（更贵；Seedance 2.0 fast 不支持）</option>
+              </select>
+            </div>
+            <div style="flex:1">
+              <label>宽高比</label>
+              <select v-model="settings.video_engine.volcengine_ratio"
+                      class="input select">
+                <option value="adaptive">adaptive（自动适配）</option>
+                <option value="16:9">16:9</option>
+                <option value="9:16">9:16（竖屏）</option>
+                <option value="4:3">4:3</option>
+                <option value="3:4">3:4（竖屏）</option>
+                <option value="1:1">1:1（方形）</option>
+                <option value="21:9">21:9</option>
               </select>
             </div>
           </div>
@@ -431,6 +442,23 @@
               <input type="checkbox" v-model="settings.video_engine.volcengine_use_image" />
               <span>使用首末帧驱动（i2v / flf2v）—— 取消则纯文生视频</span>
             </label>
+            <label class="checkbox" style="margin-top:6px">
+              <input type="checkbox" v-model="settings.video_engine.volcengine_generate_audio" />
+              <span>由 Seedance 自带生成音频（漫剧 reading 模式建议关 ── 我们用 TTS 独立产出）</span>
+            </label>
+            <label class="checkbox" style="margin-top:6px">
+              <input type="checkbox" v-model="settings.video_engine.volcengine_watermark" />
+              <span>视频带"AI 生成"水印</span>
+            </label>
+            <label class="checkbox" style="margin-top:6px">
+              <input type="checkbox" v-model="settings.video_engine.volcengine_camera_fixed" />
+              <span>固定摄像头（Seedance 2.0 暂不支持）</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label>seed 种子（-1 = 随机；其它整数 = 复现）</label>
+            <input type="number" v-model.number="settings.video_engine.volcengine_seed"
+                   class="input" style="width:160px" min="-1" />
           </div>
           <div class="form-group form-row">
             <div style="flex:1">
