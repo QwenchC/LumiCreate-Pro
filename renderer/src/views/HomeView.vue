@@ -900,7 +900,13 @@ onUnmounted(() => {
 
 /* Grid */
 .project-grid {
-  flex: 1; padding: 20px;
+  flex: 1;
+  /* v1.4.9 修复：原本 padding: 20px 让滚动条紧贴窗口右边，拖动时
+   * 容易蹭到 Electron 的 resize 命中区（Win 默认 ~6-8px）触发缩放。
+   * 拆开成 上 / 右 / 下 / 左 —— 右内边距 12 + 右外边距 10 = 卡片右侧
+   * 仍是 22px 视觉留白（原 20），滚动条则被推离窗口边 10px。 */
+  padding: 20px 12px 20px 20px;
+  margin-right: 10px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 16px;
