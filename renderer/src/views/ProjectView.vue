@@ -272,5 +272,11 @@ onUnmounted(() => {
 .tab-save-btn { margin-bottom: 4px; }
 .unsaved-badge { font-size: 12px; color: var(--color-warning); margin-bottom: 4px; padding: 0 6px; }
 
-.tab-content { flex: 1; overflow: hidden; background: var(--color-bg); }
+/* v1.4.9 修复：分镜 / 图片 / 音频 / 视频等 tab 里的主滚动条原本紧贴窗口
+ * 右边，拖动时易蹭到 Electron resize 命中区触发缩放。
+ * 在 tab-content 层级加 padding-right: 10 —— 所有 tab 内部的 overflow-y:
+ * auto 容器（VideoTab/AudioTab/ImagesTab/ScenesTab/CharactersTab/SubtitleTab）
+ * 的滚动条都被一同推离窗口边 10px，单点修复 9 处 scrollable，避免逐个 tab
+ * 改 margin。 */
+.tab-content { flex: 1; overflow: hidden; background: var(--color-bg); padding-right: 10px; }
 </style>
