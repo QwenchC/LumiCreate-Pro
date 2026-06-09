@@ -31,7 +31,10 @@ def isolated_app(tmp_path, monkeypatch):
     class _Cfg:
         projects_dir = str(tmp_path)
         # 给路由层零依赖即可启动的最小 stubs
-        text_engine  = type("T", (), {"engine_type": "ollama", "concurrency": 4})()
+        text_engine  = type("T", (), {
+            "engine_type": "ollama", "concurrency": 4,
+            "custom_platforms": [],   # v1.4.11+ 文本平台自定义列表
+        })()
         image_engine = type("I", (), {
             "engine_type":    "comfyui",
             "comfyui_url":    "http://localhost:18888",
@@ -44,6 +47,13 @@ def isolated_app(tmp_path, monkeypatch):
             "pollinations_base_url": "https://gen.pollinations.ai",
             "pollinations_api_key":  "",
             "pollinations_model":    "flux",
+            # v1.4.11+: Seedream
+            "seedream_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+            "seedream_api_key":  "",
+            "seedream_model":    "",
+            "seedream_size":     "1024x1024",
+            "seedream_response_format": "url",
+            "seedream_seed":     -1,
         })()
         audio_engine = type("A", (), {
             "engine_type": "msedge",
@@ -78,8 +88,13 @@ def isolated_app(tmp_path, monkeypatch):
         })()
 
     fake = _Cfg()
+    # 防止 class 级 list 被跨测试共用
+    fake.text_engine.custom_platforms = []
     load_settings_stub = lambda: fake
+    # v1.4.11+ save_settings 在测试里改成 no-op，避免写到真实 ~/.lumicreate/settings.json
+    save_settings_stub = lambda _s: None
     monkeypatch.setattr(config, "load_settings", load_settings_stub)
+    monkeypatch.setattr(config, "save_settings", save_settings_stub)
     # 已经 `from config import load_settings` 的模块都要单独 patch
     for modname in (
         "services.db", "services.project_repo", "services.project_migrate",
@@ -91,11 +106,14 @@ def isolated_app(tmp_path, monkeypatch):
         "routers.tasks", "routers.text_engine", "routers.music",
         "routers.sfx_engine",   # v1.4.8
         "routers.prompts_engine",   # v1.4.9
+        "routers.settings",         # v1.4.11+ 文本平台 CRUD
     ):
         import sys as _sys
         mod = _sys.modules.get(modname)
         if mod is not None and hasattr(mod, "load_settings"):
             monkeypatch.setattr(mod, "load_settings", load_settings_stub)
+        if mod is not None and hasattr(mod, "save_settings"):
+            monkeypatch.setattr(mod, "save_settings", save_settings_stub)
 
     # 不 reload 模块（routers 已持引用），改用清理全局状态的方式
     from services import db

@@ -9,8 +9,25 @@ from pydantic import BaseModel, Field
 SETTINGS_PATH = Path(os.environ.get("APPDATA", Path.home())) / "LumiCreate-Pro" / "settings.json"
 
 
+class TextPlatform(BaseModel):
+    """v1.4.11+: 文本引擎平台清单条目。
+    用户在 setting 页能从下拉里选 builtin / 自定义平台。
+    所有非 ollama 平台都走 OpenAI-compatible 通道（services/llm.py 不需要改）。
+    """
+    id: str             # 唯一 key（builtin 用名字如 'volcengine'，自定义用 'custom_xxx'）
+    label: str          # 显示名（中文）
+    base_url: str       # 默认 base URL（用户仍可在主表单覆盖）
+    api_path: str = "chat/completions"   # 一般 OpenAI-compat 都是这个
+    model_hint: str = ""                 # 模型 ID 示例 / 提示，供 UI 显示
+    is_ollama: bool = False              # ollama 走 /api/chat（非 openai-compat）
+    is_builtin: bool = False             # builtin 不可删除
+
+
 class TextEngineConfig(BaseModel):
-    engine_type: Literal["ollama", "lmstudio", "deepseek", "bailian", "openai_compat"] = "ollama"
+    # v1.4.11+: 改为自由 str。下游 services/llm.py 早就是"ollama / 其它"两分支，
+    # 老平台 id（ollama/lmstudio/deepseek/bailian/openai_compat）行为不变；
+    # 新平台 id（volcengine / moonshot / siliconflow / 用户自定义）走同一 OpenAI-compat 通道
+    engine_type: str = "ollama"
     base_url: str = "http://localhost:11434"
     api_key: Optional[str] = None
     model: str = ""
@@ -19,11 +36,13 @@ class TextEngineConfig(BaseModel):
     # 批量任务（角色检测 / 帧 prompt / 视频 prompt 等）的最大并发数。
     # 本地模型(ollama/lmstudio)通常 1~4；deepseek-v4-flash 等云端模型可设到几百~2500。
     concurrency: int = Field(default=4, ge=1, le=2500)
+    # v1.4.11+: 用户自定义平台（builtin 不进这里，前端合并展示）
+    custom_platforms: list[TextPlatform] = Field(default_factory=list)
 
 
 class ImageEngineConfig(BaseModel):
-    # v1.4.5: 多引擎切换 — 默认走本地 ComfyUI，可切到云端 Pollinations
-    engine_type: Literal["comfyui", "pollinations"] = "comfyui"
+    # v1.4.5+: 多引擎切换 — 默认 ComfyUI 本地，可切到 Pollinations 或火山引擎 Seedream
+    engine_type: Literal["comfyui", "pollinations", "volcengine_seedream"] = "comfyui"
     comfyui_url: str = "http://localhost:8188"
     workflow_dir: str = ""          # local path to ComfyUI workflows folder (e.g. F:/ComfyUI/user/default/workflows)
     default_workflow: str = ""
@@ -36,6 +55,13 @@ class ImageEngineConfig(BaseModel):
     pollinations_base_url: str = "https://gen.pollinations.ai"
     pollinations_api_key:  str = ""               # sk_... 或 pk_...
     pollinations_model:    str = "flux"           # 默认模型；可被 default_workflow 覆盖
+    # v1.4.11+: 火山引擎 Seedream（文生图）字段（仅 engine_type='volcengine_seedream' 时用）
+    seedream_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    seedream_api_key:  str = ""                    # ARK_API_KEY
+    seedream_model:    str = ""                    # 模型 ID，如 doubao-seedream-5-0-260128
+    seedream_size:     str = "1024x1024"           # 默认输出尺寸
+    seedream_response_format: str = "url"          # 'url' | 'b64_json'
+    seedream_seed:     int = -1                    # -1 随机；其它整数复现
 
 
 class AudioEngineConfig(BaseModel):

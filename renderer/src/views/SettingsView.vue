@@ -46,15 +46,66 @@
       <!-- Text engine -->
       <section v-if="activeTab === 'text'" class="settings-section">
         <h3 class="section-title">文本生成引擎</h3>
+        <!-- v1.4.11+: 平台下拉（builtin + 自定义） + "+ 新增自定义平台" / "删除当前" -->
         <div class="form-group">
-          <label>引擎类型</label>
-          <div class="radio-group">
-            <label v-for="(label, val) in TEXT_ENGINES" :key="val" class="radio-item">
-              <input type="radio" :value="val" v-model="settings.text_engine.engine_type" />
-              {{ label }}
-            </label>
+          <label>平台</label>
+          <div class="input-row">
+            <select v-model="settings.text_engine.engine_type"
+                    @change="onTextPlatformChange"
+                    class="input select" style="flex:1">
+              <option v-for="p in textPlatforms" :key="p.id" :value="p.id">
+                {{ p.is_builtin ? '' : '★ ' }}{{ p.label }}
+              </option>
+            </select>
+            <button class="btn btn-secondary btn-sm"
+                    title="新增一个 OpenAI-compatible 自定义平台"
+                    @click="newPlatformOpen = true">＋ 新增自定义</button>
+            <button class="btn btn-ghost btn-sm"
+                    v-if="currentTextPlatform && !currentTextPlatform.is_builtin"
+                    title="删除当前自定义平台"
+                    @click="deleteCurrentPlatform">✕ 删除当前</button>
+          </div>
+          <p v-if="currentTextPlatform?.model_hint" class="hint">
+            模型 ID 示例：<code>{{ currentTextPlatform.model_hint }}</code>
+          </p>
+          <p v-if="currentTextPlatform?.is_ollama" class="hint">
+            ⚠ Ollama 走自家 <code>/api/chat</code>，请填本地 Ollama 服务地址（不要带 <code>/v1</code>）
+          </p>
+        </div>
+        <!-- 新增平台弹窗 -->
+        <div v-if="newPlatformOpen" class="form-group"
+             style="background:rgba(102,178,255,0.06);border:1px solid rgba(102,178,255,0.3);
+                    border-radius:6px;padding:10px;">
+          <label style="font-weight:600">新增自定义平台</label>
+          <div class="form-row" style="margin-top:6px">
+            <div class="form-group half" style="margin:0">
+              <label>id（唯一 key，英文）</label>
+              <input v-model="newPlatform.id" class="input" placeholder="my_corp" />
+            </div>
+            <div class="form-group half" style="margin:0">
+              <label>显示名</label>
+              <input v-model="newPlatform.label" class="input" placeholder="我司私有 LLM" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Base URL</label>
+            <input v-model="newPlatform.base_url" class="input"
+                   placeholder="https://llm.mycorp.com/v1" />
+          </div>
+          <div class="form-group">
+            <label>模型 ID 示例（提示用）</label>
+            <input v-model="newPlatform.model_hint" class="input"
+                   placeholder="如 qwen2.5-72b-instruct" />
+          </div>
+          <div class="form-row" style="gap:8px">
+            <button class="btn btn-primary btn-sm" @click="savePlatform"
+                    :disabled="!newPlatform.id || !newPlatform.base_url">
+              ✓ 保存到平台列表
+            </button>
+            <button class="btn btn-ghost btn-sm" @click="newPlatformOpen = false">取消</button>
           </div>
         </div>
+
         <div class="form-group">
           <label>API 地址</label>
           <input v-model="settings.text_engine.base_url" class="input" placeholder="http://localhost:11434" />
@@ -62,7 +113,7 @@
             百炼固定地址：<code>https://dashscope.aliyuncs.com/compatible-mode/v1</code>
           </p>
         </div>
-        <div class="form-group" v-if="settings.text_engine.engine_type !== 'ollama' && settings.text_engine.engine_type !== 'lmstudio'">
+        <div class="form-group" v-if="!currentTextPlatform?.is_ollama">
           <label>API Key</label>
           <input v-model="settings.text_engine.api_key" class="input" type="password" placeholder="sk-..." />
         </div>
@@ -115,8 +166,69 @@
               <input type="radio" value="pollinations" v-model="settings.image_engine.engine_type" />
               Pollinations（云端，按模型名直生 — 适合无 GPU / 想用 Flux/GPT-Image 等托管模型）
             </label>
+            <!-- v1.4.11+: 火山引擎 Seedream -->
+            <label class="radio-item">
+              <input type="radio" value="volcengine_seedream" v-model="settings.image_engine.engine_type" />
+              火山引擎 Seedream 5.0（云端付费，国产顶级文生图，支持国风水墨 + 汉字）
+            </label>
           </div>
         </div>
+
+        <!-- Volcengine Seedream 配置块 -->
+        <template v-if="settings.image_engine.engine_type === 'volcengine_seedream'">
+          <div class="form-group">
+            <label>Ark API Base URL</label>
+            <input v-model="settings.image_engine.seedream_base_url" class="input"
+                   placeholder="https://ark.cn-beijing.volces.com/api/v3" />
+          </div>
+          <div class="form-group">
+            <label>API Key（ARK_API_KEY）</label>
+            <input v-model="settings.image_engine.seedream_api_key" class="input"
+                   type="password" placeholder="在火山方舟控制台 → API Key 管理 创建" />
+          </div>
+          <div class="form-group">
+            <label>模型 ID</label>
+            <input v-model="settings.image_engine.seedream_model" class="input"
+                   placeholder="doubao-seedream-5-0-260128 或控制台 Endpoint ID" />
+            <p class="hint">
+              文档推荐：<code>doubao-seedream-5-0-260128</code>（最强文生图，支持联网检索 + 汉字 + 国风）
+            </p>
+          </div>
+          <div class="form-row">
+            <div class="form-group half">
+              <label>默认输出尺寸</label>
+              <select v-model="settings.image_engine.seedream_size" class="input select">
+                <option value="1024x1024">1024×1024（方形）</option>
+                <option value="1024x576">1024×576（横屏 16:9）</option>
+                <option value="576x1024">576×1024（竖屏 9:16）</option>
+                <option value="1024x768">1024×768（4:3）</option>
+                <option value="768x1024">768×1024（3:4）</option>
+              </select>
+              <p class="hint">具体可选档位以官方文档为准；这里只作默认值</p>
+            </div>
+            <div class="form-group half">
+              <label>响应格式</label>
+              <select v-model="settings.image_engine.seedream_response_format" class="input select">
+                <option value="url">URL（默认；后端自动下载）</option>
+                <option value="b64_json">b64_json（直接返 base64）</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>seed 种子（-1 = 随机；其它整数 = 复现）</label>
+            <input type="number" v-model.number="settings.image_engine.seedream_seed"
+                   class="input" style="width:160px" min="-1" />
+          </div>
+          <div class="form-group">
+            <button class="btn btn-secondary" @click="testSeedream" :disabled="seedreamTesting">
+              {{ seedreamTesting ? '测试中…' : '🔌 测试连接' }}
+            </button>
+            <p v-if="seedreamTestMsg" class="form-hint"
+               :style="{color: seedreamTestOk ? 'var(--color-success, #6cf)' : 'var(--color-error)'}">
+              {{ seedreamTestMsg }}
+            </p>
+          </div>
+        </template>
 
         <!-- ComfyUI 配置 -->
         <template v-if="settings.image_engine.engine_type === 'comfyui'">
@@ -706,6 +818,88 @@ async function testAudioConnection() {
     ttsTestMsg.value = '✗ ' + (e?.response?.data?.detail || e.message || '请求失败')
   } finally {
     ttsTesting.value = false
+  }
+}
+
+// v1.4.11+: 文本引擎平台清单（builtin + 自定义）
+const textPlatforms = ref([])
+const newPlatformOpen = ref(false)
+const newPlatform = ref({
+  id: '', label: '', base_url: '', model_hint: '', is_ollama: false,
+})
+
+async function loadTextPlatforms() {
+  try {
+    const { data } = await api.get('/settings/text-platforms')
+    textPlatforms.value = data?.platforms || []
+  } catch {}
+}
+loadTextPlatforms()
+
+const currentTextPlatform = computed(() =>
+  textPlatforms.value.find(p => p.id === settings.value?.text_engine?.engine_type)
+)
+
+// 切换平台时自动同步 base_url（除非用户已经填了不同的）
+function onTextPlatformChange() {
+  const p = currentTextPlatform.value
+  if (!p) return
+  // 仅当当前 base_url 是别的 builtin 默认值时才覆盖（保护用户的自定义 URL）
+  const currentBase = settings.value.text_engine.base_url || ''
+  const isOldDefault = textPlatforms.value.some(
+    x => x.id !== p.id && x.base_url === currentBase
+  )
+  if (!currentBase || isOldDefault) {
+    settings.value.text_engine.base_url = p.base_url
+  }
+}
+
+async function savePlatform() {
+  const p = newPlatform.value
+  if (!p.id || !p.base_url) return
+  try {
+    await api.post('/settings/text-platforms', p)
+    await loadTextPlatforms()
+    settings.value.text_engine.engine_type = p.id
+    onTextPlatformChange()
+    newPlatformOpen.value = false
+    newPlatform.value = { id:'', label:'', base_url:'', model_hint:'', is_ollama:false }
+  } catch (e) {
+    alert('保存失败：' + (e?.response?.data?.detail || e.message))
+  }
+}
+
+async function deleteCurrentPlatform() {
+  const p = currentTextPlatform.value
+  if (!p || p.is_builtin) return
+  if (!confirm(`删除自定义平台「${p.label}」？`)) return
+  try {
+    await api.delete(`/settings/text-platforms/${encodeURIComponent(p.id)}`)
+    await loadTextPlatforms()
+    settings.value.text_engine.engine_type = 'ollama'   // 回到默认
+  } catch (e) {
+    alert('删除失败：' + (e?.response?.data?.detail || e.message))
+  }
+}
+
+// v1.4.11+: Seedream 连接测试
+const seedreamTesting = ref(false)
+const seedreamTestOk  = ref(false)
+const seedreamTestMsg = ref('')
+
+async function testSeedream() {
+  seedreamTesting.value = true
+  seedreamTestMsg.value = ''
+  try {
+    await api.put('/settings', settings.value)
+    const { data } = await api.get('/image-engine/seedream/test')
+    seedreamTestOk.value  = !!data.success
+    seedreamTestMsg.value = (data.success ? '✓ ' : '✗ ') + (data.message || '')
+  } catch (e) {
+    seedreamTestOk.value  = false
+    seedreamTestMsg.value = '✗ ' + (e?.response?.data?.detail || e.message || '请求失败')
+  } finally {
+    seedreamTesting.value = false
   }
 }
 

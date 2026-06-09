@@ -145,6 +145,13 @@ async def workflow_info(workflow_name: str):
             "actual_loadimage_count": 0, "found": True,
             "engine_type": "pollinations",
         }
+    # v1.4.11+: 火山引擎 Seedream 同样无 ComfyUI 工作流概念
+    if getattr(cfg, "engine_type", "comfyui") == "volcengine_seedream":
+        return {
+            "kind": "t2i", "ref_count": 0, "ref_nodes": [],
+            "actual_loadimage_count": 0, "found": True,
+            "engine_type": "volcengine_seedream",
+        }
 
     workflow = await get_workflow_json(cfg, workflow_name)
     if workflow is None:
@@ -267,6 +274,16 @@ def _sse(obj: dict) -> str:
 @router.get("/test", response_model=ConnectionTestResult)
 async def test_connection():
     cfg = load_settings().image_engine
+    # v1.4.11+: 按 engine_type 分派
+    if getattr(cfg, "engine_type", "comfyui") == "volcengine_seedream":
+        from services.volcengine_seedream import test_seedream_connection
+        ok, msg = await test_seedream_connection(
+            getattr(cfg, "seedream_base_url", "") or
+                "https://ark.cn-beijing.volces.com/api/v3",
+            getattr(cfg, "seedream_api_key", "") or "",
+        )
+        return ConnectionTestResult(success=ok,
+                                    message=f"火山引擎 Seedream：{msg}")
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             r = await client.get(f"{cfg.comfyui_url}/system_stats")
@@ -274,6 +291,19 @@ async def test_connection():
         return ConnectionTestResult(success=True, message="ComfyUI 连接成功")
     except Exception as e:
         return ConnectionTestResult(success=False, message=str(e))
+
+
+# v1.4.11+: 火山引擎 Seedream 独立连通性测试（不依赖 engine_type 切换）
+@router.get("/seedream/test", response_model=ConnectionTestResult)
+async def seedream_test():
+    from services.volcengine_seedream import test_seedream_connection
+    cfg = load_settings().image_engine
+    ok, msg = await test_seedream_connection(
+        getattr(cfg, "seedream_base_url", "") or
+            "https://ark.cn-beijing.volces.com/api/v3",
+        getattr(cfg, "seedream_api_key", "") or "",
+    )
+    return ConnectionTestResult(success=ok, message=msg)
 
 
 @router.get("/workflows", response_model=list[str])
@@ -292,6 +322,9 @@ async def get_workflows():
         return await fetch_pollinations_image_models(
             getattr(cfg, "pollinations_base_url", "") or "https://gen.pollinations.ai"
         )
+    # v1.4.11+: Seedream 没有"列模型"API，返合成名一项让前端下拉有得选
+    if getattr(cfg, "engine_type", "comfyui") == "volcengine_seedream":
+        return ["volcengine_seedream"]
 
     try:
         names = await list_workflows(cfg)
@@ -403,6 +436,31 @@ async def generate_single_stream(req: SingleGenerateRequest):
                                  headers={"Cache-Control": "no-cache",
                                           "X-Accel-Buffering": "no"})
 
+    # v1.4.11+: 火山引擎 Seedream 路径（云端付费）—— 同样不走 ComfyUI
+    if getattr(cfg, "engine_type", "comfyui") == "volcengine_seedream":
+        from services.volcengine_seedream import generate_image_seedream
+        # 模型 ID 用 settings 主表单的 seedream_model；workflow_name 可作覆盖
+        model = (req.workflow_name if req.workflow_name and
+                 req.workflow_name != "volcengine_seedream" else "") or \
+                getattr(cfg, "seedream_model", "") or ""
+
+        async def stream_seedream():
+            async for event in generate_image_seedream(
+                base_url = getattr(cfg, "seedream_base_url", ""),
+                api_key  = getattr(cfg, "seedream_api_key", ""),
+                model    = model,
+                prompt   = req.positive_prompt,
+                width    = w, height = h,
+                seed     = req.seed if req.seed and req.seed >= 0 else None,
+                response_format = getattr(cfg, "seedream_response_format", "url"),
+            ):
+                yield _sse({**event, **meta})
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(stream_seedream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
+
     # ComfyUI 路径（默认）
     workflow = await _load_workflow(cfg, req.workflow_name)
 
@@ -450,12 +508,13 @@ async def generate_batch_stream(req: BatchGenerateRequest):
 
     # v1.4.5: Pollinations 路径 —— 跳过 ComfyUI 工作流加载，按 prompt 直跑
     is_pollinations = getattr(cfg, "engine_type", "comfyui") == "pollinations"
+    is_seedream    = getattr(cfg, "engine_type", "comfyui") == "volcengine_seedream"
     workflow = None
-    if not is_pollinations:
+    if not is_pollinations and not is_seedream:
         workflow = await _load_workflow(cfg, req.workflow_name)
 
-    # v1.4.4: SD 工作流先打补丁（一次，整批共用；Pollinations 模式跳过）
-    if not is_pollinations and req.sd_params and req.workflow_name == "sd_default_workflow":
+    # v1.4.4: SD 工作流先打补丁（一次，整批共用；云端模式跳过）
+    if not is_pollinations and not is_seedream and req.sd_params and req.workflow_name == "sd_default_workflow":
         from services.sd_workflow import patch_sd_workflow
         workflow = patch_sd_workflow(
             workflow,
@@ -485,6 +544,58 @@ async def generate_batch_stream(req: BatchGenerateRequest):
     async def run_one(frame: dict, slot: int):
         nonlocal done_count
         meta = {"scene_id": frame["scene_id"], "frame_type": frame["frame_type"], "slot_index": slot}
+
+        # v1.4.11+: Seedream 路径（云端，无 ComfyUI 工作流）
+        if is_seedream:
+            from services.volcengine_seedream import generate_image_seedream
+            seedream_model = (req.workflow_name if req.workflow_name and
+                              req.workflow_name != "volcengine_seedream" else "") or \
+                             getattr(cfg, "seedream_model", "") or ""
+            gen = generate_image_seedream(
+                base_url = getattr(cfg, "seedream_base_url", ""),
+                api_key  = getattr(cfg, "seedream_api_key", ""),
+                model    = seedream_model,
+                prompt   = frame.get("prompt", ""),
+                width    = w, height = h,
+                seed     = None,
+                response_format = getattr(cfg, "seedream_response_format", "url"),
+            )
+            async for event in gen:
+                ev_out = {**event, **meta}
+                if event.get("event") == "completed" and req.project_id:
+                    imgs = event.get("images") or []
+                    if imgs and (imgs[0] or {}).get("data"):
+                        try:
+                            import base64 as _b64
+                            from pathlib import Path as _P
+                            from config import load_settings as _ls
+                            pid = req.project_id
+                            sid = frame["scene_id"]; ft = frame["frame_type"]
+                            img_dir = _P(_ls().projects_dir) / pid / "images"
+                            img_dir.mkdir(parents=True, exist_ok=True)
+                            filename = f"{sid}_{ft}_{slot}.png"
+                            (img_dir / filename).write_bytes(_b64.b64decode(imgs[0]["data"]))
+                            rel = f"images/{filename}"
+                            ev_out["file_path"] = rel
+                            ev_out["url"] = f"/api/projects/{pid}/assets/file/{sid}/" \
+                                            f"{'image_start' if ft == 'start' else 'image_end'}/{slot}"
+                            from services.project_repo import record_asset
+                            record_asset(
+                                pid, sid,
+                                "image_start" if ft == "start" else "image_end",
+                                slot_index=slot, file_path=rel, format="png",
+                                is_selected=(slot == 0),
+                            )
+                        except Exception as e:
+                            print(f"[image-batch-seedream] auto-persist failed: {e}", flush=True)
+                await queue.put(ev_out)
+                if event.get("event") == "error":
+                    scene_errors[f"{frame['scene_id']}:{frame['frame_type']}"] = \
+                        str(event.get("message", "unknown error"))[:500]
+            done_count += 1
+            if done_count >= total_tasks:
+                finished.set()
+            return
 
         # Pollinations 路径：无参考图、无工作流，直接调 prompt
         if is_pollinations:
