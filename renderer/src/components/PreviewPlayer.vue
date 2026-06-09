@@ -85,12 +85,12 @@ function _audioUrl(sceneId) {
 
 async function buildPlaylist() {
   // 一次性拉全项目 asset 清单 —— 不能用 HEAD 探活，因为后端 GET 路由
-  // 不接受 HEAD（FastAPI @router.get 只注册 GET，HEAD 返 405），
-  // 之前所有镜都被判定"无素材"就是这个原因。
+  // 不接受 HEAD（FastAPI @router.get 只注册 GET，HEAD 返 405）。
+  // 注意：/assets 端点返回 {assets, count}，不是 {items}（SFX 端点才用 items）
   let inventory = {}
   try {
     const r = await axios.get(`${API}/projects/${props.projectId}/assets`)
-    const items = r.data?.items || []
+    const items = r.data?.assets || r.data?.items || []
     for (const it of items) {
       const sid = it.scene_id
       if (!sid) continue
