@@ -83,27 +83,36 @@ function _audioUrl(sceneId) {
   return `${API}/projects/${props.projectId}/assets/file/${sceneId}/audio`
 }
 
-async function _probeAsset(url) {
-  // HEAD 检查资产是否存在（后端 404 表示没有该 asset）
-  try {
-    const r = await fetch(url, { method: 'HEAD' })
-    return r.ok
-  } catch {
-    return false
-  }
-}
-
 async function buildPlaylist() {
+  // 一次性拉全项目 asset 清单 —— 不能用 HEAD 探活，因为后端 GET 路由
+  // 不接受 HEAD（FastAPI @router.get 只注册 GET，HEAD 返 405），
+  // 之前所有镜都被判定"无素材"就是这个原因。
+  let inventory = {}
+  try {
+    const r = await axios.get(`${API}/projects/${props.projectId}/assets`)
+    const items = r.data?.items || []
+    for (const it of items) {
+      const sid = it.scene_id
+      if (!sid) continue
+      if (!inventory[sid]) inventory[sid] = {}
+      // asset_type ∈ {video, image_start, image_end, audio}
+      inventory[sid][it.asset_type] = true
+    }
+  } catch (e) {
+    console.warn('[preview] failed to fetch asset inventory:', e)
+  }
+
   const items = []
   for (const s of props.scenes) {
     const sid = s.id
-    const hasVideo = !!props.videosMap[sid] || await _probeAsset(_videoUrl(sid))
+    const inv = inventory[sid] || {}
+    const hasVideo = !!props.videosMap[sid] || !!inv.video
     if (hasVideo) {
       items.push({ sceneId: sid, kind: 'video', videoSrc: _videoUrl(sid) })
       continue
     }
-    const hasImg   = await _probeAsset(_imageUrl(sid))
-    const hasAudio = await _probeAsset(_audioUrl(sid))
+    const hasImg   = !!inv.image_start
+    const hasAudio = !!inv.audio
     if (hasImg && hasAudio) {
       items.push({ sceneId: sid, kind: 'image_audio',
                    imageSrc: _imageUrl(sid), audioSrc: _audioUrl(sid) })
