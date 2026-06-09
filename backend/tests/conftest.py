@@ -60,6 +60,16 @@ def isolated_app(tmp_path, monkeypatch):
             "workflow_dir": "", "comfyui_input_dir": "",
             "default_workflow": "flfa2i-lumicreate",
             "resolution": "720x1280", "fps": 24,
+            # v1.4.10 火山引擎字段（默认值，方便测试覆盖 dispatch 分支）
+            "engine_type": "comfyui",
+            "volcengine_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+            "volcengine_api_key": "",
+            "volcengine_model_id": "",
+            "volcengine_poll_timeout": 600,
+            "volcengine_poll_interval": 5,
+            "volcengine_duration_secs": 5,
+            "volcengine_resolution": "720p",
+            "volcengine_use_image": True,
         })()
 
     fake = _Cfg()

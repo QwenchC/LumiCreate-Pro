@@ -182,6 +182,25 @@ SKILL/
 
 ## 更新日志
 
+### v1.4.10
+本版本新增 **火山引擎 Seedance 2.0 云端 API 视频生成通路** —— 完全可选，与现有 LTX-2.3 / slideshow 通路并存。
+
+- ✅ **新引擎：火山引擎 Seedance 2.0**（云端付费 API）
+  - **服务**：`backend/services/volcengine_seedance.py` —— Ark 异步任务模式（POST 创建 → GET 轮询 → 下载 mp4），暴露同 LTX 完全一致的 SSE 事件 schema（queued / progress / completed / error）
+  - **Settings 字段**：`engine_type ∈ {"comfyui", "volcengine_seedance"}` + 8 个可配置项（base_url / api_key / model_id / duration / resolution / use_image / poll_timeout / poll_interval）
+  - **完全非侵入**：默认 `engine_type="comfyui"`，老 settings.json 升上来 0 改变；切换到火山引擎模式时 ComfyUI 配置仍保留，切回去无需重填
+  - **路由 dispatch**：`/generate-stream` / `/test` / `/workflows` 都按 `engine_type` 自动分派；新增 `/volcengine-test` 独立连接测试端点（不依赖 engine_type 切换，让用户切之前先验证 API key）
+  - **下游零改动**：driver SSE 事件 schema 与 LTX 完全相同 → `record_asset` / `videos.json` / merge-project-video / 字幕烧录 / SFX 全部无感复用
+- ✅ **前端 SettingsView 视频引擎 tab**：
+  - 引擎模式 radio 切换（ComfyUI 本地 ↔ 火山引擎云端）
+  - Volcengine 配置块：base URL / API Key / 模型 ID / 时长（5/10s）/ 分辨率（480p/720p/1080p）/ 是否 i2v / 轮询参数
+  - 🔌 测试连接按钮，调 `/volcengine-test` 并显示具体错误（4xx 错误体透传，方便用户对照官方文档改字段）
+  - 切到火山引擎模式时下方仍保留 ComfyUI 配置（标注"备用"），随时切回去
+- ✅ **VideoTab 引擎徽章**：工具栏左上挂 `☁ 火山引擎云端` / `🖥 本地` 徽章，提醒用户"现在跑批会花钱"
+- ✅ **SKILL 同步**：模块表 + 决策树（"火山引擎 / Seedance / API 生成视频"意图分支）；新建 `references/modules/volcengine-seedance.md`（含 API 协议 + dispatch 数据流 + 全配置字段表 + 与现有通路相容性说明）
+- ✅ **测试**：后端 **296 / 296 pytest 通过**（v1.4.9 时 285 个），新增 11 个回归测覆盖：老 settings.json 兼容（无新字段 → 默认值填充）/ `/workflows` 和 `/test` engine_type 分派 / 独立 `/volcengine-test` 端点 / driver SSE 事件序列与 LTX 一致 / content payload 字段构造（prompt + image + hint 注入）/ 状态同义词收敛
+- ⚠️ **API 文档对照**：本版本按 Ark 通用约定（Bearer auth + 多模态 content 数组）实现 driver。所有端点 / 字段都在设置页可配置；如果官方 Seedance 2.0 实际字段不一样，driver 会从 4xx 响应里把原始错误体透传到 SSE error 事件，用户能立即看到具体哪个字段被拒，对照文档调设置即可
+
 ### v1.4.9
 本版本新增 **全局提示词插件** —— 不绑定项目，TitleBar 一键打开。
 

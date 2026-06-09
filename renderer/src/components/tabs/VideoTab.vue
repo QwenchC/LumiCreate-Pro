@@ -8,6 +8,16 @@
         <span class="text-muted" style="font-size:13px" v-if="scenes.length">
           {{ readyCount }} / {{ scenes.length }} 个分镜就绪
         </span>
+        <!-- v1.4.10: 引擎来源标识 —— 提醒用户当前是本地 ComfyUI 还是云端 API -->
+        <span v-if="engineType === 'volcengine_seedance'"
+              class="engine-badge engine-badge-cloud"
+              :title="'当前用云端火山引擎 Seedance API，每次生成消耗配额'">
+          ☁ 火山引擎云端
+        </span>
+        <span v-else class="engine-badge engine-badge-local"
+              :title="'当前用本地 ComfyUI / LTX-2.3'">
+          🖥 本地
+        </span>
       </div>
       <div class="toolbar-right">
         <button class="btn btn-danger btn-sm" v-if="running" @click="stopGeneration">⏹ 停止</button>
@@ -658,6 +668,16 @@ const sceneProgress   = ref({})   // id → {value, max}
 const sceneVideos     = ref({})   // id → base64 mp4
 const mergeResult     = ref(null) // { output_path, output_dir } once merged
 const merging         = ref(false)
+
+// v1.4.10: 当前视频引擎来源（read-only，从后端 settings 拉一次）
+const engineType = ref('comfyui')   // 'comfyui' | 'volcengine_seedance'
+async function _loadEngineType() {
+  try {
+    const r = await axios.get(`${API}/settings`)
+    engineType.value = r.data?.video_engine?.engine_type || 'comfyui'
+  } catch { /* 拉失败保持默认 */ }
+}
+_loadEngineType()
 
 // v1.4.6: 视频模式 + 图片放映状态
 const videoMode             = ref('ltx')                  // 'ltx' | 'slideshow'
@@ -1432,6 +1452,20 @@ async function showMergedInFolder() {
   padding:12px 16px 8px; flex-shrink:0;
 }
 .toolbar-left  { display:flex; align-items:center; gap:12px; }
+.engine-badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  border: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+.engine-badge-cloud {
+  background: rgba(102, 178, 255, 0.12);
+  border-color: rgba(102, 178, 255, 0.45);
+  color: #66b2ff;
+}
+.engine-badge-local {
+  background: var(--color-surface-2, rgba(255,255,255,0.04));
+  color: var(--color-text-muted);
+}
 .toolbar-right { display:flex; align-items:center; gap:8px; }
 .toolbar-title { margin:0; font-size:15px; font-weight:600; }
 

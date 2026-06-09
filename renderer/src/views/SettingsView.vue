@@ -365,7 +365,102 @@
 
       <!-- Video engine -->
       <section v-if="activeTab === 'video'" class="settings-section">
-        <h3 class="section-title">视频生成引擎（ComfyUI + LTX-2.3）</h3>
+        <h3 class="section-title">视频生成引擎</h3>
+        <!-- v1.4.10: 引擎切换 —— ComfyUI 本地 vs 火山引擎云端 API -->
+        <div class="form-group">
+          <label>引擎模式</label>
+          <div class="radio-row">
+            <label class="radio">
+              <input type="radio" v-model="settings.video_engine.engine_type" value="comfyui" />
+              <span>ComfyUI 本地（LTX-2.3）</span>
+            </label>
+            <label class="radio">
+              <input type="radio" v-model="settings.video_engine.engine_type" value="volcengine_seedance" />
+              <span>火山引擎 Seedance 2.0（云端，付费）</span>
+            </label>
+          </div>
+          <p class="hint">
+            云端 API 不占本地显存，但每次生成会消耗你火山方舟账户余额。
+            切换后到「视频生成」页跑批前，建议先在下方点「🔌 测试连接」确认配置。
+          </p>
+        </div>
+
+        <!-- 火山引擎配置（engine_type === 'volcengine_seedance' 才显示） -->
+        <template v-if="settings.video_engine.engine_type === 'volcengine_seedance'">
+          <div class="form-group">
+            <label>Ark API Base URL</label>
+            <input v-model="settings.video_engine.volcengine_base_url" class="input"
+                   placeholder="https://ark.cn-beijing.volces.com/api/v3" />
+            <p class="hint">默认走北京区域；其它区域用户改成对应 endpoint（如 cn-shanghai）</p>
+          </div>
+          <div class="form-group">
+            <label>API Key（ARK_API_KEY）</label>
+            <input v-model="settings.video_engine.volcengine_api_key" class="input"
+                   type="password" placeholder="在火山方舟控制台 → API Key 管理 创建" />
+          </div>
+          <div class="form-group">
+            <label>模型 / Endpoint ID</label>
+            <input v-model="settings.video_engine.volcengine_model_id" class="input"
+                   placeholder="ep-2024xxxxxxx-xxxxx 或官方模型别名" />
+            <p class="hint">
+              在控制台「在线推理 → 自定义推理接入点」创建后填入；
+              或直接填官方模型别名（如 <code>doubao-seedance-1.0-pro</code>，具体见 API 文档）
+            </p>
+          </div>
+          <div class="form-group form-row">
+            <div style="flex:1">
+              <label>单镜时长（秒）</label>
+              <select v-model.number="settings.video_engine.volcengine_duration_secs"
+                      class="input select">
+                <option :value="5">5 秒</option>
+                <option :value="10">10 秒</option>
+              </select>
+            </div>
+            <div style="flex:1">
+              <label>分辨率</label>
+              <select v-model="settings.video_engine.volcengine_resolution"
+                      class="input select">
+                <option value="480p">480p</option>
+                <option value="720p">720p</option>
+                <option value="1080p">1080p（更贵）</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="checkbox">
+              <input type="checkbox" v-model="settings.video_engine.volcengine_use_image" />
+              <span>使用首末帧驱动（i2v / flf2v）—— 取消则纯文生视频</span>
+            </label>
+          </div>
+          <div class="form-group form-row">
+            <div style="flex:1">
+              <label>轮询超时（秒）</label>
+              <input type="number" v-model.number="settings.video_engine.volcengine_poll_timeout"
+                     class="input" min="30" max="3600" />
+            </div>
+            <div style="flex:1">
+              <label>轮询间隔（秒）</label>
+              <input type="number" v-model.number="settings.video_engine.volcengine_poll_interval"
+                     class="input" min="1" max="60" />
+            </div>
+          </div>
+          <div class="form-group">
+            <button class="btn btn-secondary" @click="testVolcengine" :disabled="volcTesting">
+              {{ volcTesting ? '测试中…' : '🔌 测试连接' }}
+            </button>
+            <p v-if="volcTestMsg" class="form-hint"
+               :style="{color: volcTestOk ? 'var(--color-success, #6cf)' : 'var(--color-error)'}">
+              {{ volcTestMsg }}
+            </p>
+          </div>
+          <hr style="border-color: var(--color-border); margin: 16px 0;" />
+          <p class="hint" style="opacity:0.7">下方 ComfyUI 配置在云端模式下不生效，但保留不动 ——
+            切回本地模式时无需重新填。</p>
+        </template>
+
+        <h4 class="section-subtitle" v-if="settings.video_engine.engine_type === 'volcengine_seedance'">
+          ComfyUI 本地配置（备用）
+        </h4>
         <div class="form-group">
           <label>ComfyUI 地址</label>
           <input v-model="settings.video_engine.comfyui_url" class="input" placeholder="http://localhost:8188" />
@@ -589,6 +684,28 @@ async function testAudioConnection() {
     ttsTestMsg.value = '✗ ' + (e?.response?.data?.detail || e.message || '请求失败')
   } finally {
     ttsTesting.value = false
+  }
+}
+
+// v1.4.10: 火山引擎 Seedance 连接测试
+const volcTesting = ref(false)
+const volcTestOk  = ref(false)
+const volcTestMsg = ref('')
+
+async function testVolcengine() {
+  volcTesting.value = true
+  volcTestMsg.value = ''
+  try {
+    // 先保存当前设置（让 backend 看得到最新 key / url）
+    await api.put('/settings', settings.value)
+    const { data } = await api.get('/video-engine/volcengine-test')
+    volcTestOk.value  = !!data.success
+    volcTestMsg.value = (data.success ? '✓ ' : '✗ ') + (data.message || '')
+  } catch (e) {
+    volcTestOk.value  = false
+    volcTestMsg.value = '✗ ' + (e?.response?.data?.detail || e.message || '请求失败')
+  } finally {
+    volcTesting.value = false
   }
 }
 

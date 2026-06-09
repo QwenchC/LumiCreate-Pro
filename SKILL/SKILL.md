@@ -78,7 +78,7 @@ description: 驱动 LumiCreate-Pro 本地 AI 视频创作流水线（文案 → 
 | `text`       | LLM 生成文案、分镜、首/尾帧提示词、视频提示词、角色描述、出镜建议    | [text.md](./references/modules/text.md)               |
 | `image`      | ComfyUI 图片生成（单张/批量并发 SSE），工作流管理                     | [image.md](./references/modules/image.md)             |
 | `audio`      | IndexTTS-2.0 / GPT-SoVITS / Microsoft Edge TTS 语音合成与场景拼接   | [audio.md](./references/modules/audio.md)             |
-| `video`      | LTX-2.3 视频生成；**v1.4.6** 新增 render-slideshow（无 GPU 通路）+ 合并通路 WMP 兼容修复 | [video.md](./references/modules/video.md)             |
+| `video`      | LTX-2.3 视频生成；**v1.4.6** 新增 render-slideshow（无 GPU 通路）+ 合并通路 WMP 兼容修复；**v1.4.10** 新增火山引擎 Seedance 2.0 云端 API 通路 | [video.md](./references/modules/video.md) / [volcengine-seedance.md](./references/modules/volcengine-seedance.md) |
 | `subtitle`   | stable-whisper 字幕生成 + 烧录                                       | [subtitle.md](./references/modules/subtitle.md)       |
 | `music`      | **v1.4.2** ACE-Step v1.5 音乐生成 + 全局音乐库 + 项目 BGM 直通       | [music.md](./references/modules/music.md)             |
 | `sfx`        | **v1.4.8** 音效 (SFX) 库 + 项目时间轴，每镜次点状音效叠加（脚步/关门/抽刀）；slideshow 渲染时直接烧进 mp4 | [sfx.md](./references/modules/sfx.md)                 |
@@ -102,6 +102,7 @@ SSE 事件格式速查见 [sse-events.md](./references/sse-events.md)。
 用户提到"出图 / 生成图片 / 批量出图 / ComfyUI 跑图" → `image` (generate-stream / generate-batch-stream)
 用户提到"配音 / TTS / 朗读 / 音色克隆 / IndexTTS / Edge TTS" → `audio` (generate-stream / ms-tts) → `audio` (stitch-scene)
 用户提到"视频生成 / LTX / 首末帧驱动视频 / 分镜视频 / 合并视频" → `video` (generate-stream → merge-project-video)；**用户说"无 GPU / 显存不够 / 跑不动 LTX / 图片放映视频"** → **`video render-slideshow`（v1.4.6）** → merge-project-video
+用户提到"火山引擎 / Seedance / 云端视频 / API 生成视频 / 高质量视频" → 设置页切到 `engine_type='volcengine_seedance'`（v1.4.10），同套 generate-stream 端点自动 dispatch 到云端 Ark API。详见 [volcengine-seedance.md](./references/modules/volcengine-seedance.md)
 用户提到"试播 / 预览 / 看看节奏 / 合并前预览" → **v1.4.8 前端 PreviewPlayer 串播分镜素材**（无后端调用，浏览器顺序播 video / image+audio / image-only）；合并前不出文件
 用户提到"音效 / SFX / 脚步声 / 关门声 / 抽刀声 / 给画面加音效" → `sfx`（v1.4.8 上传 + 时间轴）→ 下次跑 `render-slideshow` 时**自动烧进**镜次 mp4。详见 [sfx.md](./references/modules/sfx.md)
 用户提到"提示词 / 标签 / 画风 / 光照 / 构图 / 复制提示词 / 自定义提示词" → **`prompts`（v1.4.9 全局插件）**：TitleBar 💡 按钮打开弹窗 → 按类目点击标签 → 撰写区合成 → 一键复制；可以新增 / 删除自定义标签，内置 ~60 词受保护。详见 [prompts.md](./references/modules/prompts.md)

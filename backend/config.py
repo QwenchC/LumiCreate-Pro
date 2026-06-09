@@ -56,12 +56,31 @@ class AudioEngineConfig(BaseModel):
 
 
 class VideoEngineConfig(BaseModel):
+    # v1.4.10: 引擎切换 —— 默认本地 ComfyUI（LTX-2.3），可切到云端 API（火山引擎 Seedance）。
+    # 老配置文件没有这字段时，Pydantic 自动用默认 "comfyui"，行为与之前完全一致。
+    engine_type: Literal["comfyui", "volcengine_seedance"] = "comfyui"
     comfyui_url: str = "http://localhost:8188"
     workflow_dir: str = ""          # local path to ComfyUI workflows folder (same as image_engine.workflow_dir usually)
     comfyui_input_dir: str = ""     # local path to ComfyUI input/ directory (for audio upload workaround)
     default_workflow: str = "flfa2i-lumicreate"
     resolution: str = "720x1280"
     fps: int = Field(default=25, ge=12, le=60)
+    # v1.4.10: 火山引擎 Ark（Seedance）字段（仅 engine_type='volcengine_seedance' 时使用）
+    # 端点 / 模型 ID 全部可在前端设置页改，避免本地实现假设和官方文档脱节
+    volcengine_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    volcengine_api_key:  str = ""
+    # 模型 ID：用户在火山方舟控制台创建的 endpoint ID（典型形如 ep-2024xxxxxxx-xxxxx），
+    # 或官方模型别名。空字符串 → 调用前会校验失败提醒用户先填
+    volcengine_model_id: str = ""
+    # 任务轮询超时（秒）。Seedance 一段 5s 视频通常 30-120s 出结果
+    volcengine_poll_timeout: int = Field(default=600, ge=30, le=3600)
+    volcengine_poll_interval: int = Field(default=5, ge=1, le=60)
+    # 单条视频时长（秒，整数）—— Seedance 2.0 常见档位 5 / 10 秒
+    volcengine_duration_secs: int = Field(default=5, ge=2, le=10)
+    # 分辨率（"720p" / "1080p" 这种档位字符串，具体可选值在控制台/文档里看）
+    volcengine_resolution: str = "720p"
+    # 是否使用首末帧驱动（Seedance i2v / flf2v）；False 即纯文生视频
+    volcengine_use_image: bool = True
 
 
 class AppSettings(BaseModel):

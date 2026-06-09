@@ -110,6 +110,14 @@ def _parse_resolution(res: str) -> tuple[int, int]:
 @router.get("/test", response_model=ConnectionTestResult)
 async def test_connection():
     cfg = load_settings().video_engine
+    # v1.4.10: 按 engine_type 分派 —— 火山引擎模式探活云端 Ark
+    if getattr(cfg, "engine_type", "comfyui") == "volcengine_seedance":
+        from services.volcengine_seedance import test_seedance_connection
+        ok, msg = await test_seedance_connection(
+            cfg.volcengine_base_url, cfg.volcengine_api_key,
+        )
+        return ConnectionTestResult(success=ok,
+                                    message=f"火山引擎 Seedance：{msg}")
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             r = await client.get(f"{cfg.comfyui_url}/system_stats")
@@ -119,15 +127,32 @@ async def test_connection():
         return ConnectionTestResult(success=False, message=str(e))
 
 
+@router.get("/volcengine-test", response_model=ConnectionTestResult)
+async def test_volcengine_connection():
+    """v1.4.10: 独立的火山引擎连通性测试 —— 不依赖 engine_type 切换，让用户在
+    切换之前就能确认 API key + 端点正确。"""
+    cfg = load_settings().video_engine
+    from services.volcengine_seedance import test_seedance_connection
+    ok, msg = await test_seedance_connection(
+        cfg.volcengine_base_url, cfg.volcengine_api_key,
+    )
+    return ConnectionTestResult(success=ok, message=msg)
+
+
 @router.get("/workflows", response_model=list[str])
 async def get_video_workflows():
     """v1.4.1+: 只列举项目自带 workflows/ 目录里能被识别为视频工作流的文件
-    (video_flfa2i / video_i2v)。用户的 ComfyUI 目录里其它工作流不显示。"""
-    from services.workflow_meta import is_supported_video_workflow
-    from services.comfyui import bundled_workflow_dir, get_workflow_json
-
+    (video_flfa2i / video_i2v)。用户的 ComfyUI 目录里其它工作流不显示。
+    v1.4.10: 火山引擎模式直接返回一个合成名 'volcengine_seedance'，让前端
+    工作流选择控件有得选 —— router 收到这个名字时走云端 dispatch，不真去
+    ComfyUI 拉 workflow JSON。"""
     cfg  = load_settings()
     vcfg = cfg.video_engine
+    if getattr(vcfg, "engine_type", "comfyui") == "volcengine_seedance":
+        return ["volcengine_seedance"]
+
+    from services.workflow_meta import is_supported_video_workflow
+    from services.comfyui import bundled_workflow_dir, get_workflow_json
 
     class _Cfg:
         def __init__(self, url, wd):
@@ -168,39 +193,55 @@ async def generate_video_stream(req: VideoGenerateRequest):
     icfg = cfg.image_engine
     wdir = vcfg.workflow_dir or icfg.workflow_dir
 
-    class _Cfg:
-        def __init__(self, url, wd):
-            self.comfyui_url  = url
-            self.workflow_dir = wd
+    # v1.4.10: 火山引擎模式跳过 ComfyUI workflow 加载（远端不需要 workflow JSON）
+    # —— wf_kind / wf_features / workflow_meta 都用占位的 dispatch-safe 值
+    is_volc = getattr(vcfg, "engine_type", "comfyui") == "volcengine_seedance"
 
-    workflow = await get_workflow_json(_Cfg(vcfg.comfyui_url, wdir), req.workflow_name)
-    if workflow is None:
-        raise HTTPException(status_code=404, detail=f"工作流 '{req.workflow_name}' 未找到")
-
-    # v1.4.1+: 解析 wf_path（优先 bundled）让 meta.json 也按相同优先级查
-    from services.comfyui import bundled_workflow_dir
-    from pathlib import Path as _P
-    bundled = bundled_workflow_dir()
+    workflow = None
     wf_path = None
-    if bundled is not None and (bundled / f"{req.workflow_name}.json").exists():
-        wf_path = bundled / f"{req.workflow_name}.json"
-    elif wdir and (_P(wdir) / f"{req.workflow_name}.json").exists():
-        wf_path = _P(wdir) / f"{req.workflow_name}.json"
-
-    # C1: 读取同名 .meta.json（如果存在），让节点 ID 可配置
     workflow_meta = None
-    if wf_path is not None:
-        from services.workflow_meta import load_meta
-        workflow_meta = load_meta(wf_path, type_="video")
+    if not is_volc:
+        class _Cfg:
+            def __init__(self, url, wd):
+                self.comfyui_url  = url
+                self.workflow_dir = wd
+
+        workflow = await get_workflow_json(_Cfg(vcfg.comfyui_url, wdir), req.workflow_name)
+        if workflow is None:
+            raise HTTPException(status_code=404, detail=f"工作流 '{req.workflow_name}' 未找到")
+
+        # v1.4.1+: 解析 wf_path（优先 bundled）让 meta.json 也按相同优先级查
+        from services.comfyui import bundled_workflow_dir
+        from pathlib import Path as _P
+        bundled = bundled_workflow_dir()
+        if bundled is not None and (bundled / f"{req.workflow_name}.json").exists():
+            wf_path = bundled / f"{req.workflow_name}.json"
+        elif wdir and (_P(wdir) / f"{req.workflow_name}.json").exists():
+            wf_path = _P(wdir) / f"{req.workflow_name}.json"
+
+        # C1: 读取同名 .meta.json（如果存在），让节点 ID 可配置
+        if wf_path is not None:
+            from services.workflow_meta import load_meta
+            workflow_meta = load_meta(wf_path, type_="video")
 
     width, height = _parse_resolution(req.resolution)
     total = len(req.scenes)
 
     # v1.4.1: 工作流类型决定走哪个 driver + 校验哪些字段
-    from services.workflow_meta import classify_video_workflow, get_video_workflow_features
-    wf_kind = classify_video_workflow(req.workflow_name, workflow=workflow,
-                                        workflow_path=str(wf_path) if wf_path else None)
-    wf_features = get_video_workflow_features(wf_kind)
+    if is_volc:
+        # 火山引擎当作 flf2v：需要首帧；末帧可选；音频独立后期合成（与 LTX 不同）
+        wf_kind = "video_volcengine_seedance"
+        wf_features = {
+            "requires_start_image": True,
+            "requires_end_image":   False,
+            "supports_audio":       False,
+            "supports_duration":    True,
+        }
+    else:
+        from services.workflow_meta import classify_video_workflow, get_video_workflow_features
+        wf_kind = classify_video_workflow(req.workflow_name, workflow=workflow,
+                                            workflow_path=str(wf_path) if wf_path else None)
+        wf_features = get_video_workflow_features(wf_kind)
 
     # Error substring that indicates VRAM weight offload to CPU — safe to free+retry
     _VRAM_OFFLOAD_SIG = "should be the same"
@@ -259,6 +300,24 @@ async def generate_video_stream(req: VideoGenerateRequest):
             })
 
             def _make_iter():
+                # v1.4.10: 引擎 dispatch —— engine_type='volcengine_seedance' 走云端
+                # Ark API；其它（默认 'comfyui'）走原 ComfyUI / LTX 通路，行为不变。
+                if getattr(vcfg, "engine_type", "comfyui") == "volcengine_seedance":
+                    from services.volcengine_seedance import generate_video_seedance
+                    return generate_video_seedance(
+                        base_url       = vcfg.volcengine_base_url,
+                        api_key        = vcfg.volcengine_api_key,
+                        model_id       = vcfg.volcengine_model_id,
+                        first_frame_b64 = scene.start_image_b64,
+                        last_frame_b64  = scene.end_image_b64,
+                        positive_prompt = scene.positive_prompt,
+                        duration_secs   = vcfg.volcengine_duration_secs,
+                        resolution      = vcfg.volcengine_resolution,
+                        use_image       = vcfg.volcengine_use_image,
+                        poll_interval   = vcfg.volcengine_poll_interval,
+                        poll_timeout    = vcfg.volcengine_poll_timeout,
+                        scene_id        = scene.scene_id,
+                    )
                 if wf_kind == "video_i2v":
                     return generate_video_i2v(
                         comfyui_url       = vcfg.comfyui_url,
