@@ -293,6 +293,130 @@ def test_post_body_includes_new_way_parameters():
     assert captured["url"].endswith("/contents/generations/tasks")
 
 
+def test_multi_ref_content_uses_reference_image_role():
+    """v1.4.10++ multi-ref 模式：每张图 role='reference_image'，不再有
+    first_frame/last_frame。Seedance 2.0 上限 9 张。"""
+    from services.volcengine_seedance import _build_content_payload
+    parts = _build_content_payload(
+        "scene",
+        multi_refs_b64=["b1", "b2", "b3"],
+        use_image=True,
+    )
+    text = parts[0]
+    imgs = [p for p in parts if p["type"] == "image_url"]
+    assert text["text"] == "scene"
+    assert len(imgs) == 3
+    for p in imgs:
+        assert p.get("role") == "reference_image"
+    # 上限 9
+    parts10 = _build_content_payload(
+        "x", multi_refs_b64=[f"b{i}" for i in range(12)], use_image=True,
+    )
+    imgs10 = [p for p in parts10 if p["type"] == "image_url"]
+    assert len(imgs10) == 9
+
+
+def test_per_scene_options_override_global_in_dispatch(
+        isolated_app, monkeypatch):
+    """每分镜 volcengine_options 必须覆盖全局默认；
+    mode='t2v' 时 use_image=False 不传图；
+    mode='multi_ref' 时走 multi_refs_b64 列表。"""
+    client = isolated_app["client"]
+    fake = isolated_app["settings"]
+    fake.video_engine.engine_type = "volcengine_seedance"
+    fake.video_engine.volcengine_api_key = "k"
+    fake.video_engine.volcengine_model_id = "ep"
+    fake.video_engine.volcengine_duration_secs = 5     # 全局默认 5
+    fake.image_engine.workflow_dir = ""
+
+    from services import volcengine_seedance as vs
+    captured = []
+
+    async def _spy(**kwargs):
+        captured.append(kwargs)
+        yield {"event": "completed",
+               "video": "AAAA", "scene_id": kwargs.get("scene_id", "")}
+
+    monkeypatch.setattr(vs, "generate_video_seedance", _spy)
+
+    # mode=t2v + per-scene duration=10 覆盖全局 5
+    payload = {
+        "workflow_name": "volcengine_seedance",
+        "resolution":    "1080x1920",
+        "fps":           24,
+        "project_id":    "p",
+        "scenes": [{
+            "scene_id":        "s1",
+            "scene_index":     0,
+            "start_image_b64": "FIRST",
+            "end_image_b64":   "LAST",
+            "audio_b64":       "",
+            "duration_ms":     0,
+            "positive_prompt": "a cat",
+            "volcengine_options": {
+                "mode": "t2v",
+                "duration_secs": 10,
+                "references": [],
+            },
+        }],
+    }
+    r = client.post("/api/video-engine/generate-stream", json=payload)
+    assert r.status_code == 200
+    # SSE 流 consume 掉触发 driver 调用
+    list(r.iter_lines())
+    assert len(captured) == 1
+    kw = captured[0]
+    assert kw["use_image"] is False           # t2v
+    assert kw["duration_secs"] == 10          # 覆盖
+    assert kw["first_frame_b64"] == ""        # 没传首帧
+    assert kw["multi_refs_b64"] is None       # 没用 multi-ref
+
+
+def test_multi_ref_mode_passes_b64_list_through_dispatch(
+        isolated_app, monkeypatch):
+    """multi_ref 模式：references 中 kind='b64' 直接透传给 driver。"""
+    client = isolated_app["client"]
+    fake = isolated_app["settings"]
+    fake.video_engine.engine_type = "volcengine_seedance"
+    fake.video_engine.volcengine_api_key = "k"
+    fake.video_engine.volcengine_model_id = "ep"
+
+    from services import volcengine_seedance as vs
+    captured = []
+
+    async def _spy(**kwargs):
+        captured.append(kwargs)
+        yield {"event": "completed", "video": "AAAA",
+               "scene_id": kwargs.get("scene_id", "")}
+
+    monkeypatch.setattr(vs, "generate_video_seedance", _spy)
+
+    payload = {
+        "workflow_name": "volcengine_seedance",
+        "resolution":    "1080x1920", "fps": 24, "project_id": "p",
+        "scenes": [{
+            "scene_id": "s2", "scene_index": 1,
+            "start_image_b64": "FIRST",
+            "end_image_b64":   "", "audio_b64": "", "duration_ms": 0,
+            "positive_prompt": "x",
+            "volcengine_options": {
+                "mode": "multi_ref",
+                "references": [
+                    {"kind": "b64",         "image_b64": "REF1"},
+                    {"kind": "scene_start"},   # 用 scene.start_image_b64
+                ],
+            },
+        }],
+    }
+    r = client.post("/api/video-engine/generate-stream", json=payload)
+    assert r.status_code == 200
+    list(r.iter_lines())
+    kw = captured[0]
+    assert kw["multi_refs_b64"] == ["REF1", "FIRST"]
+    assert kw["first_frame_b64"] == ""   # multi_ref 不再走首末帧通道
+    assert kw["last_frame_b64"]  == ""
+
+
 def test_status_mapping_recognizes_synonyms():
     """不同后端可能用 success / completed / processing 等同义词，
     必须收敛到我们的标准 5 状态之一。"""

@@ -407,15 +407,13 @@
               或直接填官方模型别名（如 <code>doubao-seedance-1.0-pro</code>，具体见 API 文档）
             </p>
           </div>
+          <p class="hint" style="background:rgba(102,178,255,0.08);padding:8px;border-radius:4px">
+            ℹ <strong>单镜时长、首末帧驱动 / 文生视频 / 多模态参考</strong>、参考图选择等
+            <strong>每分镜独立的策略</strong>请到「视频生成」页配置。这里只放与项目无关的全局选项。
+          </p>
           <div class="form-group form-row">
             <div style="flex:1">
-              <label>单镜时长（秒）</label>
-              <input type="number" v-model.number="settings.video_engine.volcengine_duration_secs"
-                     class="input" min="2" max="15" />
-              <p class="hint">Seedance 2.0/1.5: 4-15；Seedance 1.0: 2-12</p>
-            </div>
-            <div style="flex:1">
-              <label>分辨率</label>
+              <label>分辨率（全局默认）</label>
               <select v-model="settings.video_engine.volcengine_resolution"
                       class="input select">
                 <option value="480p">480p</option>
@@ -424,7 +422,7 @@
               </select>
             </div>
             <div style="flex:1">
-              <label>宽高比</label>
+              <label>宽高比（全局默认）</label>
               <select v-model="settings.video_engine.volcengine_ratio"
                       class="input select">
                 <option value="adaptive">adaptive（自动适配）</option>
@@ -439,10 +437,6 @@
           </div>
           <div class="form-group">
             <label class="checkbox">
-              <input type="checkbox" v-model="settings.video_engine.volcengine_use_image" />
-              <span>使用首末帧驱动（i2v / flf2v）—— 取消则纯文生视频</span>
-            </label>
-            <label class="checkbox" style="margin-top:6px">
               <input type="checkbox" v-model="settings.video_engine.volcengine_generate_audio" />
               <span>由 Seedance 自带生成音频（漫剧 reading 模式建议关 ── 我们用 TTS 独立产出）</span>
             </label>

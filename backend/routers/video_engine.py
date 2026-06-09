@@ -33,6 +33,30 @@ class ConnectionTestResult(BaseModel):
     message: str
 
 
+class VolcSceneRef(BaseModel):
+    """v1.4.10+: 火山引擎 Seedance 多模态参考图条目。
+    kind 决定 backend 怎么解析；driver 最终拿到 base64 / URL 喂给 Ark API。
+    """
+    kind: str   # 'portrait' | 'element' | 'scene_start' | 'scene_end' | 'b64'
+    # portrait
+    project_id: Optional[str] = None
+    char_name:  Optional[str] = None
+    filename:   Optional[str] = None
+    # element
+    scope:      Optional[str] = None
+    element_id: Optional[int] = None
+    # b64（前端直接喂 base64，scene_start/scene_end 也用这个通道）
+    image_b64:  Optional[str] = None
+
+
+class VolcSceneOptions(BaseModel):
+    """每个分镜独立的火山引擎策略（None = 用全局设置默认值）。"""
+    # 模式：t2v 纯文生 / i2v_first 单首帧驱动 / i2v_flf 首末帧驱动 / multi_ref 多参考
+    mode:          Optional[str] = None
+    duration_secs: Optional[int] = None
+    references:    list[VolcSceneRef] = []
+
+
 class SceneVideoRequest(BaseModel):
     scene_id:        str
     scene_index:     int
@@ -41,6 +65,8 @@ class SceneVideoRequest(BaseModel):
     audio_b64:       str = ""    # 空 = 无音频模式（flfa2i + i2v 都接受）
     duration_ms:     int = 4000
     positive_prompt: str = ""
+    # v1.4.10+: 火山引擎模式下的每分镜配置（其它引擎忽略此字段）
+    volcengine_options: Optional[VolcSceneOptions] = None
 
 
 # D2: 视频工作流前置检查
@@ -91,6 +117,56 @@ class VideoGenerateRequest(BaseModel):
 
 def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+def _volc_refs_to_b64_list(
+        refs: list, scene_start_b64: str = "", scene_end_b64: str = "",
+) -> list[str]:
+    """v1.4.10+: 把火山引擎每分镜的 references 解析为 base64 列表。
+
+    复用 image_engine._resolve_ref_paths 处理 portrait / element 来源，
+    scene_start / scene_end 直接用前端已经传过来的 b64。
+    """
+    import base64 as _b64
+    out: list[str] = []
+    if not refs:
+        return out
+    # 抽出需要走 path 解析的 refs（portrait / element）
+    path_refs: list[dict] = []
+    placeholders: list[Optional[str]] = []   # 占位列表保留顺序
+    for r in refs:
+        rd = r.model_dump() if hasattr(r, "model_dump") else dict(r or {})
+        kind = (rd.get("kind") or "").strip()
+        if kind == "scene_start":
+            placeholders.append(scene_start_b64 or None)
+        elif kind == "scene_end":
+            placeholders.append(scene_end_b64 or None)
+        elif kind == "b64":
+            placeholders.append((rd.get("image_b64") or "").strip() or None)
+        elif kind in ("portrait", "element", "path"):
+            placeholders.append(None)
+            path_refs.append(rd)
+        else:
+            placeholders.append(None)   # 未知类型静默跳过
+    # 批量解析 path
+    from routers.image_engine import _resolve_ref_paths
+    paths_iter = iter(_resolve_ref_paths(path_refs))
+    # 串回 placeholders
+    for i, ph in enumerate(placeholders):
+        if ph is not None:
+            out.append(ph); continue
+        if i < len(refs):
+            rd = refs[i].model_dump() if hasattr(refs[i], "model_dump") \
+                else dict(refs[i] or {})
+            kind = (rd.get("kind") or "").strip()
+            if kind in ("portrait", "element", "path"):
+                p = next(paths_iter, None)
+                if p:
+                    try:
+                        out.append(_b64.b64encode(open(p, "rb").read()).decode("ascii"))
+                    except Exception:
+                        pass
+    return [b for b in out if b]
 
 
 def _parse_resolution(res: str) -> tuple[int, int]:
@@ -304,17 +380,45 @@ async def generate_video_stream(req: VideoGenerateRequest):
                 # Ark API；其它（默认 'comfyui'）走原 ComfyUI / LTX 通路，行为不变。
                 if getattr(vcfg, "engine_type", "comfyui") == "volcengine_seedance":
                     from services.volcengine_seedance import generate_video_seedance
+                    # v1.4.10+: 解析每分镜独立策略（mode / duration / refs）
+                    vo = scene.volcengine_options
+                    per_mode  = (vo.mode          if vo else None) or "i2v_first"
+                    per_dur   = (vo.duration_secs if vo else None) or vcfg.volcengine_duration_secs
+                    per_refs  = (vo.references    if vo else None) or []
+                    # 把 portrait/element 解析成 b64；scene_start/scene_end 走前端传来的 b64
+                    refs_b64 = _volc_refs_to_b64_list(
+                        per_refs,
+                        scene_start_b64=scene.start_image_b64,
+                        scene_end_b64=scene.end_image_b64,
+                    )
+                    # 模式映射：
+                    #   t2v        → use_image=False（无图）
+                    #   i2v_first  → first 仅传首帧
+                    #   i2v_flf    → first + last
+                    #   multi_ref  → multi_refs_b64 列表（Seedance 2.0）
+                    use_img         = per_mode != "t2v"
+                    first_b64       = ""
+                    last_b64        = ""
+                    multi_refs_send = None
+                    if per_mode == "multi_ref":
+                        multi_refs_send = refs_b64
+                    elif per_mode == "i2v_flf":
+                        first_b64 = scene.start_image_b64
+                        last_b64  = scene.end_image_b64
+                    elif per_mode == "i2v_first":
+                        first_b64 = scene.start_image_b64
                     return generate_video_seedance(
                         base_url        = vcfg.volcengine_base_url,
                         api_key         = vcfg.volcengine_api_key,
                         model_id        = vcfg.volcengine_model_id,
-                        first_frame_b64 = scene.start_image_b64,
-                        last_frame_b64  = scene.end_image_b64,
+                        first_frame_b64 = first_b64,
+                        last_frame_b64  = last_b64,
+                        multi_refs_b64  = multi_refs_send,
                         positive_prompt = scene.positive_prompt,
-                        duration_secs   = vcfg.volcengine_duration_secs,
+                        duration_secs   = per_dur,
                         resolution      = vcfg.volcengine_resolution,
                         ratio           = getattr(vcfg, "volcengine_ratio", "adaptive"),
-                        use_image       = vcfg.volcengine_use_image,
+                        use_image       = use_img,
                         generate_audio  = getattr(vcfg, "volcengine_generate_audio", False),
                         watermark       = getattr(vcfg, "volcengine_watermark", False),
                         camera_fixed    = getattr(vcfg, "volcengine_camera_fixed", False),

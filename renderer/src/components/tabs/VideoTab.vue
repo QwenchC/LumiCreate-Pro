@@ -210,6 +210,11 @@
               <input type="radio" v-model="videoMode" value="slideshow" />
               📺 图片放映 — 无 GPU 也能跑，按音频时长拼图片+转场
             </label>
+            <!-- v1.4.10++: 火山引擎 Seedance 2.0 云端 API -->
+            <label :class="{ active: videoMode === 'volcengine' }">
+              <input type="radio" v-model="videoMode" value="volcengine" />
+              ☁ 火山引擎 Seedance 2.0 — 云端付费，可按分镜独立配置
+            </label>
           </div>
         </div>
       </div>
@@ -324,6 +329,62 @@
       <p v-if="videoMode === 'slideshow'" class="config-hint">
         ℹ 每镜时长 = 该镜音频时长；1 张图静帧、2 张图按选定转场过渡。结束后可去合并视频 + 烧字幕。
       </p>
+
+      <!-- v1.4.10++: 火山引擎模式的全局设置（每分镜可覆盖） -->
+      <div v-if="videoMode === 'volcengine'" class="config-row" style="align-items:flex-end">
+        <div class="config-group">
+          <label class="cfg-label">分辨率（全局）</label>
+          <select class="input select-compact" v-model="volcGlobalResolution">
+            <option value="480p">480p</option>
+            <option value="720p">720p</option>
+            <option value="1080p">1080p（更贵）</option>
+          </select>
+        </div>
+        <div class="config-group">
+          <label class="cfg-label">宽高比（全局）</label>
+          <select class="input select-compact" v-model="volcGlobalRatio">
+            <option value="adaptive">adaptive（自动）</option>
+            <option value="16:9">16:9</option>
+            <option value="9:16">9:16（竖屏）</option>
+            <option value="4:3">4:3</option>
+            <option value="3:4">3:4（竖屏）</option>
+            <option value="1:1">1:1</option>
+            <option value="21:9">21:9</option>
+          </select>
+        </div>
+        <div class="config-group">
+          <label class="cfg-label">默认时长 (s)</label>
+          <input type="number" min="2" max="15"
+                 v-model.number="volcGlobalDuration"
+                 class="input" style="width:80px" />
+        </div>
+        <div class="config-group">
+          <label class="cfg-label">默认模式</label>
+          <select class="input select-compact" v-model="volcGlobalMode">
+            <option value="t2v">文生视频（t2v）</option>
+            <option value="i2v_first">图生视频-首帧</option>
+            <option value="i2v_flf">图生视频-首尾帧</option>
+            <option value="multi_ref">多模态参考（Seedance 2.0）</option>
+          </select>
+        </div>
+      </div>
+      <p v-if="videoMode === 'volcengine'" class="config-hint">
+        ℹ 上面是默认值；下方每个分镜可独立覆盖。需在「设置 → 视频引擎」配好 API Key + 模型 ID 才能跑。
+        <span v-if="!volcReady" style="color:var(--color-warning)">⚠ 未检测到 API Key 或模型 ID 配置，请先到设置页配置</span>
+      </p>
+
+      <div v-if="videoMode === 'volcengine'" class="config-row" style="margin-top:6px">
+        <button class="btn btn-primary"
+                :disabled="volcRunning || !scenes.length || !volcReady"
+                @click="runVolcengine">
+          {{ volcRunning ? '⏳ 生成中…' : '▶ 一键生成所有分镜视频（火山引擎）' }}
+        </button>
+        <button class="btn btn-ghost btn-sm"
+                @click="applyVolcDefaultsToAll"
+                title="把上面的默认值（时长 / 模式）应用到所有分镜，覆盖各镜次的独立设置">
+          ⤵ 应用默认到全部分镜
+        </button>
+      </div>
       <div v-if="slideshowResult" class="config-hint" style="background:rgba(104,211,145,.08);padding:8px;border-radius:4px">
         ✓ 已渲染 {{ slideshowResult.rendered?.length || 0 }} 镜；
         跳过 {{ slideshowResult.skipped?.length || 0 }}，失败 {{ slideshowResult.errors?.length || 0 }}
@@ -438,6 +499,56 @@
           </div>
         </div>
 
+        <!-- v1.4.10++: 火山引擎每分镜独立配置 -->
+        <div v-if="videoMode === 'volcengine'" class="volc-scene-block">
+          <div class="volc-scene-row">
+            <span class="cfg-label" style="min-width:48px">模式</span>
+            <select class="input input-xs" v-model="volcOpts(scene.id).mode">
+              <option value="t2v">文生（t2v）</option>
+              <option value="i2v_first">首帧驱动</option>
+              <option value="i2v_flf">首末帧驱动</option>
+              <option value="multi_ref">多参考（2.0）</option>
+            </select>
+            <span class="cfg-label" style="margin-left:8px">时长</span>
+            <input type="number" min="2" max="15" step="1"
+                   class="input input-xs" style="width:64px"
+                   v-model.number="volcOpts(scene.id).duration_secs" />
+            <span class="text-muted" style="font-size:11px">秒</span>
+            <span class="volc-spacer"></span>
+            <button class="btn btn-ghost btn-xs"
+                    v-if="volcOpts(scene.id).mode !== 't2v' && scene.hasStart"
+                    @click="addVolcRefSceneFrame(scene.id, 'scene_start', scene)"
+                    title="把该分镜的首帧加入参考图">
+              + 首帧
+            </button>
+            <button class="btn btn-ghost btn-xs"
+                    v-if="volcOpts(scene.id).mode === 'multi_ref' && scene.hasEnd"
+                    @click="addVolcRefSceneFrame(scene.id, 'scene_end', scene)"
+                    title="把该分镜的末帧加入参考图">
+              + 末帧
+            </button>
+            <button class="btn btn-secondary btn-xs"
+                    v-if="volcOpts(scene.id).mode !== 't2v'"
+                    @click="openRefPickerFor(scene.id)"
+                    title="从角色立绘 / 元素库选参考图">
+              🎨 加入参考图
+            </button>
+          </div>
+          <!-- 已选参考图缩略图列表 -->
+          <div v-if="(volcOpts(scene.id).references || []).length"
+               class="volc-refs-grid">
+            <div v-for="(r, ri) in volcOpts(scene.id).references"
+                 :key="ri" class="volc-ref-chip">
+              <img v-if="r._preview_url" :src="r._preview_url"
+                   :alt="r._label || r.kind" />
+              <div v-else class="volc-ref-noimg">{{ r.kind }}</div>
+              <span class="volc-ref-kind">{{ refKindLabel(r.kind) }}</span>
+              <button class="volc-ref-del" @click="removeVolcRef(scene.id, ri)"
+                      title="移除">✕</button>
+            </div>
+          </div>
+        </div>
+
         <!-- Per-scene progress bar -->
         <div class="scene-mini-bar-wrap" v-if="sceneState[scene.id] === 'active'">
           <div class="scene-mini-bar">
@@ -497,6 +608,12 @@
                        :scenes="scenes"
                        @close="sfxDialogOpen = false" />
 
+    <!-- v1.4.10++: 火山引擎参考图选择器 -->
+    <ReferencePicker v-if="refPickerSceneId"
+                     :project-id="projectId"
+                     @picked="onVolcRefPicked"
+                     @close="refPickerSceneId = null" />
+
   </div>
 </template>
 
@@ -507,6 +624,7 @@ import { useTabsStore } from '../../stores/tabs'
 import BgmMixerDialog from '../BgmMixerDialog.vue'
 import PreviewPlayer from '../PreviewPlayer.vue'
 import SfxTimelineDialog from '../SfxTimelineDialog.vue'
+import ReferencePicker from '../ReferencePicker.vue'
 
 // v1.4.2: BGM 混音对话框可见性
 const bgmMixerOpen = ref(false)
@@ -671,13 +789,137 @@ const merging         = ref(false)
 
 // v1.4.10: 当前视频引擎来源（read-only，从后端 settings 拉一次）
 const engineType = ref('comfyui')   // 'comfyui' | 'volcengine_seedance'
+// v1.4.10++: 火山引擎状态（API Key + 模型 ID 是否配齐）
+const volcReady = ref(false)
 async function _loadEngineType() {
   try {
     const r = await axios.get(`${API}/settings`)
-    engineType.value = r.data?.video_engine?.engine_type || 'comfyui'
+    const ve = r.data?.video_engine || {}
+    engineType.value = ve.engine_type || 'comfyui'
+    volcReady.value = !!(ve.volcengine_api_key && ve.volcengine_model_id)
   } catch { /* 拉失败保持默认 */ }
 }
 _loadEngineType()
+
+// v1.4.10++ 火山引擎全局设置（VideoTab 内的全局默认；可在每分镜覆盖）
+const volcGlobalResolution = ref('720p')
+const volcGlobalRatio      = ref('adaptive')
+const volcGlobalDuration   = ref(5)
+const volcGlobalMode       = ref('i2v_first')   // 't2v' | 'i2v_first' | 'i2v_flf' | 'multi_ref'
+const volcRunning          = ref(false)
+
+// 每分镜火山引擎独立配置 { [sceneId]: { mode, duration_secs, references: [refObj] } }
+const volcSceneOptions = ref({})
+
+function volcOpts(sceneId) {
+  if (!volcSceneOptions.value[sceneId]) {
+    volcSceneOptions.value[sceneId] = {
+      mode:          volcGlobalMode.value,
+      duration_secs: volcGlobalDuration.value,
+      references:    [],
+    }
+  }
+  return volcSceneOptions.value[sceneId]
+}
+
+function applyVolcDefaultsToAll() {
+  if (!confirm(`把全局默认（${volcGlobalMode.value} / ${volcGlobalDuration.value}s）应用到全部 ${scenes.value.length} 个分镜？`)) return
+  for (const s of scenes.value) {
+    const o = volcOpts(s.id)
+    o.mode          = volcGlobalMode.value
+    o.duration_secs = volcGlobalDuration.value
+  }
+}
+
+// 参考图选择器：被哪个 scene 触发
+const refPickerSceneId = ref(null)
+
+function openRefPickerFor(sceneId) {
+  refPickerSceneId.value = sceneId
+}
+
+function refKindLabel(kind) {
+  return ({
+    portrait:    '🎭 立绘',
+    element:     '📦 元素',
+    scene_start: '🖼 首帧',
+    scene_end:   '🖼 末帧',
+    b64:         '上传',
+    path:        '本地',
+  })[kind] || kind
+}
+
+function onVolcRefPicked(ref) {
+  const sid = refPickerSceneId.value
+  if (!sid) return
+  const o = volcOpts(sid)
+  // ref 形态：{ kind: 'portrait'|'element'|'b64', ..., _preview_url, _label }
+  o.references.push({ ...ref })
+  refPickerSceneId.value = null
+}
+
+async function addVolcRefSceneFrame(sceneId, kind, scene) {
+  // 把分镜自身的首/末帧加入参考图；前端把 b64 一同带上，省得后端再读盘
+  const o = volcOpts(sceneId)
+  // 解析 src → base64（与 _runGeneration 中一致的工具）
+  const srcKey = kind === 'scene_start' ? scene.startImageB64 : scene.endImageB64
+  const b64 = await _srcToB64(srcKey)
+  if (!b64) {
+    alert(`该分镜${kind === 'scene_start' ? '首' : '末'}帧不存在`)
+    return
+  }
+  // 用 data URL 当 preview
+  o.references.push({
+    kind,
+    image_b64: b64,
+    _preview_url: `data:image/png;base64,${b64}`,
+    _label: kind === 'scene_start' ? '该分镜首帧' : '该分镜末帧',
+  })
+}
+
+function removeVolcRef(sceneId, idx) {
+  const o = volcOpts(sceneId)
+  o.references.splice(idx, 1)
+}
+
+// 把单个 ref 转成发给后端的纯净字段（剥掉 _preview_url / _label 这些 UI-only）
+function _sanitizeVolcRef(r) {
+  const clean = { kind: r.kind }
+  for (const k of ['project_id', 'char_name', 'filename',
+                   'scope', 'element_id', 'image_b64']) {
+    if (r[k] !== undefined && r[k] !== null) clean[k] = r[k]
+  }
+  return clean
+}
+
+// "一键生成所有分镜视频（火山引擎）" —— 复用 _runGeneration 的批量循环
+async function runVolcengine() {
+  if (volcRunning.value) return
+  // 1) 后端 settings 切到 volcengine_seedance
+  try {
+    const r = await axios.get(`${API}/settings`)
+    const ve = r.data?.video_engine || {}
+    if (ve.engine_type !== 'volcengine_seedance') {
+      ve.engine_type = 'volcengine_seedance'
+      // 同步全局值
+      ve.volcengine_resolution = volcGlobalResolution.value
+      ve.volcengine_ratio      = volcGlobalRatio.value
+      r.data.video_engine = ve
+      await axios.put(`${API}/settings`, r.data)
+    }
+  } catch (e) {
+    genError.value = '同步设置到后端失败：' + (e?.response?.data?.detail || e.message)
+    return
+  }
+  // 2) selectedWorkflow 必须有值，否则 startGeneration 早返；用合成名 volcengine_seedance
+  selectedWorkflow.value = 'volcengine_seedance'
+  volcRunning.value = true
+  try {
+    await startGeneration()
+  } finally {
+    volcRunning.value = false
+  }
+}
 
 // v1.4.6: 视频模式 + 图片放映状态
 const videoMode             = ref('ltx')                  // 'ltx' | 'slideshow'
@@ -778,6 +1020,16 @@ const allVideosReady = computed(() =>
 
 // v1.4.1: 按工作流类型决定 readiness
 function sceneReady(s) {
+  // v1.4.10++: 火山引擎用每分镜独立判定，绕开 LTX 的 readiness 检查
+  if (videoMode.value === 'volcengine') {
+    const o = volcSceneOptions.value[s.id]
+    const mode = o?.mode || volcGlobalMode.value
+    if (mode === 't2v') return true   // 纯文生不需要图
+    if (mode === 'i2v_first') return !!s.hasStart
+    if (mode === 'i2v_flf')   return !!s.hasStart && !!s.hasEnd
+    if (mode === 'multi_ref') return (o?.references || []).length > 0 || !!s.hasStart
+    return true
+  }
   if (!s.hasStart) return false
   if (workflowFeatures.value.requires_end_image && !s.hasEnd) return false
   // 音频：只有 flfa2i + 关闭无音频模式时才要求音频
@@ -1202,6 +1454,17 @@ async function _runGeneration(sceneList) {
         ? Math.max(1, Number(manualDurations.value[s.id] ?? 5)) * 1000
         : (s.audioDurationMs || 4000)
 
+      // v1.4.10++: 火山引擎模式 —— 注入每分镜独立的 volcengine_options
+      let volcOptions = undefined
+      if (videoMode.value === 'volcengine') {
+        const o = volcOpts(s.id)
+        volcOptions = {
+          mode:          o.mode,
+          duration_secs: o.duration_secs,
+          references:    (o.references || []).map(_sanitizeVolcRef),
+        }
+      }
+
       const payload = {
         workflow_name: selectedWorkflow.value,
         resolution:    resolution.value,
@@ -1215,6 +1478,7 @@ async function _runGeneration(sceneList) {
           audio_b64:       dropAudio ? '' : s.audioB64,
           duration_ms:     dur_ms,
           positive_prompt: scenePrompts.value[s.id] ?? _buildPromptFallback(s),
+          ...(volcOptions ? { volcengine_options: volcOptions } : {}),
         }],
       }
 
@@ -1466,6 +1730,53 @@ async function showMergedInFolder() {
   background: var(--color-surface-2, rgba(255,255,255,0.04));
   color: var(--color-text-muted);
 }
+
+/* v1.4.10++ 火山引擎每分镜配置块 */
+.volc-scene-block {
+  background: rgba(102, 178, 255, 0.06);
+  border: 1px solid rgba(102, 178, 255, 0.25);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 8px 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.volc-scene-row {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.volc-spacer { flex: 1; }
+.input-xs {
+  padding: 2px 6px; font-size: 12px; height: 24px;
+}
+.volc-refs-grid {
+  display: flex; gap: 6px; flex-wrap: wrap;
+}
+.volc-ref-chip {
+  position: relative;
+  width: 64px; height: 64px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px; overflow: hidden;
+  background: var(--color-surface, rgba(255,255,255,0.03));
+}
+.volc-ref-chip img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.volc-ref-noimg {
+  display:flex; align-items:center; justify-content:center;
+  width: 100%; height: 100%; font-size: 11px; color: var(--color-text-muted);
+}
+.volc-ref-kind {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.55); color: #fff;
+  font-size: 9px; text-align: center; padding: 1px 0;
+}
+.volc-ref-del {
+  position: absolute; top: 2px; right: 2px;
+  width: 16px; height: 16px; padding: 0;
+  border: none; border-radius: 3px;
+  background: rgba(0,0,0,0.55); color: #fff;
+  font-size: 10px; line-height: 14px; cursor: pointer;
+  opacity: 0;
+}
+.volc-ref-chip:hover .volc-ref-del { opacity: 1; }
+.volc-ref-del:hover { background: var(--color-error); }
 .toolbar-right { display:flex; align-items:center; gap:8px; }
 .toolbar-title { margin:0; font-size:15px; font-weight:600; }
 

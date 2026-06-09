@@ -102,16 +102,28 @@ def _build_content_payload(
     first_frame_b64: str = "",
     last_frame_b64:  str = "",
     use_image:       bool = True,
+    multi_refs_b64:  Optional[list[str]] = None,
 ) -> list[dict]:
     """组装 Ark 视频生成的 `content` 数组。
 
-    按官方文档 v1.4.10+：
-      - text：纯提示词文本，**不再贴 --hints**（生成参数走 request body 强校验）
-      - image_url.role：图生视频-首帧 → 'first_frame'（或省略）；
-        图生视频-首尾帧 → 'first_frame' + 'last_frame' 两张
+    模式互斥（文档约定）：
+      - 文生视频（t2v）：text 一项
+      - 图生视频-首帧（i2v_first）：text + 1 image_url(role=first_frame)
+      - 图生视频-首尾帧（i2v_flf）：text + first_frame + last_frame
+      - 多模态参考生视频（multi_ref，Seedance 2.0）：text + 1~9 reference_image
+    multi_refs_b64 非空 → 走 multi_ref 分支（无视 first/last frame 参数）
     """
     parts: list[dict] = [{"type": "text", "text": prompt or ""}]
     if not use_image:
+        return parts
+    if multi_refs_b64:
+        # Seedance 2.0 多模态参考：每张图 role='reference_image'
+        for b in multi_refs_b64[:9]:   # 上限 9
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": _ensure_data_url(b)},
+                "role": "reference_image",
+            })
         return parts
     # 双图：必须同时给 role，文档约定 "图生视频-首尾帧" 场景 role 必填
     if first_frame_b64 and last_frame_b64:
@@ -258,6 +270,7 @@ async def generate_video_seedance(
     model_id:        str,
     first_frame_b64: str = "",
     last_frame_b64:  str = "",
+    multi_refs_b64:  Optional[list[str]] = None,
     positive_prompt: str = "",
     duration_secs:   int = 5,
     resolution:      str = "720p",
@@ -297,6 +310,7 @@ async def generate_video_seedance(
         first_frame_b64=first_frame_b64,
         last_frame_b64=last_frame_b64,
         use_image=use_image,
+        multi_refs_b64=multi_refs_b64,
     )
     task_id, err = await _post_create_task(
         base_url, api_key, model_id=model_id, content=content,
