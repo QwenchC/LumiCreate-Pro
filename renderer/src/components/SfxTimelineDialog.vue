@@ -49,7 +49,9 @@
                       <input type="number" min="0" step="100"
                              v-model.number="ov.offset_ms" class="input input-xs" />
                     </td>
-                    <td>{{ sfxLabel(ov.sfx_id) }}</td>
+                    <td class="sfx-sfx-name" :title="sfxLabel(ov.sfx_id)">
+                      {{ sfxLabel(ov.sfx_id) }}
+                    </td>
                     <td>
                       <input type="number" min="-40" max="20" step="1"
                              v-model.number="ov.volume_db" class="input input-xs" />
@@ -67,8 +69,8 @@
           <div class="sfx-library">
             <div class="sfx-section-title">
               SFX 库（{{ library.length }}）
-              <button class="btn btn-secondary btn-xs" @click="pickFile"
-                      :disabled="uploading">
+              <button class="btn btn-secondary btn-xs sfx-upload-btn"
+                      @click="pickFile" :disabled="uploading">
                 {{ uploading ? '上传中…' : '＋ 上传' }}
               </button>
               <input ref="fileInput" type="file" hidden
@@ -248,78 +250,136 @@ onMounted(loadAll)
 </script>
 
 <style scoped>
+/* 用项目 design tokens：var(--bg-panel) / --text / --border / --bg-input / --accent
+   之前用 --color-background / --color-border 是错的 token → light 主题下
+   fallback #1e1e1e 配上深色文本 = 字背景同色看不清。 */
 .sfx-overlay {
-  position: fixed; inset: 0;
+  position: fixed; inset: 0; z-index: 10010;
   background: rgba(0, 0, 0, 0.6);
   display: flex; align-items: center; justify-content: center;
-  z-index: 9999;
 }
 .sfx-modal {
-  background: var(--color-background, #1e1e1e);
-  border-radius: 8px;
-  padding: 16px;
-  width: min(94vw, 1200px);
-  max-height: 90vh;
-  display: flex; flex-direction: column; gap: 12px;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  /* 改成确切的 width + max-height + flex 列布局，
+     让 body 在 max-height 内伸缩，避免内部 grid 把外壳撑爆 */
+  width: min(1100px, 96vw);
+  max-height: min(86vh, 760px);
+  display: flex; flex-direction: column; gap: 10px;
+  min-height: 0;
 }
 .sfx-header {
   display: flex; align-items: center; justify-content: space-between;
+  flex: 0 0 auto;
 }
-.sfx-header h3 { margin: 0; }
+.sfx-header h3 { margin: 0; font-size: 15px; color: var(--text); }
+
+/* 关键修复：body flex:1 + min-height:0 → grid 三栏在外壳剩余空间内伸缩，
+   每栏内部 overflow:auto 滚动，再也不会撑出窗口边界 */
 .sfx-body {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
-  grid-template-columns: 220px 1fr 320px;
-  gap: 12px;
-  min-height: 60vh;
-  max-height: 70vh;
+  grid-template-columns: 200px minmax(0, 1fr) 280px;
+  gap: 10px;
+}
+.sfx-scenes, .sfx-timeline, .sfx-library {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow: auto;
+  min-height: 0;
+  min-width: 0;
 }
 .sfx-section-title {
-  font-size: 13px; font-weight: 600;
-  margin-bottom: 8px;
-  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 6px;
+  position: sticky; top: -8px; background: var(--bg-input);
+  z-index: 1;
 }
-.sfx-section-title button { margin-left: auto; }
-.sfx-scenes, .sfx-timeline, .sfx-library {
-  border: 1px solid var(--color-border, #333);
-  border-radius: 4px;
-  padding: 10px;
-  overflow: auto;
-}
+.sfx-section-title > .sfx-upload-btn { margin-left: auto; }
+
 .sfx-scene-list, .sfx-library-list {
   list-style: none; padding: 0; margin: 0;
 }
 .sfx-scene-list li {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 8px; cursor: pointer; border-radius: 3px;
+  padding: 5px 8px; cursor: pointer; border-radius: 4px;
+  color: var(--text); font-size: 13px;
 }
-.sfx-scene-list li:hover { background: rgba(255, 255, 255, 0.05); }
-.sfx-scene-list li.active { background: rgba(64, 158, 255, 0.18); }
-.sfx-scene-idx { color: #888; min-width: 24px; }
+.sfx-scene-list li:hover { background: var(--bg-panel); }
+.sfx-scene-list li.active {
+  background: var(--accent);
+  color: #fff;
+}
+.sfx-scene-list li.active .sfx-scene-idx { color: rgba(255, 255, 255, 0.75); }
+.sfx-scene-idx { color: var(--text-muted); min-width: 22px; font-size: 12px; }
 .sfx-scene-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sfx-badge {
-  background: #409eff; color: white; font-size: 11px;
-  padding: 1px 6px; border-radius: 8px;
+  background: var(--accent);
+  color: #fff; font-size: 10px;
+  padding: 1px 6px; border-radius: 8px; line-height: 1.4;
 }
-.sfx-table { width: 100%; border-collapse: collapse; }
+.sfx-scene-list li.active .sfx-badge {
+  background: #fff; color: var(--accent);
+}
+
+.sfx-table { width: 100%; border-collapse: collapse; color: var(--text); }
 .sfx-table th, .sfx-table td {
-  padding: 4px 8px; border-bottom: 1px solid var(--color-border, #333);
-  text-align: left; font-size: 13px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: left; font-size: 12px;
+}
+.sfx-table th {
+  color: var(--text-muted); font-weight: 500;
+  position: sticky; top: 22px; background: var(--bg-input);
 }
 .sfx-table input.input-xs {
-  width: 80px;
+  width: 70px; padding: 2px 6px; font-size: 12px;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
 }
+.sfx-table .sfx-sfx-name {
+  max-width: 180px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+
 .sfx-lib-row {
-  display: flex; align-items: center; gap: 6px;
-  padding: 4px 0;
-  border-bottom: 1px solid var(--color-border, #2a2a2a);
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 2px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
 }
-.sfx-lib-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.sfx-lib-meta { color: #888; font-size: 12px; min-width: 36px; }
+.sfx-lib-row:last-child { border-bottom: none; }
+.sfx-lib-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px;
+}
+.sfx-lib-meta {
+  color: var(--text-muted); font-size: 11px;
+  flex: 0 0 auto;
+}
+
 .sfx-empty {
-  color: #888; text-align: center; padding: 24px 8px; font-size: 13px;
+  color: var(--text-muted);
+  text-align: center; padding: 24px 8px; font-size: 12px;
 }
 .sfx-footer {
   display: flex; align-items: center; gap: 8px;
+  flex: 0 0 auto;
+  padding-top: 8px; border-top: 1px solid var(--border);
 }
-.sfx-hint { font-size: 12px; flex: 1; }
+.sfx-hint {
+  font-size: 11px; flex: 1; color: var(--text-muted);
+}
 </style>
