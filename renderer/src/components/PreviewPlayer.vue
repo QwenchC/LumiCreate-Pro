@@ -53,6 +53,7 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import axios from 'axios'
 
 const props = defineProps({
   projectId: { type: String, required: true },
