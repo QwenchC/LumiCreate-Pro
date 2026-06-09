@@ -172,6 +172,42 @@ def _build_image_vf_chain(W: int, H: int, duration_s: float, fps: int, motion: s
     return pre + "," + zp + ",setsar=1,format=yuv420p"
 
 
+def _build_sfx_audio_fc(main_audio_label: str,
+                         sfx_overlays: list[dict],
+                         start_input_idx: int) -> tuple[str, list[str]]:
+    """构造 SFX 音频 filter_complex 片段。
+
+    Args:
+        main_audio_label: 主音轨在 fc 中的标签（如 "[1:a]" 或 "[a_main]"），
+            会被先做 aresample 再参与 amix
+        sfx_overlays: [{"path": Path, "offset_ms": int, "volume_db": float}, ...]
+        start_input_idx: 第一个 SFX 在 ffmpeg `-i` 序列里的索引
+
+    Returns:
+        (filter_complex_segment, output_label)
+        - filter_complex 字符串片段（用 ; 分隔的多个节点）
+        - amix 输出标签 "[aout]"
+    """
+    parts = [f"{main_audio_label}aresample=async=1000:first_pts=0[a_main]"]
+    sfx_labels: list[str] = []
+    for i, ov in enumerate(sfx_overlays):
+        idx = start_input_idx + i
+        offset = max(0, int(ov.get("offset_ms") or 0))
+        vol    = float(ov.get("volume_db") or 0.0)
+        lbl = f"[sfx{i}]"
+        # adelay 需要 per-channel 列表（用 | 分隔），stereo 给两次
+        # volume 节点用 dB 单位
+        parts.append(f"[{idx}:a]adelay={offset}|{offset},volume={vol}dB{lbl}")
+        sfx_labels.append(lbl)
+    # amix: 主音轨 + N 个 SFX；duration=first 让总长 = 主音轨长度（不被 SFX 拖长）
+    inputs_chain = "[a_main]" + "".join(sfx_labels)
+    n = 1 + len(sfx_labels)
+    parts.append(
+        f"{inputs_chain}amix=inputs={n}:duration=first:dropout_transition=0[aout]"
+    )
+    return ";".join(parts), "[aout]"
+
+
 def build_scene_clip_cmd(
     ffmpeg_path: str, *,
     start_image: Path,
@@ -185,6 +221,7 @@ def build_scene_clip_cmd(
     intra_transition:    str = "fade",
     intra_transition_ms: int = 800,
     motion_effect:       str = "none",
+    sfx_overlays:        Optional[list[dict]] = None,
 ) -> list[str]:
     """构造单分镜的 ffmpeg 命令。
 
@@ -250,6 +287,24 @@ def build_scene_clip_cmd(
             cmd += ["-i", str(audio)]
         else:
             cmd += _AUDIO_INPUT_SILENT
+        # v1.4.8 SFX 路径：有叠加音效时把视频+音频统一压进 filter_complex（adelay+
+        # volume+amix 必须在 fc 里跑），并把 SFX 文件追加为额外 -i 输入。
+        if sfx_overlays:
+            for ov in sfx_overlays:
+                cmd += ["-i", str(ov["path"])]
+            audio_fc, aout = _build_sfx_audio_fc(
+                main_audio_label="[1:a]",
+                sfx_overlays=sfx_overlays,
+                start_input_idx=2,   # 0=image, 1=audio, 2..=sfx
+            )
+            video_fc = f"[0:v]{vf}[vout]"
+            cmd += ["-filter_complex", f"{video_fc};{audio_fc}",
+                    "-map", "[vout]", "-map", aout]
+            cmd += _ENCODE_SAFE
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                    "-t", f"{duration_s:.3f}"]
+            cmd += [str(output_path)]
+            return cmd
         # 动态模式用 filter_complex（因为 zoompan 自带 fps），静态可走 -vf
         if not has_motion:
             cmd += ["-vf", vf, "-r", str(fps), "-map", "0:v:0"]
@@ -294,12 +349,28 @@ def build_scene_clip_cmd(
         cmd += ["-i", str(audio)]
     else:
         cmd += _AUDIO_INPUT_SILENT
-    fc = (
+    fc_video = (
         f"[0:v]{vf_a}[v0];"
         f"[1:v]{vf_b}[v1];"
         f"[v0][v1]xfade=transition={transition}:duration={xfd:.3f}:offset={offset:.3f}[vout]"
     )
-    cmd += ["-filter_complex", fc,
+    # v1.4.8 SFX：2 图分支同样接 SFX —— 把 fc 拼成 video+audio 一整段
+    if sfx_overlays:
+        for ov in sfx_overlays:
+            cmd += ["-i", str(ov["path"])]
+        audio_fc, aout = _build_sfx_audio_fc(
+            main_audio_label="[2:a]",
+            sfx_overlays=sfx_overlays,
+            start_input_idx=3,   # 0,1=images, 2=audio, 3..=sfx
+        )
+        cmd += ["-filter_complex", f"{fc_video};{audio_fc}",
+                "-map", "[vout]", "-map", aout,
+                "-r", str(fps), *_ENCODE_SAFE]
+        cmd += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                "-t", f"{duration_s:.3f}"]
+        cmd += [str(output_path)]
+        return cmd
+    cmd += ["-filter_complex", fc_video,
             "-map", "[vout]",
             "-r", str(fps), *_ENCODE_SAFE]
     # v1.4.6++ 同 1 图分支：aresample async + 显式 -t（避免 -shortest 的截断累积）
@@ -327,6 +398,64 @@ def _suggest_parallel_workers() -> int:
     except Exception:
         n = 4
     return max(1, min(n // 4, 4))
+
+
+def _load_sfx_timeline(proj_dir: Path) -> dict[str, list[dict]]:
+    """读 <project>/sfx_timeline.json 并把 sfx_id 解析成 path（用全局 SFX 库）。
+
+    返回 {scene_id: [{path, offset_ms, volume_db}, ...]}。SFX 缺失则跳过该条。
+    """
+    p = proj_dir / "sfx_timeline.json"
+    if not p.exists():
+        return {}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+
+    from services.db import get_global_sfx_conn, global_sfx_root
+    conn = get_global_sfx_conn()
+    root = global_sfx_root()
+
+    # 一次性把所有 sfx_id 拉出来，避免逐条查
+    all_ids: set = set()
+    for items in raw.values():
+        if isinstance(items, list):
+            for it in items:
+                if isinstance(it, dict) and isinstance(it.get("sfx_id"), int):
+                    all_ids.add(it["sfx_id"])
+    if not all_ids:
+        return {}
+    placeholders = ",".join("?" * len(all_ids))
+    rows = conn.execute(
+        f"SELECT id, file_path FROM sfx_clips WHERE id IN ({placeholders})",
+        list(all_ids),
+    ).fetchall()
+    id_to_path: dict[int, Path] = {}
+    for r in rows:
+        abs_p = root / r["file_path"]
+        if abs_p.is_file():
+            id_to_path[int(r["id"])] = abs_p
+
+    out: dict[str, list[dict]] = {}
+    for sid, items in raw.items():
+        if not isinstance(items, list): continue
+        resolved: list[dict] = []
+        for it in items:
+            if not isinstance(it, dict): continue
+            sfx_id = it.get("sfx_id")
+            path   = id_to_path.get(int(sfx_id)) if isinstance(sfx_id, int) else None
+            if path is None: continue   # SFX 已删，静默跳过
+            resolved.append({
+                "path":      path,
+                "offset_ms": max(0, int(it.get("offset_ms") or 0)),
+                "volume_db": float(it.get("volume_db") or 0.0),
+            })
+        if resolved:
+            out[sid] = resolved
+    return out
 
 
 def render_slideshow_project(
@@ -363,8 +492,11 @@ def render_slideshow_project(
     errors:   list[dict] = []
     scene_files: dict[str, str] = dict(existing)
 
+    # v1.4.8: 读项目级 SFX 时间轴（{scene_id: [{path, offset_ms, volume_db}, ...]}）
+    sfx_by_scene = _load_sfx_timeline(proj_dir)
+
     # 阶段 1：解析所有分镜的资产 + 算 duration（串行，纯 I/O，飞快）
-    tasks: list[dict] = []   # {sid, start_img, end_img, audio, dur_ms, out_path}
+    tasks: list[dict] = []   # {sid, start_img, end_img, audio, dur_ms, out_path, sfx}
     for sid in scene_order:
         assets = _resolve_scene_assets(project_id, proj_dir, sid)
         start_img = assets["start_image"]
@@ -393,6 +525,7 @@ def render_slideshow_project(
             "audio": audio, "dur_ms": dur_ms,
             "out_name": f"{sid}.mp4",
             "out_path": vdir / f"{sid}.mp4",
+            "sfx_overlays": sfx_by_scene.get(sid) or [],
         })
 
     # 阶段 2：并行跑 ffmpeg
@@ -412,6 +545,7 @@ def render_slideshow_project(
             intra_transition=intra_transition,
             intra_transition_ms=intra_transition_ms,
             motion_effect=motion_effect,
+            sfx_overlays=t.get("sfx_overlays") or None,
         )
         try:
             r = subprocess.run(cmd, capture_output=True, timeout=600)

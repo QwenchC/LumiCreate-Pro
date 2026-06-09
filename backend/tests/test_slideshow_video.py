@@ -623,3 +623,161 @@ def test_merge_paths_enforce_wmp_bitrate_ceiling():
     fast_win = src[fast_idx:fast_idx + 2000]
     assert '"-maxrate", "8M"' in fast_win
     assert '"-bufsize", "16M"' in fast_win
+
+
+# ── v1.4.8 SFX overlays ─────────────────────────────────────────────────────
+
+
+def test_sfx_overlay_adds_inputs_and_amix_filter_complex(tmp_path):
+    """带 SFX 时单图分支必须：
+    - 把 SFX 作为额外 -i 输入追加
+    - 用 filter_complex 串接 video + adelay/volume + amix
+    - 不再单独走 -af（音频流被 fc 替换）"""
+    from services.slideshow_video import build_scene_clip_cmd
+    img = tmp_path / "a.png"; img.write_bytes(b"x")
+    aud = tmp_path / "a.mp3"; aud.write_bytes(b"y")
+    sfx1 = tmp_path / "s1.mp3"; sfx1.write_bytes(b"a")
+    sfx2 = tmp_path / "s2.mp3"; sfx2.write_bytes(b"b")
+    out = tmp_path / "scene.mp4"
+    cmd = build_scene_clip_cmd(
+        "ffmpeg", start_image=img, end_image=None, audio=aud,
+        duration_ms=5000, output_path=out, width=1280, height=720, fps=25,
+        sfx_overlays=[
+            {"path": sfx1, "offset_ms": 1200, "volume_db": -8},
+            {"path": sfx2, "offset_ms": 3500, "volume_db": -10},
+        ],
+    )
+    # 两个 SFX 作为新增 -i
+    assert str(sfx1) in cmd
+    assert str(sfx2) in cmd
+    # filter_complex 节点齐全
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    assert "adelay=1200|1200" in fc
+    assert "adelay=3500|3500" in fc
+    assert "volume=-8.0dB" in fc
+    assert "volume=-10.0dB" in fc
+    # amix 节点存在，输入数 = 1 主音轨 + 2 SFX
+    assert "amix=inputs=3" in fc
+    # 输出标签 [aout] 被 map
+    assert cmd.count("-map") >= 2
+    map_targets = [cmd[i+1] for i, x in enumerate(cmd) if x == "-map"]
+    assert "[aout]" in map_targets
+
+
+def test_sfx_overlay_two_image_branch(tmp_path):
+    """2 图 xfade 分支也能叠 SFX，主音轨索引是 [2:a]，SFX 从 [3:a] 起。"""
+    from services.slideshow_video import build_scene_clip_cmd
+    a = tmp_path / "a.png"; a.write_bytes(b"x")
+    b = tmp_path / "b.png"; b.write_bytes(b"y")
+    aud = tmp_path / "a.mp3"; aud.write_bytes(b"z")
+    sfx = tmp_path / "s.mp3"; sfx.write_bytes(b"k")
+    out = tmp_path / "scene.mp4"
+    cmd = build_scene_clip_cmd(
+        "ffmpeg", start_image=a, end_image=b, audio=aud,
+        duration_ms=5000, output_path=out, width=1280, height=720, fps=25,
+        sfx_overlays=[{"path": sfx, "offset_ms": 500, "volume_db": -5}],
+    )
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    # xfade + SFX 必须并存
+    assert "xfade=" in fc
+    assert "[2:a]aresample" in fc       # 主音轨索引 2
+    assert "[3:a]adelay=500|500" in fc   # SFX 索引 3
+    assert "amix=inputs=2" in fc
+
+
+def test_no_sfx_overlay_uses_legacy_fast_path(tmp_path):
+    """sfx_overlays=None / [] 时必须保持原快路径（-af aresample；不进 fc）。"""
+    from services.slideshow_video import build_scene_clip_cmd
+    img = tmp_path / "a.png"; img.write_bytes(b"x")
+    aud = tmp_path / "a.mp3"; aud.write_bytes(b"y")
+    out = tmp_path / "scene.mp4"
+    for sfx in (None, []):
+        cmd = build_scene_clip_cmd(
+            "ffmpeg", start_image=img, end_image=None, audio=aud,
+            duration_ms=3000, output_path=out, width=1280, height=720, fps=25,
+            sfx_overlays=sfx,
+        )
+        # 没有 SFX -i 输入
+        assert "amix" not in " ".join(cmd)
+        # -af aresample 仍在
+        assert "-af" in cmd
+        af = cmd[cmd.index("-af") + 1]
+        assert "aresample=async=1000:first_pts=0" in af
+
+
+def test_render_loads_sfx_timeline_and_passes_overlays(
+        isolated_app, tmp_path, monkeypatch):
+    """render_slideshow_project 必须读 sfx_timeline.json + 把 overlays 传给
+    每个 build_scene_clip_cmd。缺失的 sfx_id 静默跳过，不让整片崩。"""
+    from services.db import get_conn, get_global_sfx_conn, global_sfx_root
+    from datetime import datetime, timezone
+    pid = isolated_app["make_project"]()
+    proj_dir = tmp_path / pid
+    imgs = proj_dir / "images"; imgs.mkdir(exist_ok=True)
+    auds = proj_dir / "audio";  auds.mkdir(exist_ok=True)
+    (imgs / "s1_start_0.png").write_bytes(b"x")
+    (auds / "s1.mp3").write_bytes(b"y")
+
+    conn = get_conn(pid)
+    for at, fp in [("image_start", "images/s1_start_0.png"),
+                   ("audio",       "audio/s1.mp3")]:
+        conn.execute(
+            "INSERT OR REPLACE INTO scene_assets(scene_id, asset_type, slot_index,"
+            " file_path, format, metadata_json, is_selected, created_at) "
+            "VALUES(?,?,?,?,?,?,?, datetime('now'))",
+            ("s1", at, 0, fp, "png" if "image" in at else "mp3", "{}", 1),
+        )
+    conn.commit()
+
+    # 全局 SFX 库塞一个 clip
+    sfx_root = global_sfx_root()
+    sfx_file = sfx_root / "test_clip.mp3"
+    sfx_file.write_bytes(b"\x00" * 512)
+    sconn = get_global_sfx_conn()
+    sconn.execute(
+        "INSERT INTO sfx_clips(name, category, file_path, mime, duration_ms,"
+        " tags, bytes, created_at) VALUES(?,?,?,?,?,?,?,?)",
+        ("test", "uncategorized", "test_clip.mp3", "audio/mpeg", 500,
+         "", 512, datetime.now(timezone.utc).isoformat()),
+    )
+    sconn.commit()
+    sfx_id = sconn.execute("SELECT id FROM sfx_clips WHERE name='test'").fetchone()["id"]
+
+    # 写时间轴：s1 用真 sfx_id + 一个不存在的 999（应被静默跳过）
+    (proj_dir / "sfx_timeline.json").write_text(
+        json.dumps({
+            "s1": [
+                {"sfx_id": sfx_id, "offset_ms": 1000, "volume_db": -6},
+                {"sfx_id": 999,    "offset_ms": 2000, "volume_db": -8},
+            ],
+        }), encoding="utf-8",
+    )
+
+    captured = []
+    def _fake_run(cmd, *a, **kw):
+        captured.append(cmd)
+        Path(cmd[-1]).write_bytes(b"\x00\x00\x00\x18ftypmp42mp42")
+        return SimpleNamespace(returncode=0, stderr=b"", stdout=b"")
+    import subprocess as _sp
+    monkeypatch.setattr(_sp, "run", _fake_run)
+    import services.slideshow_video as _sv
+    monkeypatch.setattr(_sv, "_ffprobe_audio_duration_ms",
+                        lambda *a, **kw: 3000)
+
+    _sv.render_slideshow_project(
+        pid, proj_dir=proj_dir, scene_order=["s1"],
+        ffmpeg_path="ffmpeg.exe", width=1280, height=720, fps=25,
+    )
+    # 真 sfx 文件出现在 cmd；999 没有
+    cmd = captured[0]
+    assert str(sfx_file) in cmd
+    # adelay 1000 来自有效 overlay；2000 应被丢弃
+    fc_idx = cmd.index("-filter_complex")
+    fc = cmd[fc_idx + 1]
+    assert "adelay=1000|1000" in fc
+    assert "adelay=2000|2000" not in fc
+
+    # 清理全局 SFX 库（避免污染其它测试 run）
+    sconn.execute("DELETE FROM sfx_clips WHERE id=?", (sfx_id,))
+    sconn.commit()
+    sfx_file.unlink(missing_ok=True)

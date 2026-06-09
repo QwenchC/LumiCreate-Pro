@@ -81,6 +81,7 @@ description: 驱动 LumiCreate-Pro 本地 AI 视频创作流水线（文案 → 
 | `video`      | LTX-2.3 视频生成；**v1.4.6** 新增 render-slideshow（无 GPU 通路）+ 合并通路 WMP 兼容修复 | [video.md](./references/modules/video.md)             |
 | `subtitle`   | stable-whisper 字幕生成 + 烧录                                       | [subtitle.md](./references/modules/subtitle.md)       |
 | `music`      | **v1.4.2** ACE-Step v1.5 音乐生成 + 全局音乐库 + 项目 BGM 直通       | [music.md](./references/modules/music.md)             |
+| `sfx`        | **v1.4.8** 音效 (SFX) 库 + 项目时间轴，每镜次点状音效叠加（脚步/关门/抽刀）；slideshow 渲染时直接烧进 mp4 | [sfx.md](./references/modules/sfx.md)                 |
 
 通用约定与流水线骨架见 [pipeline.md](./references/pipeline.md)。
 SSE 事件格式速查见 [sse-events.md](./references/sse-events.md)。
@@ -100,6 +101,8 @@ SSE 事件格式速查见 [sse-events.md](./references/sse-events.md)。
 用户提到"出图 / 生成图片 / 批量出图 / ComfyUI 跑图" → `image` (generate-stream / generate-batch-stream)
 用户提到"配音 / TTS / 朗读 / 音色克隆 / IndexTTS / Edge TTS" → `audio` (generate-stream / ms-tts) → `audio` (stitch-scene)
 用户提到"视频生成 / LTX / 首末帧驱动视频 / 分镜视频 / 合并视频" → `video` (generate-stream → merge-project-video)；**用户说"无 GPU / 显存不够 / 跑不动 LTX / 图片放映视频"** → **`video render-slideshow`（v1.4.6）** → merge-project-video
+用户提到"试播 / 预览 / 看看节奏 / 合并前预览" → **v1.4.8 前端 PreviewPlayer 串播分镜素材**（无后端调用，浏览器顺序播 video / image+audio / image-only）；合并前不出文件
+用户提到"音效 / SFX / 脚步声 / 关门声 / 抽刀声 / 给画面加音效" → `sfx`（v1.4.8 上传 + 时间轴）→ 下次跑 `render-slideshow` 时**自动烧进**镜次 mp4。详见 [sfx.md](./references/modules/sfx.md)
 用户提到"字幕 / SRT / 烧字幕 / Whisper / 硬字幕" → `subtitle`（**漫剧**：manuscript → `preprocess-text` → generate-srt → embed；**非漫剧**：`script` → generate-srt → embed）
 用户提到"配置 / 模型 / 引擎 / API key / ComfyUI 地址" → `settings`
 

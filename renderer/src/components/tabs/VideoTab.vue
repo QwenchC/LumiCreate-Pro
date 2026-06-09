@@ -12,6 +12,20 @@
       <div class="toolbar-right">
         <button class="btn btn-danger btn-sm" v-if="running" @click="stopGeneration">⏹ 停止</button>
         <template v-else>
+          <!-- v1.4.8: 试播预览 —— 合并前轻量串播分镜，不出文件 -->
+          <button
+            class="btn btn-secondary btn-sm"
+            :disabled="!scenes.length"
+            :title="'按分镜顺序串播现有素材（视频优先，否则图+音频，最后只图）'"
+            @click="previewOpen = true"
+          >▶︎ 试播</button>
+          <!-- v1.4.8: SFX 时间轴编辑 —— 给每镜次叠加点状音效 -->
+          <button
+            class="btn btn-secondary btn-sm"
+            :disabled="!scenes.length"
+            :title="'每镜次时间轴上叠加 SFX（脚步、关门、抽刀…）。需在「图片放映」模式重新渲染才生效。'"
+            @click="sfxDialogOpen = true"
+          >🔊 音效</button>
           <button
             class="btn btn-success btn-sm"
             :disabled="!allVideosReady || merging"
@@ -460,6 +474,19 @@
                     source="final_video"
                     @close="bgmMixerOpen = false" />
 
+    <!-- v1.4.8: 试播预览 —— 串播分镜素材，不带字幕/SFX -->
+    <PreviewPlayer v-if="previewOpen"
+                   :project-id="projectId"
+                   :scenes="scenes"
+                   :resolution="resolution"
+                   @close="previewOpen = false" />
+
+    <!-- v1.4.8: SFX 时间轴编辑器 -->
+    <SfxTimelineDialog v-if="sfxDialogOpen"
+                       :project-id="projectId"
+                       :scenes="scenes"
+                       @close="sfxDialogOpen = false" />
+
   </div>
 </template>
 
@@ -468,9 +495,13 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import axios from 'axios'
 import { useTabsStore } from '../../stores/tabs'
 import BgmMixerDialog from '../BgmMixerDialog.vue'
+import PreviewPlayer from '../PreviewPlayer.vue'
+import SfxTimelineDialog from '../SfxTimelineDialog.vue'
 
 // v1.4.2: BGM 混音对话框可见性
 const bgmMixerOpen = ref(false)
+const previewOpen   = ref(false)  // v1.4.8 试播预览
+const sfxDialogOpen = ref(false)  // v1.4.8 SFX 时间轴编辑
 
 const props = defineProps({ projectId: String })
 const emit  = defineEmits(['dirty', 'saved'])

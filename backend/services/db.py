@@ -251,6 +251,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 _GLOBAL_KEY = "__global_elements__"
 _GLOBAL_MUSIC_KEY = "__global_music__"
+_GLOBAL_SFX_KEY   = "__global_sfx__"   # v1.4.8 音效库
 
 
 # ── 全局音乐库（v1.4.2）─────────────────────────────────────────────────────────
@@ -317,6 +318,69 @@ def get_global_music_conn() -> sqlite3.Connection:
 def global_music_root() -> Path:
     """全局音乐文件存储根目录。"""
     p = SETTINGS_PATH.parent / "music"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+# ── 全局音效库（v1.4.8）─────────────────────────────────────────────────────
+# 音效 (SFX) 库，用户上传 + ffmpeg 在镜次内特定时间点叠加。
+# 与 music 平行的另一套：sfx 是"点状音效"（≤ 几秒，单次触发），music 是"乐曲"。
+# 文件存 APPDATA/LumiCreate-Pro/sfx/，元数据 SQLite。
+
+_GLOBAL_SFX_DDL = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sfx_clips (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT    NOT NULL DEFAULT '',
+    category     TEXT    NOT NULL DEFAULT 'uncategorized',
+    file_path    TEXT    NOT NULL DEFAULT '',
+    mime         TEXT    NOT NULL DEFAULT 'audio/mpeg',
+    duration_ms  INTEGER NOT NULL DEFAULT 0,
+    tags         TEXT    NOT NULL DEFAULT '',
+    bytes        INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sfx_category ON sfx_clips(category);
+CREATE INDEX IF NOT EXISTS idx_sfx_created  ON sfx_clips(created_at DESC);
+"""
+
+
+def _global_sfx_path() -> Path:
+    return SETTINGS_PATH.parent / "sfx.sqlite"
+
+
+def _ensure_global_sfx_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(_GLOBAL_SFX_DDL)
+    row = conn.execute("SELECT COALESCE(MAX(version), 0) AS v FROM schema_version").fetchone()
+    if int(row["v"] or 0) < 1:
+        from datetime import datetime, timezone
+        conn.execute(
+            "INSERT INTO schema_version(version, applied_at) VALUES(?, ?)",
+            (1, datetime.now(timezone.utc).isoformat()),
+        )
+    conn.commit()
+
+
+def get_global_sfx_conn() -> sqlite3.Connection:
+    """全局音效库连接（同进程单例）。"""
+    with _CONN_LOCK:
+        c = _CONNS.get(_GLOBAL_SFX_KEY)
+        if c is not None:
+            return c
+        path = _global_sfx_path()
+        c = _make_conn(path)
+        _ensure_global_sfx_schema(c)
+        _CONNS[_GLOBAL_SFX_KEY] = c
+        return c
+
+
+def global_sfx_root() -> Path:
+    """全局音效文件存储根目录。"""
+    p = SETTINGS_PATH.parent / "sfx"
     p.mkdir(parents=True, exist_ok=True)
     return p
 

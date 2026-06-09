@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import settings, projects, text_engine, image_engine, audio_engine, video_engine, subtitle_engine, orchestrator, templates, logs, tasks, elements, project_elements, music
+from routers import settings, projects, text_engine, image_engine, audio_engine, video_engine, subtitle_engine, orchestrator, templates, logs, tasks, elements, project_elements, music, sfx_engine
 
 
 def create_app() -> FastAPI:
@@ -34,6 +34,7 @@ def create_app() -> FastAPI:
     app.include_router(elements.router,         prefix="/api/elements",         tags=["elements"])
     app.include_router(project_elements.router, prefix="/api/projects/{project_id}/elements", tags=["project-elements"])
     app.include_router(music.router,            prefix="/api/music",            tags=["music"])
+    app.include_router(sfx_engine.router,        prefix="/api/sfx",              tags=["sfx"])
     from routers import task_history as th_router
     app.include_router(th_router.router,        prefix="/api/task-history",     tags=["task-history"])
 

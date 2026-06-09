@@ -74,6 +74,7 @@ def isolated_app(tmp_path, monkeypatch):
         "routers.audio_engine", "routers.subtitle_engine",
         "routers.orchestrator", "routers.task_history", "routers.templates",
         "routers.tasks", "routers.text_engine", "routers.music",
+        "routers.sfx_engine",   # v1.4.8
     ):
         import sys as _sys
         mod = _sys.modules.get(modname)
@@ -101,6 +102,13 @@ def isolated_app(tmp_path, monkeypatch):
         elements_root = db.SETTINGS_PATH.parent / "elements"
         if elements_root.exists():
             _sh.rmtree(elements_root, ignore_errors=True)
+        # v1.4.8 SFX 全局库残留
+        gs = db._global_sfx_path()
+        if gs.exists():
+            gs.unlink(missing_ok=True)
+        sfx_root = db.SETTINGS_PATH.parent / "sfx"
+        if sfx_root.exists():
+            _sh.rmtree(sfx_root, ignore_errors=True)
     except Exception:
         pass
 
