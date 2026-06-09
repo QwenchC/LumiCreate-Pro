@@ -120,6 +120,7 @@ LumiCreate-Pro/
 │   │   ├── subtitle_engine.py  # 字幕生成 + 烧录 SSE 流
 │   │   ├── music.py            # ACE-Step v1.5 音乐生成（v1.4.2）
 │   │   ├── sfx_engine.py       # 音效库 + 项目时间轴（v1.4.8）
+│   │   ├── prompts_engine.py   # 全局提示词标签库（v1.4.9）
 │   │   └── settings.py         # 全局设置读写
 │   ├── services/
 │   │   ├── comfyui.py          # ComfyUI API 封装 + LiteGraph→API 转换器
@@ -180,6 +181,19 @@ SKILL/
 智能体在对话中出现以下意图时会自动激活本 Skill：「用 LumiCreate 生成视频」「做漫剧 / 解说视频 / 朗读视频」「调用 ComfyUI / IndexTTS / LTX-2.3」「批量出图 / 出视频 / 拼字幕」。
 
 ## 更新日志
+
+### v1.4.9
+本版本新增 **全局提示词插件** —— 不绑定项目，TitleBar 一键打开。
+
+- ✅ **提示词插件（PromptsPlugin）**：标题栏 `📋` 日志按钮右侧新增 `💡` 按钮，点开弹窗
+  - **数据**：全局 SQLite `APPDATA/LumiCreate-Pro/prompts.sqlite`，表 `prompt_tags`（category/name/content/description/is_builtin/sort_order）
+  - **内置出厂集**：~60 个常用漫剧 + SD 提示词，分 7 类（画风 / 构图 / 光照 / 情绪 / 角色 / 画质 / 负面词）；懒触发 seed，首次访问自动塞入
+  - **后端路由**：`backend/routers/prompts_engine.py`，6 端点 `/categories /list /tag (POST/PUT/DELETE) /reset-builtins`；内置标签受保护不能改 / 删（防误操作），整体 reset 才能恢复出厂
+  - **前端弹窗**：三段式（类目侧栏 / 标签网格 / 撰写区）。点击标签追加到撰写区，分隔符可切（逗号 / 空格 / 换行），撰写区可自由键入；「📋 复制到剪贴板」走 `navigator.clipboard.writeText`（老浏览器 `execCommand` 兜底）
+  - **新增自定义**：「＋ 新增自定义」可填类目 + 显示名 + 内容 + 描述，立即落地；自定义标签左侧黄边 + hover 显示删除按钮
+  - **搜索**：跨 name / content / description 即时过滤
+- ✅ **SKILL 同步**：模块表 + 决策树（"提示词 / 标签 / 画风 / 复制提示词"意图分支）；新建 `references/modules/prompts.md`（含数据模型 + 内置集 + API + UX wireframe）
+- ✅ **测试**：后端 **285 / 285 pytest 通过**（v1.4.8 时 276 个），新增 9 个回归测覆盖懒 seed 触发 / 列表排序（内置在前自定义在后）/ CRUD round-trip / 内置删改保护 / reset-builtins 不影响自定义 / required 字段校验
 
 ### v1.4.8
 本版本聚焦 **生产环境反馈环路** —— 合并前不出文件即可试播全片节奏 + 给静帧叙事加点状音效。

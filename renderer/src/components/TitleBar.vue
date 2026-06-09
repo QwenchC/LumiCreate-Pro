@@ -33,6 +33,11 @@
                 :title="logPanelOn ? '隐藏后端日志浮窗' : '显示后端日志浮窗'">
           📋
         </button>
+        <!-- v1.4.9: 提示词插件 —— 全局可用，按类目浏览 + 撰写 + 复制 -->
+        <button class="ctrl-btn prompts-toggle" @click="promptsOpen = true"
+                title="打开提示词插件（按类目浏览 / 新增 / 撰写 / 复制）">
+          💡
+        </button>
         <!-- C2: ComfyUI 健康指示灯 -->
         <button
           class="comfy-pill"
@@ -51,17 +56,24 @@
         <button class="ctrl-btn close-btn" @click="close" title="关闭">✕</button>
       </div>
     </div>
+
+    <!-- v1.4.9: 提示词插件弹窗 -->
+    <PromptsPlugin v-if="promptsOpen" @close="promptsOpen = false" />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useTabsStore } from '../stores/tabs'
+import PromptsPlugin from './PromptsPlugin.vue'
 
 defineEmits(['close-tab', 'go-home'])
 
 const tabsStore = useTabsStore()
 const isDark = ref(true)
+
+// v1.4.9: 提示词插件弹窗开关
+const promptsOpen = ref(false)
 
 // E1: 日志浮窗开关 toggle
 const logPanelOn = ref(localStorage.getItem('lumi-log-panel') !== 'off')
@@ -216,6 +228,8 @@ function close()    { window.electronAPI?.windowClose() }
 .comfy-pill.unset .comfy-dot { background: #888; }
 .log-toggle { width: 32px; font-size: 13px; }
 .log-toggle:hover { background: var(--color-border); }
+.prompts-toggle { width: 32px; font-size: 13px; margin-right: 4px; }
+.prompts-toggle:hover { background: var(--color-border); }
 .ctrl-btn {
   width: 46px;
   height: var(--titlebar-height);

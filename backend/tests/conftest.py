@@ -75,6 +75,7 @@ def isolated_app(tmp_path, monkeypatch):
         "routers.orchestrator", "routers.task_history", "routers.templates",
         "routers.tasks", "routers.text_engine", "routers.music",
         "routers.sfx_engine",   # v1.4.8
+        "routers.prompts_engine",   # v1.4.9
     ):
         import sys as _sys
         mod = _sys.modules.get(modname)
@@ -109,6 +110,10 @@ def isolated_app(tmp_path, monkeypatch):
         sfx_root = db.SETTINGS_PATH.parent / "sfx"
         if sfx_root.exists():
             _sh.rmtree(sfx_root, ignore_errors=True)
+        # v1.4.9 提示词插件全局库残留
+        gp = db._global_prompts_path()
+        if gp.exists():
+            gp.unlink(missing_ok=True)
     except Exception:
         pass
 

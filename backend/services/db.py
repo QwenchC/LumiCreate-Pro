@@ -252,6 +252,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 _GLOBAL_KEY = "__global_elements__"
 _GLOBAL_MUSIC_KEY = "__global_music__"
 _GLOBAL_SFX_KEY   = "__global_sfx__"   # v1.4.8 音效库
+_GLOBAL_PROMPTS_KEY = "__global_prompts__"   # v1.4.9 提示词插件
 
 
 # ── 全局音乐库（v1.4.2）─────────────────────────────────────────────────────────
@@ -320,6 +321,59 @@ def global_music_root() -> Path:
     p = SETTINGS_PATH.parent / "music"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+# ── 全局提示词插件（v1.4.9）─────────────────────────────────────────────────
+# 提示词标签库，按 category 分组（画风/构图/光照/情绪/角色/画质/负面词…）。
+# 用户可在插件 UI 里点击标签往撰写框追加，也可自己写。is_builtin=1 的内置标签
+# 不能删（只能用户自己 override 新建同名），用户自定义 (is_builtin=0) 可改可删。
+
+_GLOBAL_PROMPTS_DDL = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS prompt_tags (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    category     TEXT    NOT NULL DEFAULT 'general',
+    name         TEXT    NOT NULL DEFAULT '',     -- 显示名（中文短标签）
+    content      TEXT    NOT NULL DEFAULT '',     -- 实际插入文本（通常英文）
+    description  TEXT    NOT NULL DEFAULT '',     -- 可选解说 / hover 提示
+    is_builtin   INTEGER NOT NULL DEFAULT 0,
+    sort_order   INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_prompt_category ON prompt_tags(category, sort_order);
+"""
+
+
+def _global_prompts_path() -> Path:
+    return SETTINGS_PATH.parent / "prompts.sqlite"
+
+
+def _ensure_global_prompts_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(_GLOBAL_PROMPTS_DDL)
+    row = conn.execute("SELECT COALESCE(MAX(version), 0) AS v FROM schema_version").fetchone()
+    if int(row["v"] or 0) < 1:
+        from datetime import datetime, timezone
+        conn.execute(
+            "INSERT INTO schema_version(version, applied_at) VALUES(?, ?)",
+            (1, datetime.now(timezone.utc).isoformat()),
+        )
+    conn.commit()
+
+
+def get_global_prompts_conn() -> sqlite3.Connection:
+    with _CONN_LOCK:
+        c = _CONNS.get(_GLOBAL_PROMPTS_KEY)
+        if c is not None:
+            return c
+        path = _global_prompts_path()
+        c = _make_conn(path)
+        _ensure_global_prompts_schema(c)
+        _CONNS[_GLOBAL_PROMPTS_KEY] = c
+        return c
 
 
 # ── 全局音效库（v1.4.8）─────────────────────────────────────────────────────
