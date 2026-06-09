@@ -58,15 +58,17 @@
 - 自动检测并优先使用帧率标准化后的 `fixed_cfr.mp4` 作为烧录源，保证时间轴吻合
 
 ### 🎬 视频生成
-- 集成 **LTX-2.3** ComfyUI 工作流（首帧→末帧→音频驱动生成）
+- **双通路**（v1.4.6+）：
+  - **LTX-2.3**（有 GPU）— ComfyUI 工作流首帧→末帧→音频驱动
+  - **图片放映视频**（无 GPU / 低显存）— `render-slideshow` 端点直接 ffmpeg 渲染图片 + 音频；7 种 Ken Burns 动态（zoom_in/out + pan_left/right/up/down）+ 镜内/镜间转场 + 按 CPU 核数自动选并行 worker
+  - 两个通路输出 schema 一致（`<scene_id>.mp4` + `videos.json`），下游 merge / 字幕 / BGM 无感复用
 - LiteGraph UI 格式工作流自动转换为 ComfyUI API 格式（`_litegraph_to_api`）
-  - 处理 SetNode/GetNode 传送对、Bypass 节点、虚拟节点过滤、UI-only 输入过滤等边缘情况
 - 多分辨率支持（720p/576p/544p，竖屏/横屏），可选帧率（24/25/30fps）
 - 每个分镜卡片展示就绪状态（首帧 / 末帧 / 合并音频）、生成进度条、视频预览
-- 视频完成后自动用用户原始音频替换 AI 生成音频（通过 ffmpeg）
 - 生成视频持久化保存，重新进入页面自动恢复预览
-- **分镜合并**：所有分镜生成完毕后，一键 ffmpeg concat 合并为完整 MP4，保存到项目目录，支持直接打开或在文件夹中显示
-- 视频提示词根据场景台词自动生成（角色开口对白描述）
+- **分镜合并**：一键 ffmpeg concat 合并为完整 MP4，全链 Windows-safe 编码档（main/4.0 + bt709 + bitrate cap + aresample 同步）确保 WMP 可播 + 音画对齐
+- **试播预览**（v1.4.8）：「▶︎ 试播」按钮，合并前不出文件即可在浏览器里按 scene 顺序串播现有素材（三档自动回退 video > image+audio > image-only）
+- **音效（SFX）通路**（v1.4.8）：「🔊 音效」按钮 → 全局 SFX 库 + 项目级时间轴，给每镜次在精确时间点叠加点状音效（脚步 / 关门 / 抽刀）；ffmpeg `adelay+volume+amix` 直接烧进 slideshow 镜次 mp4
 
 ## 安装与运行
 
@@ -114,12 +116,15 @@ LumiCreate-Pro/
 │   │   ├── image_engine.py     # 图片生成 SSE 流
 │   │   ├── audio_engine.py     # 音频生成 SSE 流（IndexTTS / GPT-SoVITS）
 │   │   ├── text_engine.py      # 文案/分镜 LLM 生成
-│   │   ├── video_engine.py     # 视频生成 SSE 流 + 分镜合并
+│   │   ├── video_engine.py     # 视频生成 SSE 流 + 分镜合并 + render-slideshow
 │   │   ├── subtitle_engine.py  # 字幕生成 + 烧录 SSE 流
+│   │   ├── music.py            # ACE-Step v1.5 音乐生成（v1.4.2）
+│   │   ├── sfx_engine.py       # 音效库 + 项目时间轴（v1.4.8）
 │   │   └── settings.py         # 全局设置读写
 │   ├── services/
 │   │   ├── comfyui.py          # ComfyUI API 封装 + LiteGraph→API 转换器
 │   │   ├── ltx2video.py        # LTX-2.3 视频生成（上传/补丁工作流/拉取结果/音频替换）
+│   │   ├── slideshow_video.py  # 图片放映视频（v1.4.6，无 GPU 通路，支持 SFX 叠加）
 │   │   ├── indextts.py         # IndexTTS-2.0 Gradio API
 │   │   ├── gptsovits.py        # GPT-SoVITS API
 │   │   ├── msedge_tts.py       # 微软 Edge 神经语音（纯朗读模式）
@@ -175,6 +180,35 @@ SKILL/
 智能体在对话中出现以下意图时会自动激活本 Skill：「用 LumiCreate 生成视频」「做漫剧 / 解说视频 / 朗读视频」「调用 ComfyUI / IndexTTS / LTX-2.3」「批量出图 / 出视频 / 拼字幕」。
 
 ## 更新日志
+
+### v1.4.8
+本版本聚焦 **生产环境反馈环路** —— 合并前不出文件即可试播全片节奏 + 给静帧叙事加点状音效。
+
+- ✅ **试播预览（PreviewPlayer）**：VideoTab 工具栏新增「▶︎ 试播」按钮。Teleport 模态，按 scene 顺序在浏览器里串播现有素材，**0 后端调用、0 文件落盘**。三档自动回退：video mp4 > image+audio（HTMLAudio 同步）> image-only（4s 静帧）。媒体出错自动跳过该镜，长片合并前可秒看节奏
+- ✅ **音效（SFX）通路（v1.4.8 新模块）**：漫剧叙事需要的脚步 / 关门 / 抽刀等点状音效，从 BGM 通路独立出来
+  - **全局 SFX 库**：`services/db.py` 新增 `sfx.sqlite` + `APPDATA/sfx/`；空库出厂，用户按需上传（避免版权风险）
+  - **新路由 `backend/routers/sfx_engine.py`**：8 端点 `/categories /list /upload /file/{id} /clip/{id} (PUT/DELETE) /timeline/{pid} (GET/PUT)`
+  - **项目级时间轴 `<project>/sfx_timeline.json`**：`{scene_id: [{sfx_id, offset_ms, volume_db}]}`；volume_db ∈ [-40, 20]
+  - **渲染集成**：`slideshow_video.build_scene_clip_cmd` 加 `sfx_overlays` 参数。无 SFX 走原快路径，有 SFX 时进 filter_complex：`[a:main]aresample → [a:N]adelay+volume → amix duration=first`。单图 + 双图 xfade 均支持；引用已删除 sfx_id 静默跳过不让整片崩
+  - **前端 `SfxTimelineDialog.vue`**：三栏（分镜列表 / 时间轴表 / SFX 库），上传 + 试听 + 删除 + 按镜次增删 overlay；选中分镜 accent 高亮 + badge 反色
+  - **适用范围**：MVP 仅 slideshow 通路烧 SFX；LTX 视频本版本不接。改了时间轴必须重跑 `render-slideshow` 才生效
+- ✅ **SKILL 同步**：SKILL.md 模块表 + 决策树（"试播 / SFX"两个新意图分支）；新建 `references/modules/sfx.md`（接口 + ffmpeg cmd 模板 + 适用范围警告）
+- ✅ **测试**：后端 **276 / 276 pytest 通过**（v1.4.7 时 267 个），新增 9 个回归测覆盖单/双图分支 SFX 注入 / 缺失 sfx_id 安全跳过 / 无 SFX 走回退路径 / 时间轴 PUT-GET round-trip / volume_db 校验 / SFX 上传扩展名守门 / 项目 404
+- ✅ **Hotfix（已合入本版本）**：
+  - **SFX 对话框视觉**：用 `var(--color-background)` 这种不存在的 CSS token → fallback `#1e1e1e` + light 主题深色文本 = 字背景同色看不清；body grid `min-height:60vh + max-height:70vh` 死值导致内容溢出 modal 90vh 上限。改用项目实际 design tokens（`--bg-panel / --text / --border / --bg-input / --accent`）+ `flex:1 + min-height:0` 弹性体壳 + 各栏独立 overflow 滚动 + sticky 区段标题
+  - **试播预览初版三个 bug 连环**：(1) `fetch('HEAD', ...)` 探活而 FastAPI `@router.get` 不接受 HEAD 返 405；(2) `/assets` 端点返回 `{assets, count}` 不是 `{items}`；(3) `axios.get` 但 axios 未 import → ReferenceError 被 try/catch 吞成 console.warn → inventory 永远空 dict → 所有分镜被判 "empty"。全部修复
+
+### v1.4.7
+**hotfix release** —— 实机测试 v1.4.6 后用户报告两个新问题，本版本根治：
+
+- ✅ **WMP 拒播合并 / 烧字幕成品**：用户主诉"数据速率和总比特率过高"——CRF=20 在 1080p25 + Ken Burns 高频细节下瞬时码率可冲到 30+Mbps，破 H.264 Level 4.0 上限 ~25Mbps → WMP 拒播。全链 `-maxrate 8M -bufsize 16M` + CRF 22 收紧
+- ✅ **10min 视频音频比视频早结束 ~1min（10% drift）**：
+  - 真因：AAC 编码器 priming + `-shortest` 在每镜次截断 50-100ms，concat re-encode 时不补 → 累积成秒级 drift
+  - 每镜次音频 `-ar 44100` → `48000`（与 merge/burn 对齐，全链路无重采样）
+  - 全链 `-af aresample=async=1000:first_pts=0` 填 PTS 间隙
+  - 移除 `-shortest`，改为显式 `-t {duration_s}` 双向裁剪
+  - merge 快路径 / 慢路径 `final_audio` 均接 aresample 滤镜
+- ✅ **测试**：后端 **267 / 267 pytest 通过**，+4 个 A/V drift + bitrate ceiling 锁住回归
 
 ### v1.4.6
 本版本以 **无 GPU 通路（图片放映视频）** 为主线，并附带一次大型 **WMP 兼容 + 音画同步** 修复，覆盖 ffmpeg 全链路（每镜次 → 合并 → 字幕烧录）。
@@ -310,44 +344,6 @@ SKILL/
 - ✅ 首个正式发布版本（Electron 安装包）
 - ✅ 修复安装版空白窗口（Vite `base: './'`）
 - ✅ 完整功能：文案创建 → 分镜设计 → 图片生成 → 音频生成 → 视频生成
-
-## 核心功能
-
-### 📝 文案创建
-- 创建和编辑项目文案
-- 支持Markdown格式
-- 自动保存进度
-
-### 🎞 分镜设计
-- 从文案自动生成分镜提纲
-- 编辑分镜描述、起始帧提示词、结束帧提示词
-- 添加/删除/重排分镜
-- 支持台词管理和编辑
-- 可滚动分镜列表（支持大量分镜）
-
-### 🖼 图片生成
-- 集成 ComfyUI 工作流
-- Master-detail 分割布局
-- 支持多工作流选择，自动保存工作流选择
-- 批量生成（跳过已有图片）、单个分镜生成、单个帧操作
-- 图片预览和管理
-- WebSocket 流式进度更新
-- 生成的图片自动保存和加载
-
-### 🎙 音频生成
-- 集成 **IndexTTS-2.0**（Gradio API，本地运行）
-- 分镜分组展示，每个音频片段独立配置音色参考、情感控制方式、情感参考和情感权重
-- 每段音频支持多版本生成（V1/V2/V3…），可单独试听、切换选用版本
-- 可调整每段音频的前/后静音时长（ms）
-- **场景音频合并**：一键将场景内所有片段（含静音）拼接成单个 WAV，供 LTX-2.3 视频工作流使用
-- 合并结果在页面内预览播放，持久化保存
-- 支持 GPT-SoVITS 和手动导入模式作为备选
-
-### 🎬 视频生成  
-- 集成 ComfyUI 工作流
-- LTX-2.3图片音频生成视频工作流（或合并图片、音频、字幕）
-- 支持多种分辨率和帧率
-- 预览和导出
 
 ## 许可证
 
