@@ -103,3 +103,89 @@ def test_non_ideogram_workflow_still_uses_cliptextencode_path():
     patched = _patch_workflow(wf, "NEWPOS", "NEWNEG", seed=5)
     assert patched["10"]["inputs"]["text"] == "NEWPOS"
     assert patched["11"]["inputs"]["text"] == "NEWNEG"
+
+
+# ── v1.4.13: 分步 AI 生成 caption 端点 ───────────────────────────────────────
+
+
+def _mock_llm(monkeypatch, response_text: str):
+    """把 stream_chat 替换成固定输出。"""
+    import routers.text_engine as te
+
+    async def _fake_stream(cfg, system, user):
+        yield response_text
+
+    monkeypatch.setattr(te, "stream_chat", _fake_stream)
+
+
+def test_caption_overview_step(isolated_app, monkeypatch):
+    client = isolated_app["client"]
+    _mock_llm(monkeypatch, json.dumps({
+        "high_level_description": "A cat on a roof at dusk.",
+        "background": "Tiled rooftops under an orange sky.",
+        "style_description": {
+            "aesthetics": "serene", "lighting": "golden hour",
+            "photo": "85mm, f/2", "medium": "photograph",
+            "color_palette": ["#FF6B35", "#2B2D42"],
+        },
+        "hallucinated_key": "should be dropped",
+    }))
+    r = client.post("/api/text-engine/generate-ideogram-caption", json={
+        "description": "黄昏屋顶上的猫", "step": "overview", "style_type": "photo",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["step"] == "overview"
+    data = body["data"]
+    assert data["high_level_description"].startswith("A cat")
+    assert "style_description" in data
+    assert "hallucinated_key" not in data       # 幻觉字段被剥掉
+
+
+def test_caption_elements_step_clamps_bboxes(isolated_app, monkeypatch):
+    client = isolated_app["client"]
+    _mock_llm(monkeypatch, json.dumps({"elements": [
+        {"type": "obj", "bbox": [100, 200, 900, 800], "desc": "a cat"},
+        {"type": "text", "bbox": [-50, 0, 200, 1500], "text": "MEOW", "desc": "title"},
+        {"type": "obj", "bbox": [500, 500, 100, 600], "desc": "invalid bbox dropped"},
+        {"type": "obj", "desc": "no bbox is fine"},
+        "not-a-dict-skipped",
+    ]}))
+    r = client.post("/api/text-engine/generate-ideogram-caption", json={
+        "description": "x", "step": "elements",
+        "width": 1080, "height": 1920,
+        "overview": {"background": "bg"},
+    })
+    assert r.status_code == 200, r.text
+    els = r.json()["data"]["elements"]
+    assert len(els) == 4                          # 字符串项被跳过
+    assert els[0]["bbox"] == [100, 200, 900, 800]
+    assert els[1]["bbox"] == [0, 0, 200, 1000]    # 越界夹紧
+    assert els[1]["text"] == "MEOW"
+    assert "bbox" not in els[2]                   # 非法 bbox 整个剥掉但元素保留
+    assert "bbox" not in els[3]
+
+
+def test_caption_rejects_empty_description(isolated_app):
+    client = isolated_app["client"]
+    r = client.post("/api/text-engine/generate-ideogram-caption", json={
+        "description": "   ", "step": "overview",
+    })
+    assert r.status_code == 400
+
+
+def test_caption_rejects_bad_step(isolated_app):
+    client = isolated_app["client"]
+    r = client.post("/api/text-engine/generate-ideogram-caption", json={
+        "description": "x", "step": "everything",
+    })
+    assert r.status_code == 400
+
+
+def test_caption_502_when_llm_returns_garbage(isolated_app, monkeypatch):
+    client = isolated_app["client"]
+    _mock_llm(monkeypatch, "I cannot do that, sorry!")
+    r = client.post("/api/text-engine/generate-ideogram-caption", json={
+        "description": "x", "step": "overview",
+    })
+    assert r.status_code == 502

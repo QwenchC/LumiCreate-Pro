@@ -31,6 +31,10 @@ from services.prompts import (
     MUSIC_PROMPT_USER_TEMPLATE,
     VIDEO_PROMPT_SYSTEM,
     VIDEO_PROMPT_USER_TEMPLATE,
+    IDEOGRAM_OVERVIEW_SYSTEM,
+    IDEOGRAM_OVERVIEW_USER_TEMPLATE,
+    IDEOGRAM_ELEMENTS_SYSTEM,
+    IDEOGRAM_ELEMENTS_USER_TEMPLATE,
 )
 
 router = APIRouter()
@@ -405,6 +409,132 @@ async def generate_frame_prompts(req: GenerateFramePromptsRequest):
         "start_frame_prompt": obj.get("start_frame_prompt", ""),
         "end_frame_prompt":   obj.get("end_frame_prompt",   ""),
     }
+
+
+# ── v1.4.13: Ideogram 4 结构化 caption 生成（分步：overview → elements）──────
+
+
+class IdeogramCaptionRequest(BaseModel):
+    description: str                       # 画面描述（中/英文均可）
+    step: str = "overview"                 # 'overview' | 'elements'
+    style_type: str = "photo"              # 'photo' | 'art_style'
+    width: int = 1024                      # 画布尺寸（elements 步摆 bbox 用）
+    height: int = 1024
+    overview: Optional[dict] = None        # elements 步传入第一步结果作上下文
+    characters: list[dict] = []            # 可选角色卡 [{name, role, appearance, traits}]
+
+
+def _llm_json(text: str) -> dict:
+    """从 LLM 响应中稳健抽取 JSON 对象（剥 markdown 围栏 + 首尾大括号兜底）。"""
+    cleaned = re.sub(r"```(?:json)?\n?", "", text).strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        m = re.search(r"\{[\s\S]*\}", cleaned)
+        if m:
+            try:
+                return json.loads(m.group())
+            except json.JSONDecodeError:
+                pass
+    return {}
+
+
+def _ideogram_chars_block(characters: list[dict]) -> str:
+    parts = []
+    for c in characters or []:
+        name = (c.get("name") or "").strip()
+        if not name:
+            continue
+        visual = (c.get("appearance") or c.get("traits") or "").strip()
+        line = f"  - {name}"
+        if c.get("role"): line += f" ({c['role']})"
+        if visual:        line += f": {visual}"
+        parts.append(line)
+    if not parts:
+        return ""
+    return "Characters in this scene (use their appearance in element descriptions):\n" \
+           + "\n".join(parts) + "\n\n"
+
+
+def _clamp_bbox(bbox) -> Optional[list[int]]:
+    """校验 + 收敛 bbox 到 0-1000 网格；非法返 None。"""
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    try:
+        vals = [max(0, min(1000, int(round(float(v))))) for v in bbox]
+    except (TypeError, ValueError):
+        return None
+    ymin, xmin, ymax, xmax = vals
+    if ymax <= ymin or xmax <= xmin:
+        return None
+    return vals
+
+
+@router.post("/generate-ideogram-caption")
+async def generate_ideogram_caption(req: IdeogramCaptionRequest):
+    """分步生成 Ideogram 4 结构化 caption（JSON 大 → 两次小响应拼起来）。
+
+    step='overview' → {high_level_description, background, style_description}
+    step='elements' → {elements: [...]}（bbox 服务端校验 + 0-1000 夹紧）
+    """
+    if not (req.description or "").strip():
+        raise HTTPException(400, detail="description 不能为空")
+    step = (req.step or "overview").lower()
+    if step not in ("overview", "elements"):
+        raise HTTPException(400, detail=f"非法 step: {req.step!r}（应为 overview / elements）")
+
+    chars_block = _ideogram_chars_block(req.characters)
+    cfg = load_settings().text_engine
+
+    if step == "overview":
+        style_type = req.style_type if req.style_type in ("photo", "art_style") else "photo"
+        user_msg = IDEOGRAM_OVERVIEW_USER_TEMPLATE.format(
+            style_type=style_type,
+            characters_block=chars_block,
+            description=req.description,
+        )
+        full = ""
+        async for chunk in stream_chat(cfg, IDEOGRAM_OVERVIEW_SYSTEM, user_msg):
+            full += chunk
+        obj = _llm_json(full)
+        if not obj:
+            raise HTTPException(502, detail="LLM 未返回有效 JSON（overview 步）")
+        # 只透传认识的 3 个 key，去掉幻觉字段
+        out = {k: obj[k] for k in
+               ("high_level_description", "background", "style_description")
+               if k in obj}
+        return {"step": "overview", "data": out}
+
+    # step == 'elements'
+    user_msg = IDEOGRAM_ELEMENTS_USER_TEMPLATE.format(
+        width=req.width, height=req.height,
+        characters_block=chars_block,
+        description=req.description,
+        overview_json=json.dumps(req.overview or {}, ensure_ascii=False),
+    )
+    full = ""
+    async for chunk in stream_chat(cfg, IDEOGRAM_ELEMENTS_SYSTEM, user_msg):
+        full += chunk
+    obj = _llm_json(full)
+    raw_elements = obj.get("elements") if isinstance(obj, dict) else None
+    if not isinstance(raw_elements, list):
+        raise HTTPException(502, detail="LLM 未返回有效 elements 数组")
+    elements: list[dict] = []
+    for el in raw_elements[:9]:           # Ideogram 多模态上限附近，留余量
+        if not isinstance(el, dict):
+            continue
+        etype = "text" if el.get("type") == "text" else "obj"
+        out_el: dict = {"type": etype}
+        bbox = _clamp_bbox(el.get("bbox"))
+        if bbox:
+            out_el["bbox"] = bbox
+        if etype == "text":
+            out_el["text"] = str(el.get("text") or "")
+        out_el["desc"] = str(el.get("desc") or "")
+        if isinstance(el.get("color_palette"), list):
+            out_el["color_palette"] = [str(c) for c in el["color_palette"][:5]]
+        elements.append(out_el)
+    return {"step": "elements", "data": {"elements": elements}}
 
 
 # ── 轮 6: i2i 提示词（图生图工作流专用）──────────────────────────────────────

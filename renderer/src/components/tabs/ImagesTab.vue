@@ -389,9 +389,13 @@
                      :target-h="imgHeight"
                      @cropped="onCropped"
                      @cancel="cancelCrop" />
-    <!-- v1.4.12: Ideogram 4 提示词构建器 -->
+    <!-- v1.4.12: Ideogram 4 提示词构建器（v1.4.13: 画布跟随设置尺寸 + AI 生成） -->
     <Ideogram4PromptBuilder v-if="ideogramBuilderOpen"
                             :initial-json="ideogramInitial"
+                            :initial-w="imgWidth"
+                            :initial-h="imgHeight"
+                            :scene-hint="ideogramSceneHint"
+                            :scene-characters="ideogramSceneChars"
                             @apply="onIdeogramApply"
                             @close="ideogramBuilderOpen = false" />
   </div>
@@ -569,12 +573,20 @@ const isSdWorkflow = computed(() => selectedWorkflow.value === 'sd_default_workf
 const isIdeogram = computed(() => selectedWorkflow.value === 'image_ideogram4_t2i')
 const ideogramBuilderOpen = ref(false)
 const ideogramInitial = ref('')
+const ideogramSceneHint = ref('')    // v1.4.13: AI 生成的默认描述
+const ideogramSceneChars = ref([])   // v1.4.13: 出镜角色卡（带 appearance）
 let _ideogramTarget = null   // { scene, frameType }
 
 function openIdeogramBuilder(scene, frameType) {
   _ideogramTarget = { scene, frameType }
   const cur = frameType === 'start' ? scene.start_frame_prompt : scene.end_frame_prompt
   ideogramInitial.value = (cur || '').trim()
+  // v1.4.13: AI 生成上下文 —— 分镜描述 + 该镜出镜角色（hydrate 成完整对象）
+  ideogramSceneHint.value = scene.description || ''
+  const names = scene._scene_characters || []
+  ideogramSceneChars.value = names.length
+    ? characters.value.filter(c => names.includes(c.name))
+    : []
   ideogramBuilderOpen.value = true
 }
 function onIdeogramApply(jsonStr) {

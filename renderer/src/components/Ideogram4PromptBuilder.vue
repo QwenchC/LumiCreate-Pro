@@ -85,6 +85,24 @@
 
           <!-- ── 右：全局字段 ── -->
           <div class="ig-right-col">
+            <!-- v1.4.13: AI 分步生成整个 caption -->
+            <div class="ig-ai-block">
+              <div class="ig-section-title">✨ AI 生成（文本引擎）</div>
+              <textarea v-model="aiDesc" class="ig-inp" rows="2"
+                        placeholder="用中文/英文描述画面，AI 分两步生成整个 JSON（概览+风格 → 元素布局）"></textarea>
+              <div class="ig-ai-row">
+                <button class="btn btn-primary btn-sm"
+                        :disabled="aiBusy || !aiDesc.trim()"
+                        @click="runAiGenerate">
+                  {{ aiBusy ? (aiStep || '生成中…') : '✨ AI 生成全部字段' }}
+                </button>
+                <span v-if="aiError" class="ig-ai-error">⚠ {{ aiError }}</span>
+              </div>
+              <p class="ig-tip text-muted" style="margin:0">
+                生成后所有字段可继续手动微调；区域 bbox 可在画布上拖拽
+              </p>
+            </div>
+
             <div class="ig-section-title">整体描述</div>
             <label class="ig-field">
               high_level_description（一句话总览，强烈推荐）
@@ -154,17 +172,26 @@
 
 <script setup>
 import { ref, computed, reactive, onMounted } from 'vue'
+import axios from 'axios'
 import PaletteEditor from './PaletteEditor.vue'
 
 const props = defineProps({
   // 初始 JSON（编辑已有提示词时回填）
   initialJson: { type: String, default: '' },
+  // v1.4.13: 画布尺寸跟随设置页图片引擎的 image_width/height
+  initialW: { type: Number, default: 1024 },
+  initialH: { type: Number, default: 1024 },
+  // v1.4.13: AI 生成的默认描述（分镜描述）+ 出镜角色卡（带 appearance）
+  sceneHint:       { type: String, default: '' },
+  sceneCharacters: { type: Array,  default: () => [] },
 })
 const emit = defineEmits(['apply', 'close'])
 
-// 画布尺寸（决定长宽比 + 像素网格）
-const canvasW = ref(1024)
-const canvasH = ref(1024)
+const API = 'http://localhost:18520/api'
+
+// 画布尺寸（决定长宽比 + 像素网格）—— 初始值来自设置页
+const canvasW = ref(props.initialW || 1024)
+const canvasH = ref(props.initialH || 1024)
 
 // 区域： { type, bbox:[ymin,xmin,ymax,xmax] (0-1000), desc, text, color_palette:[] }
 const regions = ref([])
@@ -351,6 +378,65 @@ function loadFromJson(str) {
   return true
 }
 
+// ── v1.4.13: AI 分步生成整个 caption（overview → elements 两次小响应）────────
+const aiDesc  = ref(props.sceneHint || '')
+const aiBusy  = ref(false)
+const aiStep  = ref('')
+const aiError = ref('')
+
+async function runAiGenerate() {
+  const desc = aiDesc.value.trim()
+  if (!desc || aiBusy.value) return
+  aiBusy.value = true
+  aiError.value = ''
+  try {
+    // 第 1 步：概览（high_level / background / style）
+    aiStep.value = '1/2 生成概览与风格…'
+    const r1 = await axios.post(`${API}/text-engine/generate-ideogram-caption`, {
+      description: desc,
+      step: 'overview',
+      style_type: styleType.value === 'art_style' ? 'art_style' : 'photo',
+      characters: props.sceneCharacters,
+    })
+    const ov = r1.data?.data || {}
+    if (ov.high_level_description) highLevel.value = ov.high_level_description
+    if (ov.background)             background.value = ov.background
+    const sd = ov.style_description || {}
+    if (sd.aesthetics !== undefined) aesthetics.value = sd.aesthetics || ''
+    if (sd.lighting   !== undefined) lighting.value   = sd.lighting || ''
+    if (sd.photo !== undefined)      { styleType.value = 'photo';     photo.value    = sd.photo || '' }
+    else if (sd.art_style !== undefined) { styleType.value = 'art_style'; artStyle.value = sd.art_style || '' }
+    if (sd.medium !== undefined)     medium.value = sd.medium || ''
+    if (Array.isArray(sd.color_palette)) stylePalette.value = [...sd.color_palette]
+
+    // 第 2 步：空间元素（bbox 布局）
+    aiStep.value = '2/2 生成元素布局…'
+    const r2 = await axios.post(`${API}/text-engine/generate-ideogram-caption`, {
+      description: desc,
+      step: 'elements',
+      width: canvasW.value, height: canvasH.value,
+      overview: ov,
+      characters: props.sceneCharacters,
+    })
+    const els = r2.data?.data?.elements || []
+    regions.value = els.map(el => ({
+      type: el.type === 'text' ? 'text' : 'obj',
+      bbox: Array.isArray(el.bbox) && el.bbox.length === 4
+        ? el.bbox.map(Number) : [100, 100, 600, 600],
+      desc: el.desc || '',
+      text: el.text || '',
+      color_palette: Array.isArray(el.color_palette) ? [...el.color_palette] : [],
+    }))
+    activeIdx.value = regions.value.length ? 0 : -1
+    aiStep.value = ''
+  } catch (e) {
+    aiError.value = e?.response?.data?.detail || e.message || '生成失败'
+    aiStep.value = ''
+  } finally {
+    aiBusy.value = false
+  }
+}
+
 // ── 操作 ──────────────────────────────────────────────────────────────────
 async function copyJson() {
   try { await navigator.clipboard.writeText(compactJson.value) } catch {}
@@ -469,4 +555,16 @@ textarea.ig-inp { resize: vertical; }
   border-radius: 4px; padding: 8px; font-size: 11px;
 }
 .ig-footer-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+
+/* v1.4.13: AI 生成块 */
+.ig-ai-block {
+  display: flex; flex-direction: column; gap: 6px;
+  background: rgba(68,170,255,0.07);
+  border: 1px solid rgba(68,170,255,0.28);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 4px;
+}
+.ig-ai-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ig-ai-error { font-size: 11px; color: var(--color-error, #f66); }
 </style>

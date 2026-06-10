@@ -388,3 +388,58 @@ VIDEO_PROMPT_USER_TEMPLATE = (
     "Include ONLY the characters listed above \u2014 no others. "
     "Focus on motion, expressions, and camera work."
 )
+
+
+# ── v1.4.13: Ideogram 4 结构化 JSON caption 生成（分两步，避免单次响应过大）──
+
+IDEOGRAM_OVERVIEW_SYSTEM = (
+    "You are a prompt engineer for Ideogram 4, an image model trained on structured JSON captions.\n\n"
+    "Given a scene description (any language), produce STEP 1 of the caption: the overview fields.\n\n"
+    "Output STRICT JSON with EXACTLY these keys:\n"
+    '{\n'
+    '  "high_level_description": "<1-2 English sentences summarizing the whole image>",\n'
+    '  "background": "<detailed English description of the background/environment>",\n'
+    '  "style_description": { ... }\n'
+    '}\n\n'
+    "style_description rules (key ORDER matters):\n"
+    '- If style type is "photo":     {"aesthetics", "lighting", "photo", "medium", "color_palette"}\n'
+    '  · "photo" = camera/lens details (e.g. "35mm, f/1.4, shallow depth of field")\n'
+    '  · "medium" = "photograph"\n'
+    '- If style type is "art_style": {"aesthetics", "lighting", "medium", "art_style", "color_palette"}\n'
+    '  · "medium" ∈ illustration / painting / 3d_render / graphic_design ...\n'
+    '  · "art_style" = art style description (e.g. "chinese ink painting, flowing brushstrokes")\n'
+    "- color_palette: 3-6 UPPERCASE #RRGGBB hex strings matching the scene mood (include background color)\n\n"
+    "All values in English. Output ONLY the JSON object — no markdown fences, no commentary."
+)
+
+IDEOGRAM_OVERVIEW_USER_TEMPLATE = (
+    "Style type: {style_type}\n"
+    "{characters_block}"
+    "Scene description:\n{description}\n\n"
+    "Produce the overview JSON (high_level_description + background + style_description)."
+)
+
+IDEOGRAM_ELEMENTS_SYSTEM = (
+    "You are a prompt engineer for Ideogram 4 structured JSON captions.\n\n"
+    "Given a scene description and the already-written overview, produce STEP 2: the spatial elements list.\n\n"
+    "Output STRICT JSON: {\"elements\": [ ... ]} with 1-6 elements.\n\n"
+    "Element formats (key ORDER matters):\n"
+    '- Object:  {"type": "obj",  "bbox": [ymin, xmin, ymax, xmax], "desc": "<detailed English description>"}\n'
+    '- Text:    {"type": "text", "bbox": [ymin, xmin, ymax, xmax], "text": "<literal text to render>", "desc": "<font/color/placement description>"}\n\n'
+    "bbox rules:\n"
+    "- Normalized 0-1000 grid, origin top-left, format [ymin, xmin, ymax, xmax], integers only\n"
+    "- The canvas pixel size is given in the user message — place elements so the composition reads naturally\n"
+    "- Main subject should occupy a prominent area (e.g. center or rule-of-thirds)\n"
+    "- Elements may partially overlap but must not be identical boxes\n\n"
+    "desc rules: English, concrete and visual (pose, clothing, expression, material, color).\n"
+    "Use type \"text\" ONLY if the image should literally render text (signs, titles, captions).\n"
+    "Output ONLY the JSON object — no markdown fences, no commentary."
+)
+
+IDEOGRAM_ELEMENTS_USER_TEMPLATE = (
+    "Canvas: {width}x{height}\n"
+    "{characters_block}"
+    "Scene description:\n{description}\n\n"
+    "Overview already written (for consistency — do not repeat background in elements):\n{overview_json}\n\n"
+    "Produce the elements JSON."
+)
