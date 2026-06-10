@@ -27,12 +27,13 @@
 - 可滚动分镜列表，支持大量分镜
 
 ### 🖼 图片生成
-- 集成 ComfyUI 工作流
-- Master-detail 分割布局
-- 支持多工作流选择，自动保存工作流选择
-- 批量生成（跳过已有图片）、单个分镜生成、单帧操作
-- 图片预览和管理，WebSocket 流式进度更新
-- 生成图片自动持久化保存/加载
+- **多引擎**：ComfyUI 本地工作流 / Pollinations 云端（v1.4.5）/ 火山引擎 Seedream 5.0 云端（v1.4.11，支持国风水墨 + 汉字）
+- 内置工作流：t2i / Flux.2 文生图 / Flux.2 Klein 图生图 / 通用 SD（多 LoRA 链）/ **Ideogram 4 结构化 JSON 文生图**（v1.4.12）
+- **Ideogram 4 可视化提示词构建器**（v1.4.12）：画布拖拽画区域 + 类型/描述/配色 + 风格字段 → 一键生成结构化 JSON caption 填入提示词框
+- Master-detail 分割布局，支持多工作流选择 + 自动保存
+- 批量生成（跳过已有图片）、单个分镜生成、单帧操作、本地导入 + 比例剪裁
+- i2i 参考图槽位（角色立绘 / 元素库 / 本地上传）、SD 高级参数面板
+- 图片预览和管理，WebSocket 流式进度更新，自动持久化保存/加载
 
 ### 🎙 音频生成
 - 集成 **IndexTTS-2.0**（Gradio API，本地运行）及 **GPT-SoVITS**
@@ -58,10 +59,11 @@
 - 自动检测并优先使用帧率标准化后的 `fixed_cfr.mp4` 作为烧录源，保证时间轴吻合
 
 ### 🎬 视频生成
-- **双通路**（v1.4.6+）：
+- **三通路**（v1.4.6+ / v1.4.10+）：
   - **LTX-2.3**（有 GPU）— ComfyUI 工作流首帧→末帧→音频驱动
   - **图片放映视频**（无 GPU / 低显存）— `render-slideshow` 端点直接 ffmpeg 渲染图片 + 音频；7 种 Ken Burns 动态（zoom_in/out + pan_left/right/up/down）+ 镜内/镜间转场 + 按 CPU 核数自动选并行 worker
-  - 两个通路输出 schema 一致（`<scene_id>.mp4` + `videos.json`），下游 merge / 字幕 / BGM 无感复用
+  - **火山引擎 Seedance 2.0**（云端付费，v1.4.10）— 每分镜可独立配置模式（t2v / 首帧 / 首末帧 / 多模态参考）+ 时长 + 参考图（首尾帧 / 角色立绘 / 元素库）
+  - 三个通路输出 schema 一致（`<scene_id>.mp4` + `videos.json`），下游 merge / 字幕 / BGM 无感复用
 - LiteGraph UI 格式工作流自动转换为 ComfyUI API 格式（`_litegraph_to_api`）
 - 多分辨率支持（720p/576p/544p，竖屏/横屏），可选帧率（24/25/30fps）
 - 每个分镜卡片展示就绪状态（首帧 / 末帧 / 合并音频）、生成进度条、视频预览
@@ -123,9 +125,13 @@ LumiCreate-Pro/
 │   │   ├── prompts_engine.py   # 全局提示词标签库（v1.4.9）
 │   │   └── settings.py         # 全局设置读写
 │   ├── services/
-│   │   ├── comfyui.py          # ComfyUI API 封装 + LiteGraph→API 转换器
+│   │   ├── comfyui.py          # ComfyUI API 封装 + LiteGraph→API 转换器（含 Ideogram4 专用注入）
 │   │   ├── ltx2video.py        # LTX-2.3 视频生成（上传/补丁工作流/拉取结果/音频替换）
+│   │   ├── volcengine_seedance.py  # 火山引擎 Seedance 2.0 云端视频（v1.4.10）
 │   │   ├── slideshow_video.py  # 图片放映视频（v1.4.6，无 GPU 通路，支持 SFX 叠加）
+│   │   ├── pollinations_image.py   # Pollinations 云端图片（v1.4.5）
+│   │   ├── volcengine_seedream.py  # 火山引擎 Seedream 5.0 云端图片（v1.4.11）
+│   │   ├── text_platforms.py   # 文本引擎平台清单（builtin 16 + 自定义，v1.4.11）
 │   │   ├── indextts.py         # IndexTTS-2.0 Gradio API
 │   │   ├── gptsovits.py        # GPT-SoVITS API
 │   │   ├── msedge_tts.py       # 微软 Edge 神经语音（纯朗读模式）
@@ -181,6 +187,35 @@ SKILL/
 智能体在对话中出现以下意图时会自动激活本 Skill：「用 LumiCreate 生成视频」「做漫剧 / 解说视频 / 朗读视频」「调用 ComfyUI / IndexTTS / LTX-2.3」「批量出图 / 出视频 / 拼字幕」。
 
 ## 更新日志
+
+### v1.4.12
+本版本新增 **Ideogram 4 文生图工作流支持 + 可视化结构化 JSON 提示词构建器** —— 完全 additive，现有 ComfyUI t2i / i2i / SD / Flux.2 / Pollinations / Seedream 图片通路 0 改动。
+
+- ✅ **新工作流 `image_ideogram4_t2i`**（第 5 个白名单 ComfyUI 图片工作流）
+  - **打包副本**：`workflows/image_ideogram4_t2i.json` 从用户 ComfyUI 工作流精简而来，剥掉 KJ 预览 / debug `showAnything` / 孤儿 `LoadImage` 三类节点，只留单一真实图片输出（避免 `_fetch_images` 抓到编辑器预览图）
+  - **专用提示词注入**（`comfyui.py _patch_workflow`）：Ideogram 4 的 prompt 是结构化 JSON caption，流向 `Ideogram4PromptBuilderKJ.out0 → 子图 CLIPTextEncode(wire) + JsonExtractString(抽 mu/std/steps)`，**不能**被通用 CLIPTextEncode literal 注入割断 wire。正确做法：caption JSON 写进 KJ 的上游 `StringConstantMultiline.string` + 把 `import_mode` 翻成 `always` 让 wired JSON 成为权威源，全链一致；命中即 return，跳过通用 prompt/size 注入
+- ✅ **可视化 JSON 提示词构建器**（`Ideogram4PromptBuilder.vue` + `PaletteEditor.vue`，仿 ComfyUI 的 KJ 节点）
+  - **左·画布**：拖拽画区域，bbox 自动归一化到 0–1000 网格 `[ymin,xmin,ymax,xmax]`；可拖动移动 / 点选 / 删除
+  - **中·区域列表 + 编辑**：type（obj/text）、desc、text（图中文字）、bbox 数值微调、区域配色（≤5）
+  - **右·全局字段**：`high_level_description` / `background` / `style_description`（photo ↔ art_style 二选一 + aesthetics/lighting/medium + 整体配色 ≤16）
+  - **底**：JSON 实时预览 + token 估算 + 复制 + 「✓ 应用到提示词框」；严格按 schema 的 key 顺序组装；支持回填已有 JSON 再编辑
+  - **入口**：图片生成页选中 `image_ideogram4_t2i` 时，首/尾帧标题栏显示「🧩 构建器」按钮 → 弹窗 → 应用后写回该帧 prompt（复用 `onPromptInput`）
+- ✅ **测试**：后端 **323 / 323 pytest 通过**（v1.4.11 时 301 个），新增 8 个回归测覆盖：打包工作流单输出 / classify t2i / 白名单 / 注入正确性（StringConstant + import_mode=always + CLIPTextEncode wire 不被割断 + 种子）/ 未接线 import_json 兜底 / 非 ideogram 仍走原 CLIP 路径
+- ⚠️ **已知限制**：输出分辨率目前由工作流自带的 `ResolutionSelector`（默认 16:9 / 2MP）决定，未接管设置页宽高；竖屏需在 ComfyUI 改该工作流默认或等后续映射
+
+### v1.4.11
+本版本扩展 **文本引擎平台清单（下拉 + 自定义平台）** + 新增 **火山引擎 Seedream 5.0 图片引擎** —— 均为 additive，现有引擎通路 0 改动。
+
+- ✅ **文本引擎平台清单**（`services/text_platforms.py`）
+  - 内置 16 个常见 OpenAI-compatible 平台：Ollama / LM Studio / DeepSeek / 阿里云百炼 / 火山方舟 / 月之暗面 Kimi / 智谱 GLM / 阶跃星辰 / 硅基流动 / MiniMax / OpenAI / Anthropic / Gemini / OpenRouter / 通用兜底
+  - `engine_type` 从 Literal 收紧改为**自由 str**（老 settings.json 里任意 engine_type 不再因校验炸；driver 早就是"ollama vs 其它 OpenAI-compat"两分支，新平台 0 driver 改动）
+  - **自定义平台 CRUD**：`/settings/text-platforms` GET/POST/DELETE，用户可加私有端点存进 `custom_platforms`，内置平台受保护不可删 / 撞名拒绝
+  - 前端：设置页文本引擎从 radio 改为**下拉**（节省空间）+「＋ 新增自定义」弹窗 +「✕ 删除当前」；切换平台自动同步 base_url
+- ✅ **新图片引擎：火山引擎 Seedream 5.0**（云端付费，国产顶级文生图，支持国风水墨 + 汉字）
+  - **服务**：`backend/services/volcengine_seedream.py` —— Ark `images/generations` 同步 POST，包成与 ComfyUI/Pollinations 一致的 SSE 事件 schema（queued/progress/completed），下游批量处理 0 改动
+  - **第 3 档 engine_type**：`comfyui / pollinations / volcengine_seedream`；`/test` `/workflows` `/workflow-info` 单图 + 批量生成 4 处 dispatch 全部按 engine_type 分派
+  - 前端：设置页图片引擎加 Seedream radio + 配置块（base URL / API Key / 模型 ID / 尺寸 / 响应格式 / seed）+ 🔌 测试连接
+- ✅ **测试**：后端 **301 / 301 pytest 通过**（v1.4.10 时 296 个），新增 platforms（builtin 清单 / CRUD round-trip / 撞名 + 删内置保护 / 老配置 str 兼容）+ Seedream（默认值保 comfyui / dispatch / driver SSE schema / 错误兜底）回归
 
 ### v1.4.10
 本版本新增 **火山引擎 Seedance 2.0 云端 API 视频生成通路** —— 完全可选，与现有 LTX-2.3 / slideshow 通路并存。
