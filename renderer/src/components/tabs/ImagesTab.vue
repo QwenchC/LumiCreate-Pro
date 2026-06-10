@@ -163,6 +163,10 @@
               @click="regenPromptOnly(activeScene,'start')" title="重新生成首帧提示词">
               {{ regenPromptingId === activeScene.id + ':start' ? '⏳' : '↺' }} 提示词
             </button>
+            <!-- v1.4.12: Ideogram 4 结构化提示词构建器 -->
+            <button v-if="isIdeogram" class="btn btn-ghost btn-xs"
+              @click="openIdeogramBuilder(activeScene, 'start')"
+              title="用可视化构建器生成 Ideogram 4 结构化 JSON 提示词">🧩 构建器</button>
             <button class="btn btn-ghost btn-xs" :disabled="running" @click="regenFrame(activeScene,'start')">↺ 重新生成所有</button>
           </div>
           <textarea
@@ -242,6 +246,10 @@
               @click="regenPromptOnly(activeScene,'end')" title="重新生成尾帧提示词">
               {{ regenPromptingId === activeScene.id + ':end' ? '⏳' : '↺' }} 提示词
             </button>
+            <!-- v1.4.12: Ideogram 4 结构化提示词构建器 -->
+            <button v-if="isIdeogram" class="btn btn-ghost btn-xs"
+              @click="openIdeogramBuilder(activeScene, 'end')"
+              title="用可视化构建器生成 Ideogram 4 结构化 JSON 提示词">🧩 构建器</button>
             <button class="btn btn-ghost btn-xs" :disabled="running" @click="regenFrame(activeScene,'end')">↺ 重新生成所有</button>
           </div>
           <textarea
@@ -381,6 +389,11 @@
                      :target-h="imgHeight"
                      @cropped="onCropped"
                      @cancel="cancelCrop" />
+    <!-- v1.4.12: Ideogram 4 提示词构建器 -->
+    <Ideogram4PromptBuilder v-if="ideogramBuilderOpen"
+                            :initial-json="ideogramInitial"
+                            @apply="onIdeogramApply"
+                            @close="ideogramBuilderOpen = false" />
   </div>
 </template>
 
@@ -390,6 +403,7 @@ import axios from 'axios'
 import ReferencePicker from '../ReferencePicker.vue'
 import SdParamsPanel from '../SdParamsPanel.vue'
 import ImageCropDialog from '../ImageCropDialog.vue'
+import Ideogram4PromptBuilder from '../Ideogram4PromptBuilder.vue'
 import { useRouter } from 'vue-router'
 
 // v1.4.6: 导入图片 + 比例剪裁
@@ -550,6 +564,23 @@ const isI2I = computed(() => /^i2i_(single|double|multi)$/.test(workflowKind.val
 
 // v1.4.4: SD 工作流（sd_default_workflow）专用高级参数
 const isSdWorkflow = computed(() => selectedWorkflow.value === 'sd_default_workflow')
+
+// v1.4.12: Ideogram 4 工作流 → 显示 JSON 提示词构建器入口
+const isIdeogram = computed(() => selectedWorkflow.value === 'image_ideogram4_t2i')
+const ideogramBuilderOpen = ref(false)
+const ideogramInitial = ref('')
+let _ideogramTarget = null   // { scene, frameType }
+
+function openIdeogramBuilder(scene, frameType) {
+  _ideogramTarget = { scene, frameType }
+  const cur = frameType === 'start' ? scene.start_frame_prompt : scene.end_frame_prompt
+  ideogramInitial.value = (cur || '').trim()
+  ideogramBuilderOpen.value = true
+}
+function onIdeogramApply(jsonStr) {
+  if (!_ideogramTarget) return
+  onPromptInput(_ideogramTarget.scene, _ideogramTarget.frameType, jsonStr)
+}
 const sdParams = ref({
   checkpoint:   '',
   loras:        [],          // [{name, strength}]

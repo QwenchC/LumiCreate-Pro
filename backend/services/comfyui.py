@@ -873,6 +873,43 @@ def _patch_workflow(
     w = copy.deepcopy(workflow)
     _seed = seed if seed is not None else random.randint(0, 2**31 - 1)
 
+    # v1.4.12: Ideogram 4 工作流专用注入。
+    # 该工作流的提示词不走 CLIPTextEncode literal —— prompt 是结构化 JSON caption，
+    # 由 Ideogram4PromptBuilderKJ 节点 (out0) 输出后送进子图里 CLIPTextEncode.text
+    # (一条 wire，不能被通用 patcher 用 literal 覆盖) + JsonExtractString 抽 mu/std/steps。
+    # 正确注入点：把我们的 caption JSON 写进 KJ 的 import_json 上游 (StringConstantMultiline)，
+    # 并把 KJ 的 import_mode 翻成 'always' 让 wired JSON 成为权威源，全链一致。
+    # 命中此分支后直接返回，跳过通用 CLIPTextEncode / size 注入（避免割断 wire）。
+    _kj_ids = [nid for nid, node in w.items()
+               if str(node.get("class_type", "")).startswith("Ideogram4PromptBuilder")]
+    if _kj_ids:
+        for kj_id in _kj_ids:
+            kj_inputs = w[kj_id].setdefault("inputs", {})
+            kj_inputs["import_mode"] = "always"   # wired JSON 权威
+            src = kj_inputs.get("import_json")
+            if isinstance(src, list) and len(src) == 2 and str(src[0]) in w:
+                # import_json 由上游节点提供（StringConstantMultiline）→ 写它的字符串 widget
+                src_inputs = w[str(src[0])].setdefault("inputs", {})
+                for key in ("string", "value", "text"):
+                    if key in src_inputs:
+                        src_inputs[key] = positive
+                        break
+                else:
+                    src_inputs["string"] = positive
+            else:
+                # import_json 是字面量 / 未接线 → 直接写到 KJ 上
+                kj_inputs["import_json"] = positive
+        # 仅补种子（RandomNoise / KSampler*），不碰 CLIPTextEncode 与 size
+        for node in w.values():
+            ct = node.get("class_type", "")
+            ins = node.get("inputs", {})
+            if ct == "RandomNoise" and "noise_seed" in ins:
+                ins["noise_seed"] = _seed
+            if ct in ("KSampler", "KSamplerAdvanced"):
+                if "seed" in ins:       ins["seed"]       = _seed
+                if "noise_seed" in ins: ins["noise_seed"] = _seed
+        return w
+
     # Pre-classify CLIPTextEncode nodes by title
     positive_node_ids: list = []
     negative_node_ids: list = []

@@ -255,6 +255,7 @@ def test_hard_whitelist_caps_image_dropdown():
         "image_flux2_text_to_image_9b",
         "image_flux2_klein_image_edit_9b_base",
         "sd_default_workflow",   # v1.4.4
+        "image_ideogram4_t2i",   # v1.4.12
     })
     # 2) 任何不在白名单的名字直接返回 False —— 不读 workflow / 不调分类器
     bogus = ["3d_hunyuan3d-v2.1", "EasyFlow v1.5", "_temp_relay",

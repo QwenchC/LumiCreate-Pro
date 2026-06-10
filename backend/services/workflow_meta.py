@@ -394,6 +394,7 @@ SUPPORTED_IMAGE_WORKFLOWS: frozenset = frozenset({
     "image_flux2_text_to_image_9b",
     "image_flux2_klein_image_edit_9b_base",
     "sd_default_workflow",   # v1.4.4: 通用 SD t2i + 多 LoRA 链
+    "image_ideogram4_t2i",   # v1.4.12: Ideogram 4 结构化 JSON caption 文生图
 })
 
 SUPPORTED_VIDEO_WORKFLOWS: frozenset = frozenset({
