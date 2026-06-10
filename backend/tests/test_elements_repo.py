@@ -206,3 +206,33 @@ def test_invalid_folder_name(isolated_global):
         repo.create_folder("global", "bad/name")
     with pytest.raises(ValueError):
         repo.create_folder("global", "bad\\name")
+
+
+# ── v1.5.0: 跨库复制（全局 ↔ 项目共通）────────────────────────────────────────
+
+
+def test_copy_element_into_other_folder(isolated_global):
+    """copy_element：读源字节 + 在目标文件夹另落一份新元素（新 id，原件保留）。"""
+    repo = isolated_global["repo"]
+    root = isolated_global["tmp"] / "LumiCreate-Pro" / "elements"
+    dst = repo.create_folder("global", "dst")
+    src = repo.create_element("global", folder_id=None, name="logo",
+                              file_bytes=b"PNGDATA", filename="logo.png",
+                              width=64, height=64)
+    copied = repo.copy_element("global", src["id"], "global",
+                               dst_folder_id=dst["id"])
+    # 新元素：不同 id、落在目标文件夹、字节一致、宽高沿用
+    assert copied["id"] != src["id"]
+    assert copied["folder_id"] == dst["id"]
+    assert copied["width"] == 64 and copied["height"] == 64
+    assert (root / copied["file_path"]).read_bytes() == b"PNGDATA"
+    # 原件仍在
+    assert repo.get_element("global", src["id"]) is not None
+    # source_meta 记录来源
+    assert copied["source_meta"].get("copied_from", {}).get("element_id") == src["id"]
+
+
+def test_copy_element_missing_raises(isolated_global):
+    repo = isolated_global["repo"]
+    with pytest.raises(KeyError):
+        repo.copy_element("global", 99999, "global")

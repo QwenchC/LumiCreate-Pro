@@ -2,9 +2,16 @@
   <div class="eb-shell">
     <!-- 顶部工具栏 -->
     <div class="eb-toolbar">
+      <!-- v1.5.0: scope 切换（全局库 ↔ 本项目库共通），仅在项目上下文显示 -->
+      <div v-if="scopeChoices.length > 1" class="eb-scope-switch">
+        <button v-for="sc in scopeChoices" :key="sc.value"
+                class="eb-scope-chip"
+                :class="{ active: activeScope === sc.value }"
+                @click="switchScope(sc.value)">{{ sc.label }}</button>
+      </div>
       <div class="eb-breadcrumb">
         <span class="eb-crumb" @click="setFolder(null)">
-          📦 {{ scope === 'global' ? '全局元素库' : '项目元素' }}
+          📦 {{ activeScope === 'global' ? '全局元素库' : '项目元素' }}
         </span>
         <template v-for="(c, idx) in breadcrumb" :key="c.id">
           <span class="eb-sep">/</span>
@@ -18,6 +25,7 @@
       <div class="eb-actions">
         <button class="btn btn-ghost btn-xs" @click="loadAll" title="刷新">↻</button>
         <button class="btn btn-secondary btn-xs" @click="promptNewFolder">📁＋ 新建文件夹</button>
+        <button class="btn btn-primary btn-xs" @click="genOpen = true" title="用图片引擎生成素材并入库">✨ 生成图片</button>
         <button class="btn btn-primary btn-xs" @click="triggerUpload">⬆ 上传图片</button>
         <input ref="fileInput" type="file" accept="image/*" multiple
                style="display:none" @change="onFilePicked" />
@@ -71,6 +79,8 @@
               {{ el.width || '?' }}×{{ el.height || '?' }} · {{ formatBytes(el.bytes) }}
             </div>
             <div class="eb-card-actions" @click.stop>
+              <button v-if="otherScope" class="eb-mini"
+                      :title="`复制到${otherScopeLabel}`" @click="copyElementToOther(el)">⇄</button>
               <button class="eb-mini" title="重命名" @click="promptRenameElement(el)">✎</button>
               <button class="eb-mini" title="删除" @click="confirmDeleteElement(el)">🗑</button>
             </div>
@@ -85,12 +95,21 @@
       <button class="btn btn-primary btn-xs" @click="confirmSelection">✓ 确定</button>
       <button class="btn btn-ghost btn-xs" @click="selectedIds.clear()">清除</button>
     </div>
+
+    <!-- v1.5.0: 生成图片入库 -->
+    <ElementGenerateDialog v-if="genOpen"
+                           :upload-base="apiBase"
+                           :folder-id="currentFolderId"
+                           :scope-label="activeScope === 'global' ? '全局元素库' : '项目元素库'"
+                           @saved="loadItems"
+                           @close="genOpen = false" />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import TreeNode from './ElementsTreeNode.vue'
+import ElementGenerateDialog from './ElementGenerateDialog.vue'
 
 const props = defineProps({
   scope: { type: String, required: true },   // "global" | "project:<pid>"
@@ -102,24 +121,55 @@ const emit = defineEmits(['picked', 'close'])
 
 const API = 'http://127.0.0.1:18520'
 
+// v1.5.0: 当前激活 scope（可在"本项目库"和"全局库"间切换，使两库共通）
+const activeScope      = ref(props.scope)
 const folders          = ref([])  // 平铺的 folders
 const items            = ref([])  // 当前文件夹的元素
 const currentFolderId  = ref(null)
 const loading          = ref(false)
 const selectedIds      = ref(new Set())
 const fileInput        = ref(null)
+const genOpen          = ref(false)   // 生成图片弹窗
+
+// ── scope 切换 ────────────────────────────────────────────────────────────────
+
+
+function _scopeApiBase(scope) {
+  if (scope === 'global') return `${API}/api/elements`
+  if (scope.startsWith('project:')) {
+    const pid = scope.slice('project:'.length)
+    return `${API}/api/projects/${encodeURIComponent(pid)}/elements`
+  }
+  return `${API}/api/elements`
+}
+
+// 可切换的 scope 列表：项目上下文 → [本项目, 全局]；纯全局面板 → 仅全局
+const scopeChoices = computed(() => {
+  if (props.scope.startsWith('project:')) {
+    return [{ label: '本项目', value: props.scope }, { label: '全局库', value: 'global' }]
+  }
+  return [{ label: '全局库', value: 'global' }]
+})
+// "另一个库"（跨库复制目标）：在两个 scope 间取非当前那个
+const otherScope = computed(() => {
+  const other = scopeChoices.value.find(s => s.value !== activeScope.value)
+  return other ? other.value : null
+})
+const otherScopeLabel = computed(() =>
+  otherScope.value === 'global' ? '全局库' : '本项目')
+
+function switchScope(scope) {
+  if (scope === activeScope.value) return
+  activeScope.value = scope
+  currentFolderId.value = null
+  selectedIds.value = new Set()
+  loadAll()
+}
 
 // ── 路径辅助 ──────────────────────────────────────────────────────────────────
 
 
-const apiBase = computed(() => {
-  if (props.scope === 'global') return `${API}/api/elements`
-  if (props.scope.startsWith('project:')) {
-    const pid = props.scope.slice('project:'.length)
-    return `${API}/api/projects/${encodeURIComponent(pid)}/elements`
-  }
-  return `${API}/api/elements`
-})
+const apiBase = computed(() => _scopeApiBase(activeScope.value))
 
 function elementUrl(id) {
   return `${apiBase.value}/file/${id}`
@@ -195,7 +245,12 @@ function setFolder(id) {
   loadItems()
 }
 
-watch(() => props.scope, () => loadAll(), { immediate: false })
+// props.scope 变化（如切换项目）→ 重置激活 scope 并重载
+watch(() => props.scope, (s) => {
+  activeScope.value = s
+  currentFolderId.value = null
+  loadAll()
+}, { immediate: false })
 
 onMounted(loadAll)
 
@@ -350,9 +405,24 @@ function confirmSelection() {
     name: el.name,
     url: elementUrl(el.id),
     file_path: el.file_path,
-    scope: props.scope,
+    scope: activeScope.value,
   }))
   emit('picked', sel)
+}
+
+// v1.5.0: 跨库复制 —— 把当前元素复制到"另一个库"（全局 ↔ 本项目）
+async function copyElementToOther(el) {
+  if (!otherScope.value) return
+  try {
+    const r = await fetch(`${apiBase.value}/${el.id}/copy`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_scope: otherScope.value, target_folder_id: null }),
+    })
+    if (!r.ok) throw new Error(await r.text())
+    alert(`已复制「${el.name}」到${otherScopeLabel.value}`)
+  } catch (e) {
+    alert('复制失败: ' + e.message)
+  }
 }
 
 // ── 拖拽 ──────────────────────────────────────────────────────────────────────
@@ -386,6 +456,16 @@ defineExpose({ loadAll })
   background:var(--color-surface);
   flex-shrink:0;
 }
+.eb-scope-switch {
+  display:flex; gap:2px; margin-right:8px;
+  background:var(--color-bg, rgba(0,0,0,.2)); border-radius:6px; padding:2px;
+}
+.eb-scope-chip {
+  border:none; background:transparent; cursor:pointer;
+  color:var(--color-text-muted); font-size:11px; padding:3px 10px; border-radius:4px;
+}
+.eb-scope-chip.active { background:var(--color-accent, #4af); color:#fff; }
+
 .eb-breadcrumb { display:flex; gap:4px; align-items:center; font-size:12px; }
 .eb-crumb { cursor:pointer; color:var(--color-text-muted); padding:2px 4px; border-radius:3px; }
 .eb-crumb:hover { background:var(--color-surface-2); }

@@ -29,11 +29,16 @@
 ### 🖼 图片生成
 - **多引擎**：ComfyUI 本地工作流 / Pollinations 云端（v1.4.5）/ 火山引擎 Seedream 5.0 云端（v1.4.11，支持国风水墨 + 汉字）
 - 内置工作流：t2i / Flux.2 文生图 / Flux.2 Klein 图生图 / 通用 SD（多 LoRA 链）/ **Ideogram 4 结构化 JSON 文生图**（v1.4.12）
-- **Ideogram 4 可视化提示词构建器**（v1.4.12）：画布拖拽画区域 + 类型/描述/配色 + 风格字段 → 一键生成结构化 JSON caption 填入提示词框；✨ AI 分步生成整个 caption，并复用「出镜角色」选择器把所选角色外观写进元素描述以保持角色一致性
+- **Ideogram 4 可视化提示词构建器**（v1.4.12）：画布拖拽画区域（区域可 **8 手柄缩放** + 拖拽移动 + 数值微调，v1.5.0）+ 类型/描述/配色 + 风格字段 → 一键生成结构化 JSON caption 填入提示词框；✨ AI 分步生成整个 caption，并复用「出镜角色」选择器把所选角色外观写进元素描述以保持角色一致性
 - Master-detail 分割布局，支持多工作流选择 + 自动保存
 - 批量生成（跳过已有图片）、单个分镜生成、单帧操作、本地导入 + 比例剪裁
 - i2i 参考图槽位（角色立绘 / 元素库 / 本地上传）、SD 高级参数面板
 - 图片预览和管理，WebSocket 流式进度更新，自动持久化保存/加载
+
+### 📦 元素库
+- **全局库 + 项目库共通**（v1.5.0）：项目「元素」标签页一键在「本项目 / 全局库」间切换；每个元素可「⇄」跨库复制（全局 ↔ 项目，双向，新落一份独立文件）
+- 多级文件夹树、拖拽上传 / 移动、SQLite + 物理目录同步；一套 scope-aware 接口覆盖 `global` 与 `project:{pid}`
+- **内置图片生成引擎**（v1.5.0，「✨ 生成图片」）：复用现有图片引擎全套工作流（ComfyUI t2i / Flux.2 / SD / Ideogram 4 / Pollinations / Seedream），Ideogram 内嵌同款 🧩 提示词构建器；生成结果自动入库当前文件夹
 
 ### 🎙 音频生成
 - 集成 **IndexTTS-2.0**（Gradio API，本地运行）及 **GPT-SoVITS**
@@ -187,6 +192,21 @@ SKILL/
 智能体在对话中出现以下意图时会自动激活本 Skill：「用 LumiCreate 生成视频」「做漫剧 / 解说视频 / 朗读视频」「调用 ComfyUI / IndexTTS / LTX-2.3」「批量出图 / 出视频 / 拼字幕」。
 
 ## 更新日志
+
+### v1.5.0
+本版本围绕 **元素库** 做了三件事：构建器区域可缩放、全局库 ↔ 项目库共通、元素库内置图片生成引擎 —— 全部 additive，现有图片/视频/元素通路 0 破坏。
+
+- ✅ **Ideogram 构建器区域缩放**（`Ideogram4PromptBuilder.vue`）
+  - 选中区域显示 **8 个缩放手柄**（四角 + 四边），拖拽即改 bbox（0–1000 网格，最小边长 10，自动夹紧），不再只能整体位移；缩放与原有"拖拽移动 / 数值微调"并存
+- ✅ **全局元素库与项目元素库共通**（`ElementsBrowser.vue` + `elements_repo.copy_element`）
+  - **scope 切换**：项目「元素」标签页顶部新增「本项目 / 全局库」切换 chip —— 一个面板内浏览两个库，互不干扰各自的文件夹树
+  - **跨库复制**：每个元素卡新增「⇄」按钮，一键把元素复制到另一个库（全局 ↔ 本项目，双向）；后端 `POST /copy` 读源字节 + 在目标 scope 另落一份新元素（新 id、独立文件，`source_meta.copied_from` 记录来源），原件保留
+  - 纯全局面板（主屏 📦 元素库）无项目上下文，仅显示全局库，行为不变
+- ✅ **元素库内置图片生成引擎**（`ElementGenerateDialog.vue`，「✨ 生成图片」按钮）
+  - **复用现有图片引擎全套**：直接调 `POST /image-engine/generate-stream`，按 `engine_type` 自动分派 —— ComfyUI 全部工作流（t2i / Flux.2 / SD / **Ideogram 4**）/ Pollinations / 火山引擎 Seedream 通吃，无新增生成后端
+  - **Ideogram 提示词构建器内嵌**：选中 `image_ideogram4_t2i` 时弹窗内显示「🧩 构建器」→ 复用同一个 `Ideogram4PromptBuilder`（画布尺寸跟随表单宽高）→ 应用纯 JSON caption；Ideogram 走纯 JSON、不拼负面/画风前缀
+  - **生成即入库**：可设工作流 / 提示词 / 宽高 / 数量(1–8，按序错开 seed) / 种子，生成结果实时显示并自动存入当前 scope 的当前文件夹（`source=t2i` + `source_meta` 记录工作流/提示词/种子），完成后网格自动刷新
+- ✅ **测试**：后端 **335 / 335 pytest 通过**（v1.4.12 时 333 个），新增 2 个 `copy_element` 回归（跨文件夹复制字节一致 + 原件保留 + source_meta 来源记录；缺失元素 KeyError）
 
 ### v1.4.12
 本版本新增 **Ideogram 4 文生图工作流支持 + 可视化结构化 JSON 提示词构建器** —— 完全 additive，现有 ComfyUI t2i / i2i / SD / Flux.2 / Pollinations / Seedream 图片通路 0 改动。

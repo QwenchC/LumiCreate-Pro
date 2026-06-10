@@ -28,6 +28,12 @@
                    :style="regionStyle(r)"
                    @mousedown.stop="onRegionDown($event, i)">
                 <span class="ig-region-tag">{{ i + 1 }}·{{ r.type }}</span>
+                <!-- 8 个缩放手柄（仅选中区域显示）-->
+                <template v-if="i === activeIdx">
+                  <span v-for="h in RESIZE_HANDLES" :key="h"
+                        class="ig-handle" :class="'ig-h-' + h"
+                        @mousedown.stop="onHandleDown($event, i, h)"></span>
+                </template>
               </div>
               <!-- 正在拖拽的临时框 -->
               <div v-if="draft" class="ig-region drafting" :style="regionStyle(draft)"></div>
@@ -309,6 +315,36 @@ function onRegionUp() {
   moveCtx = null
 }
 
+// ── 缩放已有区域（8 手柄，bbox = [ymin,xmin,ymax,xmax]）─────────────────────
+const RESIZE_HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
+let resizeCtx = null
+const MIN_SIZE = 10   // 0-1000 网格下最小边长
+
+function onHandleDown(e, i, handle) {
+  activeIdx.value = i
+  const p = _stagePoint(e)
+  resizeCtx = { i, handle, startX: p.x, startY: p.y, orig: [...regions.value[i].bbox] }
+  window.addEventListener('mousemove', onHandleMove)
+  window.addEventListener('mouseup', onHandleUp)
+}
+function onHandleMove(e) {
+  if (!resizeCtx) return
+  const p = _stagePoint(e)
+  let [ymin, xmin, ymax, xmax] = resizeCtx.orig
+  const h = resizeCtx.handle
+  if (h.includes('n')) ymin = Math.min(p.y, ymax - MIN_SIZE)
+  if (h.includes('s')) ymax = Math.max(p.y, ymin + MIN_SIZE)
+  if (h.includes('w')) xmin = Math.min(p.x, xmax - MIN_SIZE)
+  if (h.includes('e')) xmax = Math.max(p.x, xmin + MIN_SIZE)
+  const clamp = v => Math.round(Math.min(1000, Math.max(0, v)))
+  regions.value[resizeCtx.i].bbox = [clamp(ymin), clamp(xmin), clamp(ymax), clamp(xmax)]
+}
+function onHandleUp() {
+  window.removeEventListener('mousemove', onHandleMove)
+  window.removeEventListener('mouseup', onHandleUp)
+  resizeCtx = null
+}
+
 function removeRegion(i) {
   regions.value.splice(i, 1)
   if (activeIdx.value >= regions.value.length) activeIdx.value = regions.value.length - 1
@@ -526,6 +562,20 @@ onMounted(() => {
   font-size: 9px; background: rgba(0,0,0,0.65); color: #fff;
   padding: 0 3px; border-radius: 0 0 3px 0; white-space: nowrap;
 }
+/* 缩放手柄 */
+.ig-handle {
+  position: absolute; width: 9px; height: 9px;
+  background: #fff; border: 1px solid var(--color-accent, #4af);
+  border-radius: 2px; z-index: 4;
+}
+.ig-h-nw { top: -5px; left: -5px;  cursor: nwse-resize; }
+.ig-h-n  { top: -5px; left: 50%; margin-left: -4px; cursor: ns-resize; }
+.ig-h-ne { top: -5px; right: -5px; cursor: nesw-resize; }
+.ig-h-e  { top: 50%; right: -5px; margin-top: -4px; cursor: ew-resize; }
+.ig-h-se { bottom: -5px; right: -5px; cursor: nwse-resize; }
+.ig-h-s  { bottom: -5px; left: 50%; margin-left: -4px; cursor: ns-resize; }
+.ig-h-sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
+.ig-h-w  { top: 50%; left: -5px; margin-top: -4px; cursor: ew-resize; }
 .ig-coord-hint { font-size: 10px; }
 
 .ig-section-title {

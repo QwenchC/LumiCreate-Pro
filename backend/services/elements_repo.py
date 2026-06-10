@@ -438,6 +438,38 @@ def get_element_path(scope: str, element_id: int) -> Optional[Path]:
     return p if p.is_file() else None
 
 
+def copy_element(src_scope: str, element_id: int, dst_scope: str,
+                 *, dst_folder_id: Optional[int] = None) -> dict:
+    """v1.5.0: 把一个元素从 src_scope 复制到 dst_scope（让全局库与项目库共通）。
+
+    读取源文件字节 + 元数据，在目标 scope 落一份新元素（新 id，独立文件）。
+    src/dst 同 scope 也允许（相当于"另存一份到其它文件夹"）。
+    """
+    elem = get_element(src_scope, element_id)
+    if elem is None:
+        raise KeyError(element_id)
+    src_path = get_element_path(src_scope, element_id)
+    if src_path is None:
+        raise FileNotFoundError(f"element {element_id}@{src_scope} 文件丢失")
+    file_bytes = src_path.read_bytes()
+    src_meta = elem.get("source_meta") or {}
+    if not isinstance(src_meta, dict):
+        src_meta = {}
+    new_meta = {**src_meta, "copied_from": {"scope": src_scope, "element_id": element_id}}
+    return create_element(
+        dst_scope,
+        folder_id=dst_folder_id,
+        name=elem.get("name") or "element",
+        file_bytes=file_bytes,
+        filename=Path(elem["file_path"]).name,
+        mime=elem.get("mime") or "image/png",
+        source="copy",
+        source_meta=new_meta,
+        width=elem.get("width"),
+        height=elem.get("height"),
+    )
+
+
 def ensure_local_folder(scope: str) -> int:
     """确保有一个名为 'local' 的根目录文件夹（前端"本地上传"快速入口）。"""
     conn, _, _ = _resolve_scope(scope)

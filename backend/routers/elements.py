@@ -57,6 +57,12 @@ class ElementUpdate(BaseModel):
     folder_id: Optional[int] = None            # 移动到该文件夹；None 表示根
 
 
+class ElementCopy(BaseModel):
+    """v1.5.0: 跨库复制。target_scope 形如 'global' 或 'project:{pid}'。"""
+    target_scope: str
+    target_folder_id: Optional[int] = None
+
+
 # ── Folders ───────────────────────────────────────────────────────────────────
 
 
@@ -161,6 +167,20 @@ async def update_element_global(element_id: int, req: ElementUpdate):
 @router.delete("/{element_id}", status_code=204)
 async def delete_element_global(element_id: int):
     repo.delete_element(_scope_global(), element_id)
+
+
+@router.post("/{element_id}/copy")
+async def copy_element_global(element_id: int, req: ElementCopy):
+    """把全局库元素复制到 target_scope（全局 / 任意项目）。"""
+    try:
+        return repo.copy_element(
+            _scope_global(), element_id, req.target_scope,
+            dst_folder_id=req.target_folder_id,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="element not found")
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/file/{element_id}")
