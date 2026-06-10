@@ -1018,6 +1018,10 @@ async function generateSceneSlots(scene, { skipExisting = false } = {}) {
     .join(', ')
 
   const _buildPrompt = (rawPrompt) => {
+    // v1.4.12: Ideogram 工作流提示词必须是纯 JSON caption —— 禁止前缀注入
+    // 画风/角色 appearance（会破坏 JSON 格式）。画风/角色信息应在「🧩 构建器」
+    // 的 AI 生成里融入 caption，而不是这里拼字符串。
+    if (isIdeogram.value) return rawPrompt || ''
     const parts = []
     if (_style) parts.push(_style)
     if (charPrefix) parts.push(charPrefix)
@@ -1222,8 +1226,10 @@ async function regenFrame(scene, frameType) {
   const charPrefix = characters.value
     .filter(c => selectedNames.includes(c.name) && c.appearance)
     .map(c => c.appearance.trim()).join(', ')
-  const parts = [effectiveStyle.value, charPrefix, rawPrompt].filter(Boolean)
-  const prompt = parts.join(', ')
+  // v1.4.12: Ideogram 工作流送纯 JSON，不拼画风/角色前缀（否则 JSON 失效）
+  const prompt = isIdeogram.value
+    ? rawPrompt
+    : [effectiveStyle.value, charPrefix, rawPrompt].filter(Boolean).join(', ')
   setFrameSlotCount(scene.id, frameType, genCount.value)
   for (let s = 0; s < genCount.value; s++) {
     const key = slotKey(scene.id, frameType, s)
@@ -1425,8 +1431,10 @@ async function addOneMore(scene, frameType) {
   const charPrefix = characters.value
     .filter(c => selectedNames.includes(c.name) && c.appearance)
     .map(c => c.appearance.trim()).join(', ')
-  const parts = [effectiveStyle.value, charPrefix, rawPrompt].filter(Boolean)
-  const prompt = parts.join(', ')
+  // v1.4.12: Ideogram 工作流送纯 JSON，不拼画风/角色前缀（否则 JSON 失效）
+  const prompt = isIdeogram.value
+    ? rawPrompt
+    : [effectiveStyle.value, charPrefix, rawPrompt].filter(Boolean).join(', ')
   const newSlot = getFrameSlotCount(scene.id, frameType)
   setFrameSlotCount(scene.id, frameType, newSlot + 1)
   const key = slotKey(scene.id, frameType, newSlot)

@@ -76,6 +76,39 @@ def test_patcher_injects_seed_into_randomnoise():
     assert rn and rn[0]["inputs"]["noise_seed"] == 777
 
 
+def test_patcher_fills_kj_hidden_required_widgets():
+    """KJ 节点的 3 个 UI 托管隐藏 widget（elements_data / style_palette_data /
+    bg_brightness）不在 litegraph inputs 数组里 → 转换时丢失 → ComfyUI 校验报
+    required_input_missing。patcher 必须补全（import_mode=always 下被 import_json
+    覆盖，填安全默认即可）。"""
+    from services.comfyui import _patch_workflow
+    patched = _patch_workflow(_load(), "{}", "", seed=1)
+    kj = next(n for n in patched.values()
+              if str(n.get("class_type", "")).startswith("Ideogram4PromptBuilder"))
+    ins = kj["inputs"]
+    assert "elements_data" in ins
+    assert "style_palette_data" in ins
+    assert "bg_brightness" in ins
+    # 类型合理：data 是字符串，brightness 是数值
+    assert isinstance(ins["elements_data"], str)
+    assert isinstance(ins["style_palette_data"], str)
+    assert isinstance(ins["bg_brightness"], int)
+
+
+def test_patcher_does_not_clobber_existing_kj_widgets():
+    """已有值不动 setdefault：若转换后某隐藏 widget 已存在，patcher 不覆盖。"""
+    from services.comfyui import _patch_workflow
+    mini = {
+        "1": {"class_type": "Ideogram4PromptBuilderKJ",
+              "inputs": {"import_json": "", "import_mode": "when empty",
+                         "elements_data": '[{"keep":1}]', "bg_brightness": 42}},
+    }
+    patched = _patch_workflow(mini, "CAP", "", seed=1)
+    assert patched["1"]["inputs"]["elements_data"] == '[{"keep":1}]'  # 不动
+    assert patched["1"]["inputs"]["bg_brightness"] == 42               # 不动
+    assert patched["1"]["inputs"]["style_palette_data"] == "[]"        # 缺的补
+
+
 def test_patcher_handles_unwired_import_json_fallback():
     """若 import_json 未接线（无上游），caption 直接写到 KJ.import_json 字面量。"""
     from services.comfyui import _patch_workflow

@@ -886,6 +886,14 @@ def _patch_workflow(
         for kj_id in _kj_ids:
             kj_inputs = w[kj_id].setdefault("inputs", {})
             kj_inputs["import_mode"] = "always"   # wired JSON 权威
+            # KJ 节点有 3 个"UI 托管"隐藏 widget（elements_data / style_palette_data
+            # / bg_brightness），它们不在 litegraph 的 inputs 数组里 → _litegraph_to_api
+            # 转换时被丢掉 → ComfyUI 校验报 required_input_missing。
+            # import_mode='always' 下这三个编辑器数据会被 import_json 覆盖，所以只需
+            # 填一个能过类型校验的安全默认值即可（缺啥补啥，已有值不动）。
+            kj_inputs.setdefault("elements_data", "[]")
+            kj_inputs.setdefault("style_palette_data", "[]")
+            kj_inputs.setdefault("bg_brightness", 0)
             src = kj_inputs.get("import_json")
             if isinstance(src, list) and len(src) == 2 and str(src[0]) in w:
                 # import_json 由上游节点提供（StringConstantMultiline）→ 写它的字符串 widget
