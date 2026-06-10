@@ -195,13 +195,17 @@ SKILL/
   - **打包副本**：`workflows/image_ideogram4_t2i.json` 从用户 ComfyUI 工作流精简而来，剥掉 KJ 预览 / debug `showAnything` / 孤儿 `LoadImage` 三类节点，只留单一真实图片输出（避免 `_fetch_images` 抓到编辑器预览图）
   - **专用提示词注入**（`comfyui.py _patch_workflow`）：Ideogram 4 的 prompt 是结构化 JSON caption，流向 `Ideogram4PromptBuilderKJ.out0 → 子图 CLIPTextEncode(wire) + JsonExtractString(抽 mu/std/steps)`，**不能**被通用 CLIPTextEncode literal 注入割断 wire。正确做法：caption JSON 写进 KJ 的上游 `StringConstantMultiline.string` + 把 `import_mode` 翻成 `always` 让 wired JSON 成为权威源，全链一致；命中即 return，跳过通用 prompt/size 注入
 - ✅ **可视化 JSON 提示词构建器**（`Ideogram4PromptBuilder.vue` + `PaletteEditor.vue`，仿 ComfyUI 的 KJ 节点）
-  - **左·画布**：拖拽画区域，bbox 自动归一化到 0–1000 网格 `[ymin,xmin,ymax,xmax]`；可拖动移动 / 点选 / 删除
+  - **左·画布**：拖拽画区域，bbox 自动归一化到 0–1000 网格 `[ymin,xmin,ymax,xmax]`；可拖动移动 / 点选 / 删除；**画布长宽比跟随设置页图片引擎的 `image_width/height`**（bbox 摆放所见即所得）
   - **中·区域列表 + 编辑**：type（obj/text）、desc、text（图中文字）、bbox 数值微调、区域配色（≤5）
   - **右·全局字段**：`high_level_description` / `background` / `style_description`（photo ↔ art_style 二选一 + aesthetics/lighting/medium + 整体配色 ≤16）
   - **底**：JSON 实时预览 + token 估算 + 复制 + 「✓ 应用到提示词框」；严格按 schema 的 key 顺序组装；支持回填已有 JSON 再编辑
   - **入口**：图片生成页选中 `image_ideogram4_t2i` 时，首/尾帧标题栏显示「🧩 构建器」按钮 → 弹窗 → 应用后写回该帧 prompt（复用 `onPromptInput`）
-- ✅ **测试**：后端 **323 / 323 pytest 通过**（v1.4.11 时 301 个），新增 8 个回归测覆盖：打包工作流单输出 / classify t2i / 白名单 / 注入正确性（StringConstant + import_mode=always + CLIPTextEncode wire 不被割断 + 种子）/ 未接线 import_json 兜底 / 非 ideogram 仍走原 CLIP 路径
-- ⚠️ **已知限制**：输出分辨率目前由工作流自带的 `ResolutionSelector`（默认 16:9 / 2MP）决定，未接管设置页宽高；竖屏需在 ComfyUI 改该工作流默认或等后续映射
+- ✅ **✨ AI 分步生成整个 caption**（结构化 JSON 较大 → 拆两步小响应，避免单次截断）
+  - **后端 `POST /text-engine/generate-ideogram-caption`**：走当前文本引擎，`step=overview` 出 `high_level_description + background + style_description`（按 photo/art_style 引导 key 顺序），`step=elements` 出 `elements` 数组；服务端 bbox 校验 + 0–1000 夹紧 + 非法元素过滤 + 幻觉字段剥除 + 上限 9 元素
+  - **前端构建器右栏 ✨ AI 生成块**：描述输入框（打开时自动预填该分镜描述 + 携带出镜角色卡含 appearance）→ 一键两步生成（进度「1/2 概览与风格 → 2/2 元素布局」）→ 自动填充全部字段与画布区域，生成后可继续手动微调
+- ✅ **打包修复**：electron-builder `extraResources` 增加 `workflows/` 目录 —— 打包后 `bundled_workflow_dir()` 才能解析仓库自带工作流（否则回退到用户 ComfyUI 目录，rename 后的工作流不在那 → 下拉漏掉）
+- ✅ **测试**：后端 **328 / 328 pytest 通过**（v1.4.11 时 301 个），新增 13 个回归测覆盖：打包工作流单输出 / classify t2i / 白名单 / 注入正确性（StringConstant + import_mode=always + CLIPTextEncode wire 不被割断 + 种子）/ 未接线 import_json 兜底 / 非 ideogram 仍走原 CLIP 路径 / AI caption overview 幻觉字段剥除 / elements bbox 夹紧 + 非法过滤 / 空描述 400 / 非法 step 400 / LLM 垃圾输出 502
+- ⚠️ **已知限制**：**输出**分辨率仍由工作流自带的 `ResolutionSelector`（默认 16:9 / 2MP）决定（构建器画布长宽比已跟随设置，但 ComfyUI 实际出图尺寸需在该工作流的 ResolutionSelector 改默认或等后续映射）
 
 ### v1.4.11
 本版本扩展 **文本引擎平台清单（下拉 + 自定义平台）** + 新增 **火山引擎 Seedream 5.0 图片引擎** —— 均为 additive，现有引擎通路 0 改动。
