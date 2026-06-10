@@ -41,6 +41,10 @@
       {
         "from": "backend",
         "to": "backend"
+      },
+      {
+        "from": "workflows",
+        "to": "workflows"
       }
     ]
   },
