@@ -452,8 +452,14 @@ def _ideogram_chars_block(characters: list[dict]) -> str:
         parts.append(line)
     if not parts:
         return ""
-    return "Characters in this scene (use their appearance in element descriptions):\n" \
-           + "\n".join(parts) + "\n\n"
+    return (
+        "Characters present in this scene (for character CONSISTENCY — these are the ONLY people in the image, "
+        "do NOT invent or add others):\n"
+        + "\n".join(parts) + "\n"
+        "For every character that appears, create an \"obj\" element whose desc embeds that character's FULL "
+        "appearance verbatim (hair, face, clothing, accessories, body) so the rendered person matches across "
+        "shots. Bind each appearance to its own character — never blend, swap, or transfer features between them.\n\n"
+    )
 
 
 def _clamp_bbox(bbox) -> Optional[list[int]]:

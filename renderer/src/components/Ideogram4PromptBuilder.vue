@@ -88,6 +88,18 @@
             <!-- v1.4.13: AI 分步生成整个 caption -->
             <div class="ig-ai-block">
               <div class="ig-section-title">✨ AI 生成（文本引擎）</div>
+              <!-- 参考角色：只读展示「出镜角色」选择器已选中的角色（带外观），不在此处重复做选择器 -->
+              <div v-if="sceneCharacters.length" class="ig-ai-chars">
+                <span class="ig-ai-chars-label">参考角色（来自出镜角色选择，含外观）：</span>
+                <span v-for="c in sceneCharacters" :key="c.name"
+                      class="ig-ai-char-chip"
+                      :title="c.appearance || c.traits || '（未填写外观）'">
+                  {{ c.name }}{{ (c.appearance || c.traits) ? '' : ' ⚠' }}
+                </span>
+              </div>
+              <p v-else class="ig-tip text-muted" style="margin:0">
+                未选择出镜角色 · 在右侧「🎭 出镜角色」勾选后，AI 生成会按其外观保持角色一致性
+              </p>
               <textarea v-model="aiDesc" class="ig-inp" rows="2"
                         placeholder="用中文/英文描述画面，AI 分两步生成整个 JSON（概览+风格 → 元素布局）"></textarea>
               <div class="ig-ai-row">
@@ -567,4 +579,10 @@ textarea.ig-inp { resize: vertical; }
 }
 .ig-ai-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ig-ai-error { font-size: 11px; color: var(--color-error, #f66); }
+.ig-ai-chars { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; }
+.ig-ai-chars-label { color: var(--color-text-muted, #aaa); }
+.ig-ai-char-chip {
+  background: rgba(68,170,255,0.18); border: 1px solid rgba(68,170,255,0.4);
+  border-radius: 10px; padding: 1px 8px; color: var(--color-text, #eee); cursor: default;
+}
 </style>

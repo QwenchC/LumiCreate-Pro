@@ -29,7 +29,7 @@
 ### 🖼 图片生成
 - **多引擎**：ComfyUI 本地工作流 / Pollinations 云端（v1.4.5）/ 火山引擎 Seedream 5.0 云端（v1.4.11，支持国风水墨 + 汉字）
 - 内置工作流：t2i / Flux.2 文生图 / Flux.2 Klein 图生图 / 通用 SD（多 LoRA 链）/ **Ideogram 4 结构化 JSON 文生图**（v1.4.12）
-- **Ideogram 4 可视化提示词构建器**（v1.4.12）：画布拖拽画区域 + 类型/描述/配色 + 风格字段 → 一键生成结构化 JSON caption 填入提示词框
+- **Ideogram 4 可视化提示词构建器**（v1.4.12）：画布拖拽画区域 + 类型/描述/配色 + 风格字段 → 一键生成结构化 JSON caption 填入提示词框；✨ AI 分步生成整个 caption，并复用「出镜角色」选择器把所选角色外观写进元素描述以保持角色一致性
 - Master-detail 分割布局，支持多工作流选择 + 自动保存
 - 批量生成（跳过已有图片）、单个分镜生成、单帧操作、本地导入 + 比例剪裁
 - i2i 参考图槽位（角色立绘 / 元素库 / 本地上传）、SD 高级参数面板
@@ -203,8 +203,12 @@ SKILL/
 - ✅ **✨ AI 分步生成整个 caption**（结构化 JSON 较大 → 拆两步小响应，避免单次截断）
   - **后端 `POST /text-engine/generate-ideogram-caption`**：走当前文本引擎，`step=overview` 出 `high_level_description + background + style_description`（按 photo/art_style 引导 key 顺序），`step=elements` 出 `elements` 数组；服务端 bbox 校验 + 0–1000 夹紧 + 非法元素过滤 + 幻觉字段剥除 + 上限 9 元素
   - **前端构建器右栏 ✨ AI 生成块**：描述输入框（打开时自动预填该分镜描述 + 携带出镜角色卡含 appearance）→ 一键两步生成（进度「1/2 概览与风格 → 2/2 元素布局」）→ 自动填充全部字段与画布区域，生成后可继续手动微调
+- ✅ **角色一致性贯通**（复用「🎭 出镜角色」选择器，不在构建器里重做一个）
+  - **来源即选择器**：构建器的 AI 生成直接读取图片生成页「出镜角色」选择器已选中的角色（用户手动勾选或「✦ AI 自动选」均可），按角色名 hydrate 成完整角色卡（携带角色管理页填写的 `appearance` 外观）传给后端两步生成
+  - **可见提示**：构建器 AI 块只读展示「参考角色」chip（hover 看外观；未填外观的角色标 ⚠），未选角色时给出引导文案 —— 让用户确认正在按所选角色出图，而非黑盒
+  - **强约束注入**：后端 `_ideogram_chars_block` 升级为角色一致性指令 —— 要求把每个出镜角色的**完整外观逐字写进对应 `obj` 元素的 desc**，且外观与角色一一绑定、禁止跨角色混用/迁移特征；overview + elements 两步都注入该块
 - ✅ **打包修复**：electron-builder `extraResources` 增加 `workflows/` 目录 —— 打包后 `bundled_workflow_dir()` 才能解析仓库自带工作流（否则回退到用户 ComfyUI 目录，rename 后的工作流不在那 → 下拉漏掉）
-- ✅ **测试**：后端 **328 / 328 pytest 通过**（v1.4.11 时 301 个），新增 13 个回归测覆盖：打包工作流单输出 / classify t2i / 白名单 / 注入正确性（StringConstant + import_mode=always + CLIPTextEncode wire 不被割断 + 种子）/ 未接线 import_json 兜底 / 非 ideogram 仍走原 CLIP 路径 / AI caption overview 幻觉字段剥除 / elements bbox 夹紧 + 非法过滤 / 空描述 400 / 非法 step 400 / LLM 垃圾输出 502
+- ✅ **测试**：后端 **333 / 333 pytest 通过**（v1.4.11 时 301 个），新增 18 个回归测覆盖：打包工作流单输出 / classify t2i / 白名单 / 注入正确性（StringConstant + import_mode=always + CLIPTextEncode wire 不被割断 + 种子）/ KJ 隐藏必填 widget（elements_data / style_palette_data / bg_brightness）补全 + setdefault 不覆盖已有值 / 未接线 import_json 兜底 / 非 ideogram 仍走原 CLIP 路径 / AI caption overview 幻觉字段剥除 / elements bbox 夹紧 + 非法过滤 / 空描述 400 / 非法 step 400 / LLM 垃圾输出 502 / **角色一致性：所选角色 appearance 进入 overview + elements 两步提示、未选角色不注入 Characters 块**
 - ⚠️ **已知限制**：**输出**分辨率仍由工作流自带的 `ResolutionSelector`（默认 16:9 / 2MP）决定（构建器画布长宽比已跟随设置，但 ComfyUI 实际出图尺寸需在该工作流的 ResolutionSelector 改默认或等后续映射）
 
 ### v1.4.11

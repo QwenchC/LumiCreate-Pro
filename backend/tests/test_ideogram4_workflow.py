@@ -222,3 +222,64 @@ def test_caption_502_when_llm_returns_garbage(isolated_app, monkeypatch):
         "description": "x", "step": "overview",
     })
     assert r.status_code == 502
+
+
+def _capture_llm(monkeypatch, response_text: str):
+    """替换 stream_chat：返回固定 JSON，并把收到的 user 消息记进 captured['user']。"""
+    import routers.text_engine as te
+    captured = {}
+
+    async def _fake_stream(cfg, system, user):
+        captured["system"] = system
+        captured["user"] = user
+        yield response_text
+
+    monkeypatch.setattr(te, "stream_chat", _fake_stream)
+    return captured
+
+
+def test_caption_overview_injects_selected_character_appearance(isolated_app, monkeypatch):
+    """角色一致性：出镜角色选择器选中的角色 appearance 必须进入 overview 步的 LLM 提示。"""
+    client = isolated_app["client"]
+    captured = _capture_llm(monkeypatch, json.dumps({
+        "high_level_description": "x", "background": "y", "style_description": {},
+    }))
+    r = client.post("/api/text-engine/generate-ideogram-caption", json={
+        "description": "林夏站在屋顶", "step": "overview",
+        "characters": [
+            {"name": "林夏", "role": "主角",
+             "appearance": "long silver hair, red hoodie, green eyes"},
+        ],
+    })
+    assert r.status_code == 200, r.text
+    assert "林夏" in captured["user"]
+    assert "long silver hair, red hoodie, green eyes" in captured["user"]
+
+
+def test_caption_elements_injects_selected_character_appearance(isolated_app, monkeypatch):
+    """同样地，elements 步也必须携带角色 appearance（用于把外观写进元素 desc）。"""
+    client = isolated_app["client"]
+    captured = _capture_llm(monkeypatch, json.dumps({"elements": []}))
+    r = client.post("/api/text-engine/generate-ideogram-caption", json={
+        "description": "x", "step": "elements", "width": 1080, "height": 1920,
+        "overview": {"background": "bg"},
+        "characters": [
+            {"name": "Aria", "appearance": "blonde bob, blue military coat"},
+        ],
+    })
+    assert r.status_code == 200, r.text
+    assert "Aria" in captured["user"]
+    assert "blonde bob, blue military coat" in captured["user"]
+
+
+def test_caption_no_characters_block_when_none_selected(isolated_app, monkeypatch):
+    """未选角色时不注入 Characters 块（纯景色镜头）。"""
+    client = isolated_app["client"]
+    captured = _capture_llm(monkeypatch, json.dumps({
+        "high_level_description": "x", "background": "y", "style_description": {},
+    }))
+    r = client.post("/api/text-engine/generate-ideogram-caption", json={
+        "description": "empty rooftop at dawn", "step": "overview", "characters": [],
+    })
+    assert r.status_code == 200, r.text
+    assert "Characters present in this scene" not in captured["user"]
