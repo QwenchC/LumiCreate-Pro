@@ -210,6 +210,11 @@ SKILL/
   - **🎭 AI 标注**：对分段逐段指派说话人(消解人称代词)，再用下拉确认；分段随项目落盘(`__ms_reading__` 增 `segments`)，生成时优先用锁定分段、无则退回自动切分
 - ✅ **批量标注并发**：ScenesTab「🎭 标注说话人(全部)」按 4 路并发跑(逐镜独立请求)，大幅缩短整片标注耗时
 - ✅ **图片槽位竖幅自适应**：图片生成页槽位尺寸跟随设置的图片宽高比(竖幅→高窄、横幅→宽矮)且整图 `contain` 显示，竖幅图无需逐个点开即可看清完整内容
+- ✅ **持久化修复(音乐库/元素库/角色立绘不再丢失)** —— 多智能体根因排查 + 对抗验证定位到 3 个独立缺陷:
+  - **测试套件误删真实数据**: `conftest.py` 用 `os.environ.setdefault("APPDATA", …)`,Windows 上 APPDATA 必已存在 → no-op,导致每次 `pytest` 都把用户真实 `%APPDATA%/LumiCreate-Pro` 的 `music.sqlite`/`elements.sqlite`/sfx/prompts 及媒体目录删掉。改为**无条件**重定向到 `.test-tmp` + 每个 `isolated_app` 用例把 `db.SETTINGS_PATH` 钉到独立 tmp + 清理前加**致命断言**(非测试路径直接报错)
+  - **项目元素未提交**: `elements_repo._commit_scope` 缺 `project:` 分支 → 项目库 INSERT 停在未提交事务,后端被 Electron 杀掉重启即回滚丢失。补上 project 分支显式 commit
+  - **角色立绘被保存抹掉**: 角色页保存走后端 PUT 盲覆盖 `characters.json`,且前端不带 `portraits` 字段 → 立绘元数据被清空(PNG 沦为孤儿)。后端改为**载入合并**(按角色名保留磁盘已有 portraits、丢弃运行期 `_portraits` 缓存键),前端保存不再发送 `portraits`(由专用立绘端点维护)
+  - 新增 5 个回归测试(隔离不变量 / 项目元素重连后仍在 / 立绘保存往返不丢),后端 **354 通过**
 - ✅ **测试**：后端 **349 / 349 通过**(+14：`dialogue_tags` 解析 8 个 + `tag-dialogue-speakers` 端点 6 个)
 
 ### v1.5.0

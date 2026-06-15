@@ -897,7 +897,11 @@ async function importFromManuscript() {
 async function save() {
   saving.value = true
   try {
-    const payload = characters.value.map(({ _generating, _finding, _profiling, ...c }) => c)
+    // v1.5.1: 不发送 _portraits（运行期缓存）/ portraits（由专用立绘端点维护）——
+    // 后端 PUT 会按角色名保留磁盘上已有的 portraits，立绘不会被角色保存抹掉。
+    const payload = characters.value.map(
+      ({ _generating, _finding, _profiling, _portraits, portraits, ...c }) => c
+    )
     const res = await fetch(`${API}/projects/${props.projectId}/characters`, {
       method:  'PUT',
       headers: { 'Content-Type': 'application/json' },

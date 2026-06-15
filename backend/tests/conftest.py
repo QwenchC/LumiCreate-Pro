@@ -11,8 +11,17 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-# 给 SETTINGS_PATH 一个测试专用临时根，避免污染用户的真实 settings.json
-os.environ.setdefault("APPDATA", str(_BACKEND_DIR / ".test-tmp"))
+# 给 SETTINGS_PATH 一个测试专用临时根，避免污染/删除用户的真实数据。
+# ⚠ 必须【无条件】覆盖：Windows 上 APPDATA 一定已存在，原先的 os.environ.setdefault
+#   会变成 no-op → config.SETTINGS_PATH 指向真实 %APPDATA%/LumiCreate-Pro，
+#   于是 isolated_app fixture 的"全局库清理"会删掉用户真实的 music.sqlite /
+#   elements.sqlite / sfx / prompts 及其媒体目录（音乐库、元素库每次跑测试就消失）。
+#   这里在任何 config 被 import 之前就锁死到测试目录，并把 HOME/USERPROFILE 一并兜底
+#   （以防 config.py 的 Path.home() 回退分支）。
+_TEST_DATA_ROOT = str(_BACKEND_DIR / ".test-tmp")
+os.environ["APPDATA"] = _TEST_DATA_ROOT
+os.environ["USERPROFILE"] = _TEST_DATA_ROOT
+os.environ["HOME"] = _TEST_DATA_ROOT
 
 
 # ── 共享 fixture ───────────────────────────────────────────────────────────────
@@ -117,8 +126,21 @@ def isolated_app(tmp_path, monkeypatch):
 
     # 不 reload 模块（routers 已持引用），改用清理全局状态的方式
     from services import db
+    # 把全局库根钉到本测试专属的 tmp 目录（per-test 隔离）。这一步至关重要：
+    # 其它 fixture（如 test_elements_repo 的 isolated_global）会 importlib.reload(db)
+    # 把 db.SETTINGS_PATH 改成它自己的 tmp，污染全局模块状态；这里无条件覆盖回本测试的
+    # tmp，确保下面的"全局库清理"永远落在 tmp、绝不碰用户真实 %APPDATA%。
+    _test_settings = tmp_path / "appdata" / "LumiCreate-Pro" / "settings.json"
+    monkeypatch.setattr(db, "SETTINGS_PATH", _test_settings)
+    monkeypatch.setattr(config, "SETTINGS_PATH", _test_settings, raising=False)
     db.close_all()
     db._CONNS.clear()                # 强制丢弃前面测试的连接
+
+    # ⚠ 致命安全闸：下面会 unlink/rmtree 全局库。绝不允许落在用户真实 APPDATA 上。
+    #   放在 try 之外，确保即便误指向真实路径也会【响亮地】报错而不是被静默吞掉。
+    assert str(tmp_path) in str(db.SETTINGS_PATH), (
+        f"refusing to wipe global stores at a non-test path: {db.SETTINGS_PATH}"
+    )
 
     # v1.4.2: 全局音乐 / 元素 SQLite + 媒体目录跨测试残留会让"列表 / 清理"
     # 类测试结果不可预测；每次起 fixture 时整体清空。

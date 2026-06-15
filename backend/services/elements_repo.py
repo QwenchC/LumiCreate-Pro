@@ -46,10 +46,20 @@ def _resolve_scope(scope: str) -> tuple[sqlite3.Connection, Path, str]:
 
 
 def _commit_scope(scope: str) -> None:
-    """Scope-aware commit。Project db 用 context manager 已自动 commit；全局也兜底一次。"""
+    """Scope-aware commit。
+
+    v1.5.1 修复：project 分支此前缺失 → 项目库的 INSERT/UPDATE 一直停在未提交事务里，
+    单进程内读同一连接看得到（假象），但后端被 Electron 杀掉重启后未提交事务被回滚，
+    项目元素/文件夹全部消失。这里对 project scope 也显式 commit。
+    """
     if scope == "global" or not scope:
         try:
             get_global_elements_conn().commit()
+        except Exception:
+            pass
+    elif scope.startswith("project:"):
+        try:
+            _get_project_conn(scope[len("project:"):]).commit()
         except Exception:
             pass
 

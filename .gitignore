@@ -35,3 +35,6 @@ settings.json
 
 # Project data
 LumiCreate-Projects/
+
+# pytest scratch (test-only APPDATA root)
+backend/.test-tmp/

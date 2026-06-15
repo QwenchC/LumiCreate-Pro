@@ -1022,12 +1022,32 @@ async def get_characters(project_id: str):
 
 @router.put("/{project_id}/characters")
 async def save_characters(project_id: str, data: CharactersData):
+    """保存角色列表。
+
+    v1.5.1 修复：立绘元数据（portraits）由专用立绘端点维护；本接口做"载入合并保存"——
+    客户端若未带 portraits（角色页保存只发基本字段），按角色名保留磁盘上已有的 portraits，
+    避免一次角色保存把立绘元数据整段抹掉（PNG 还在盘上但 characters.json 不再引用 →
+    重开项目立绘消失）。同时丢弃前端运行期缓存键 `_portraits`，不落盘。
+    """
     _read_meta(project_id)
-    (_project_dir(project_id) / "characters.json").write_text(
-        json.dumps({"characters": data.characters}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return {"ok": True, "count": len(data.characters)}
+    existing = _load_characters_list(project_id)
+    old_portraits = {
+        (c.get("name") or "").strip(): c["portraits"]
+        for c in existing
+        if isinstance(c.get("portraits"), list)
+    }
+    merged: list[dict] = []
+    for raw in data.characters:
+        c = dict(raw)
+        c.pop("_portraits", None)          # 运行期缓存键，不持久化
+        name = (c.get("name") or "").strip()
+        if not isinstance(c.get("portraits"), list):
+            # 客户端没带 portraits → 保留磁盘上已有的（立绘不丢）
+            if name in old_portraits:
+                c["portraits"] = old_portraits[name]
+        merged.append(c)
+    _save_characters_list(project_id, merged)
+    return {"ok": True, "count": len(merged)}
 
 
 # ── 角色立绘 (轮 4) ────────────────────────────────────────────────────────────

@@ -172,6 +172,56 @@ def test_list_returns_url_for_each_portrait(isolated_app):
     assert lst[0]["exists_on_disk"] is True
 
 
+def test_save_characters_preserves_portraits_when_payload_omits_them(isolated_app):
+    """v1.5.1 回归：角色页保存（不带 portraits）不得抹掉已生成的立绘元数据。
+
+    复现路径：PUT 角色 → 加立绘 → 再 PUT 角色（前端不带 portraits）→ 立绘应仍在。
+    修复前：第二次 PUT 盲覆盖 characters.json，portraits 被清空，GET 返回空。
+    """
+    pid = isolated_app["make_project"]()
+    client = isolated_app["client"]
+    pdir = isolated_app["tmp_path"] / pid
+    _make_chars(client, pid, ["Lia"])
+
+    client.post(f"/api/projects/{pid}/characters/Lia/portraits",
+                json={"data": _png_b64()})
+    # 模拟前端角色保存：只发基本字段（带 _portraits 运行期缓存、不带 portraits）
+    r = client.put(f"/api/projects/{pid}/characters", json={"characters": [
+        {"name": "Lia", "role": "主角", "appearance": "long hair",
+         "_portraits": [{"junk": 1}]},
+    ]})
+    assert r.status_code == 200, r.text
+
+    # 立绘元数据仍在
+    lst = client.get(f"/api/projects/{pid}/characters/Lia/portraits").json()["portraits"]
+    assert len(lst) == 1
+    assert lst[0]["filename"] == "portrait_1.png"
+    # 基本字段已更新
+    chars = client.get(f"/api/projects/{pid}/characters").json()["characters"]
+    lia = next(c for c in chars if c["name"] == "Lia")
+    assert lia["role"] == "主角"
+    assert len(lia["portraits"]) == 1
+    # 运行期缓存键不落盘
+    assert "_portraits" not in lia
+    # 文件仍在盘上
+    assert (pdir / "characters" / "Lia" / "portrait_1.png").exists()
+
+
+def test_save_characters_with_explicit_portraits_is_respected(isolated_app):
+    """若客户端显式带 portraits（如 AudioTab GET-合并-PUT），以客户端为准。"""
+    pid = isolated_app["make_project"]()
+    client = isolated_app["client"]
+    _make_chars(client, pid, ["Mo"])
+    client.post(f"/api/projects/{pid}/characters/Mo/portraits", json={"data": _png_b64()})
+    # 显式清空 portraits → 尊重客户端（用户确实删了）
+    r = client.put(f"/api/projects/{pid}/characters", json={"characters": [
+        {"name": "Mo", "portraits": []},
+    ]})
+    assert r.status_code == 200
+    lst = client.get(f"/api/projects/{pid}/characters/Mo/portraits").json()["portraits"]
+    assert lst == []
+
+
 def test_add_portrait_for_nonexistent_char_creates_stub(isolated_app):
     """允许给不存在的角色加立绘 → 自动创建角色 stub。"""
     pid = isolated_app["make_project"]()

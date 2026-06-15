@@ -236,3 +236,36 @@ def test_copy_element_missing_raises(isolated_global):
     repo = isolated_global["repo"]
     with pytest.raises(KeyError):
         repo.copy_element("global", 99999, "global")
+
+
+# ── v1.5.1: 项目库元素必须提交，重启（全新连接）后仍在 ────────────────────────
+
+
+def test_project_scope_element_survives_fresh_connection(isolated_global, tmp_path):
+    """回归：_commit_scope 此前对 'project:' 是 no-op → 未提交事务在进程重启时回滚 →
+    项目元素消失。修复后必须在丢弃缓存连接、从磁盘重开后仍可见。"""
+    import json
+    import config
+    repo = isolated_global["repo"]
+    db = isolated_global["db"]
+    # 让 projects_dir 落到 tmp（isolated_global 已把 APPDATA→tmp 并 reload config）
+    config.SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    config.SETTINGS_PATH.write_text(
+        json.dumps({"projects_dir": str(tmp_path / "projects")}), encoding="utf-8")
+
+    scope = "project:proj_test"
+    el = repo.create_element(scope, folder_id=None, name="p",
+                             file_bytes=b"PNGX", filename="p.png")
+    assert el["id"]
+    f = repo.create_folder(scope, "f1")
+    assert f["id"]
+
+    # 模拟后端重启：丢弃所有缓存连接，下次读取从磁盘开全新连接
+    db.close_all()
+    db._CONNS.clear()
+
+    items = repo.list_elements(scope, folder_id=None)
+    assert len(items) == 1, "项目元素必须在全新连接下仍可见（说明已提交）"
+    assert items[0]["name"] == "p"
+    folders = repo.list_folders(scope)
+    assert any(x["name"] == "f1" for x in folders), "项目文件夹也必须持久化"
