@@ -49,6 +49,19 @@
           class="btn btn-danger btn-sm"
           @click="stopDetectCharacters"
         >⏹ 中断检测</button>
+        <button
+          class="btn btn-secondary btn-sm"
+          :disabled="!scenes.length || !manuscriptConfig.characters.length || taggingAll"
+          @click="tagAllSpeakers"
+          title="为所有分镜的每条台词指派说话人（AI 消解人称代词）→ 音色按说话人确定性映射"
+        >
+          {{ taggingAll ? `🎭 标注中 ${tagProgress}/${scenes.length}…` : '🎭 标注说话人' }}
+        </button>
+        <button
+          v-if="taggingAll"
+          class="btn btn-danger btn-sm"
+          @click="stopTagging"
+        >⏹ 中断标注</button>
         <button class="btn btn-secondary btn-sm" @click="addScene">+ 添加分镜</button>
         <button
           class="btn btn-ghost btn-sm"
@@ -198,6 +211,13 @@
             <div class="dialogues-section">
               <div class="dialogues-header">
                 <label class="dialogues-title">🗣 角色台词</label>
+                <button
+                  class="btn btn-secondary btn-sm"
+                  v-if="rosterNames.length && scene.dialogues.length"
+                  :disabled="taggingSceneId === (scene.id || scene.index)"
+                  @click="tagSpeakers(scene)"
+                  title="用 AI 结合上下文为每条台词指派说话人（消解人称代词）→ 再用下拉一键校正，音色 100% 可控"
+                >{{ taggingSceneId === (scene.id || scene.index) ? '标注中…' : '🎭 标注说话人' }}</button>
                 <button class="btn btn-secondary btn-sm" @click="addDialogue(scene)">+ 添加台词</button>
               </div>
               <div class="dialogue-list">
@@ -207,12 +227,18 @@
                   class="dialogue-item"
                 >
                   <div class="dialogue-controls">
-                    <input
+                    <!-- v1.5.1: 说话人改成角色表绑定下拉（旁白 + 角色 + 表外保留），杜绝打错字/AI 错配 -->
+                    <select
                       v-model="dlg.character"
-                      class="input dlg-character"
-                      placeholder="角色名"
-                      @input="markDirty"
-                    />
+                      class="input dlg-character select"
+                      :title="'说话人 → 决定音色（在角色管理给角色配音色）'"
+                      @change="markDirty"
+                    >
+                      <option value="">旁白/默认</option>
+                      <option v-for="c in rosterNames" :key="c" :value="c">{{ c }}</option>
+                      <option v-if="dlg.character && !rosterNames.includes(dlg.character)"
+                              :value="dlg.character">{{ dlg.character }}（表外）</option>
+                    </select>
                     <select v-model="dlg.emotion" class="input dlg-emotion select" @change="markDirty">
                       <option v-for="e in EMOTIONS" :key="e" :value="e">{{ e }}</option>
                     </select>
@@ -326,6 +352,13 @@ let promptAbortController = null
 const detectingChars     = ref(false)
 const detectProgress     = ref(0)
 let detectAbortController = null
+
+// v1.5.1: 说话人标注（音色 100% 可控）
+const rosterNames    = computed(() => (manuscriptConfig.value.characters || []).map(c => c.name))
+const taggingSceneId = ref(null)   // 单镜标注中
+const taggingAll     = ref(false)  // 批量标注中
+const tagProgress    = ref(0)
+let tagStopFlag      = false
 
 // ── Manual split state ──────────────────────────────────────────────────────────────────
 const showManualSplit     = ref(false)
@@ -444,9 +477,50 @@ function _splitSentences(text) {
   return result
 }
 
+// v1.5.1: 说话人标注的确定性 JS 解析（与后端 services/dialogue_tags.py 同规则）
+const _NARR_ALIASES = new Set(['旁白', '叙述', '旁白/默认', 'narration', 'narrator'])
+const _TAG_RE = /^[@＠]?\s*([^:：\n]{1,20}?)\s*[:：]\s*(.+?)\s*$/
+
+function parseSpeakerTags(text, knownNames = []) {
+  const known = new Set(knownNames)
+  const out = []
+  for (const raw of (text || '').split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line) continue
+    const m = line.match(_TAG_RE)
+    if (m) {
+      const name = m[1].trim(), body = m[2].trim()
+      if (_NARR_ALIASES.has(name) || _NARR_ALIASES.has(name.toLowerCase())) {
+        out.push({ character: '', text: body }); continue
+      }
+      if ((!known.size || known.has(name)) && body) {
+        out.push({ character: name, text: body }); continue
+      }
+    }
+    out.push({ character: '', text: line })
+  }
+  return out
+}
+function hasSpeakerTags(text, knownNames = []) {
+  const known = new Set(knownNames)
+  for (const raw of (text || '').split(/\r?\n/)) {
+    const m = raw.trim().match(_TAG_RE)
+    if (!m) continue
+    const name = m[1].trim()
+    if (_NARR_ALIASES.has(name) || _NARR_ALIASES.has(name.toLowerCase())) return true
+    if (!known.size || known.has(name)) return true
+  }
+  return false
+}
+
 function _extractDialogues(text) {
   const t0 = (text || '').trim()
   if (!t0) return []
+  // v1.5.1: 显式说话人标注（角色：台词）→ 确定性解析，保留说话人（所有模式优先）
+  if (hasSpeakerTags(t0, rosterNames.value)) {
+    return parseSpeakerTags(t0, rosterNames.value)
+      .map(d => ({ character: d.character, text: d.text, emotion: '平静' }))
+  }
   const mode = manuscriptConfig.value.dialogue_mode
   // reading / narration：整段都作为单条（reading=直读全文，narration=旁白叙述）
   if (mode === 'reading' || mode === 'narration') {
@@ -716,6 +790,57 @@ function stopDetectCharacters() {
   detectAbortController?.abort()
   detectAbortController = null
   detectingChars.value = false
+}
+
+// ── v1.5.1: 给每条台词指派说话人（AI 助手 + 角色名单校验，前端再用下拉确认）─────
+function stopTagging() { tagStopFlag = true }
+
+async function tagSpeakers(scene) {
+  const sceneKey = scene.id || scene.index
+  const lines = (scene.dialogues || []).map(d => d.text || '')
+  if (!lines.some(t => t.trim()) || !rosterNames.value.length) return
+  taggingSceneId.value = sceneKey
+  try {
+    const res = await fetch(API + '/text-engine/tag-dialogue-speakers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lines,
+        characters: rosterNames.value,
+        // 上下文：分镜描述 + 完整文案，帮 LLM 消解人称代词
+        context: `${scene.description || ''}\n\n${manuscript.value || ''}`.trim(),
+      }),
+    })
+    if (!res.ok) throw new Error(await res.text())
+    const speakers = (await res.json()).speakers || []
+    // 只把非空说话人写回（空=旁白/未识别，保留原值，避免把已对的清掉）
+    scene.dialogues.forEach((d, i) => {
+      if (speakers[i]) d.character = speakers[i]
+    })
+    markDirty()
+  } catch (e) {
+    console.error('tagSpeakers failed', e)
+  } finally {
+    if (taggingSceneId.value === sceneKey) taggingSceneId.value = null
+  }
+}
+
+async function tagAllSpeakers() {
+  if (taggingAll.value || !rosterNames.value.length) return
+  taggingAll.value = true
+  tagStopFlag = false
+  tagProgress.value = 0
+  try {
+    for (const scene of scenes.value) {
+      if (tagStopFlag) break
+      if ((scene.dialogues || []).some(d => (d.text || '').trim())) {
+        await tagSpeakers(scene)
+      }
+      tagProgress.value++
+    }
+  } finally {
+    taggingAll.value = false
+    tagStopFlag = false
+  }
 }
 
 async function autoDetectSceneCharacters() {

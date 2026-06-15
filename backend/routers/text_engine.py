@@ -35,6 +35,8 @@ from services.prompts import (
     IDEOGRAM_OVERVIEW_USER_TEMPLATE,
     IDEOGRAM_ELEMENTS_SYSTEM,
     IDEOGRAM_ELEMENTS_USER_TEMPLATE,
+    TAG_SPEAKERS_SYSTEM,
+    TAG_SPEAKERS_USER_TEMPLATE,
 )
 
 router = APIRouter()
@@ -828,6 +830,68 @@ async def suggest_scene_characters(req: SuggestSceneCharactersRequest):
         except json.JSONDecodeError:
             pass
     return {"characters": []}
+
+
+# ── v1.5.1: 给已有台词逐条指派说话人（音色 100% 可控）──────────────────────────
+
+class TagSpeakersRequest(BaseModel):
+    lines:      list[str] = []   # 台词文本（保持顺序与原文不变）
+    characters: list[str] = []   # 角色名单（roster）
+    context:    str = ""         # 分镜描述 / 完整文案，用于消解人称代词
+
+
+@router.post("/tag-dialogue-speakers")
+async def tag_dialogue_speakers(req: TagSpeakersRequest):
+    """对一组**已有台词**逐条指派说话人（不改写台词，只返回 speakers 数组）。
+
+    返回 {"speakers": [...]}，长度与传入 lines（非空者）等长；每个元素是角色名单里的
+    名字，或空串 ""（旁白/未识别）。服务端对 LLM 输出做名单校验，未知名一律归 ""，
+    确保前端拿到的说话人 100% 落在合法集合内。
+    """
+    lines = [str(l) for l in (req.lines or []) if str(l or "").strip()]
+    roster = [c for c in (req.characters or []) if c]
+    if not lines:
+        return {"speakers": []}
+    if not roster:
+        # 无角色名单 → 全部旁白（无可指派对象）
+        return {"speakers": ["" for _ in lines]}
+
+    numbered = "\n".join(f"{i + 1}. {ln}" for i, ln in enumerate(lines))
+    ctx = (req.context or "").strip()
+    if len(ctx) > 2000:
+        ctx = ctx[:2000] + "...（截断）"
+    user_msg = TAG_SPEAKERS_USER_TEMPLATE.format(
+        roster="、".join(roster),
+        context=ctx or "（无额外上下文）",
+        lines=numbered,
+    )
+
+    cfg = load_settings().text_engine
+    full = ""
+    async for chunk in stream_chat(cfg, TAG_SPEAKERS_SYSTEM, user_msg):
+        full += chunk
+
+    cleaned = re.sub(r"```(?:json)?\n?", "", full).strip()
+    arr = None
+    try:
+        arr = json.loads(cleaned)
+    except json.JSONDecodeError:
+        m = re.search(r"\[[\s\S]*\]", cleaned)
+        if m:
+            try:
+                arr = json.loads(m.group())
+            except json.JSONDecodeError:
+                arr = None
+    if not isinstance(arr, list):
+        # 解析失败：整体回退为旁白，前端用下拉手动纠正（绝不乱猜）
+        return {"speakers": ["" for _ in lines]}
+
+    valid = set(roster)
+    speakers: list[str] = []
+    for i in range(len(lines)):
+        name = str(arr[i]).strip() if i < len(arr) else ""
+        speakers.append(name if name in valid else "")
+    return {"speakers": speakers}
 
 
 # ── Video prompt generation (streaming SSE) ────────────────────────────────────

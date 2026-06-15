@@ -208,7 +208,16 @@
 
           <!-- Clip header row -->
           <div class="dlg-header">
-            <span class="dlg-character">{{ clip.character }}</span>
+            <!-- v1.5.1: 说话人可改（角色表绑定下拉）→ 即时决定音色，落盘随项目保存 -->
+            <select class="input dlg-character select-compact"
+                    v-model="clip.character" :disabled="running"
+                    title="说话人 → 决定音色"
+                    @change="emit('dirty')">
+              <option value="">旁白/默认</option>
+              <option v-for="n in audioRosterNames" :key="n" :value="n">{{ n }}</option>
+              <option v-if="clip.character && !audioRosterNames.includes(clip.character)"
+                      :value="clip.character">{{ clip.character }}（表外）</option>
+            </select>
             <span class="dlg-emotion badge badge-purple" v-if="clip.emotion">{{ clip.emotion }}</span>
             <div class="silence-group">
               <label class="dlg-label">前静音</label>
@@ -406,6 +415,8 @@ const charsSaving       = ref(false)
 const charTesting       = ref('')
 // 默认 voice（来自 settings；msedge 引擎下角色没填时退回到它）
 const defaultMsVoice = computed(() => msVoice.value || 'zh-CN-XiaoxiaoNeural')
+// v1.5.1: 台词说话人下拉用的角色名单
+const audioRosterNames = computed(() => projectCharacters.value.map(c => c.name))
 
 function msedgeVoiceForClip(clip) {
   return charsVoiceMap.value[clip?.character || ''] || defaultMsVoice.value
@@ -552,9 +563,8 @@ async function loadData() {
     // 加载 characters.json 拿到 name → voice 映射 + 完整角色列表（reading 双音色面板用）：
     //   - msedge 引擎：非朗读模式按角色配音色
     //   - 朗读模式：双音色开关下，按角色识别说话人 → 用角色 voice
-    if (engineType.value === 'msedge' || isReadingMode.value) {
-      await reloadCharacters()
-    }
+    // v1.5.1: 始终加载角色名单 —— 每条台词的"说话人"下拉所有引擎都用得到
+    await reloadCharacters()
 
     // Load ref file lists
     try {
@@ -617,7 +627,8 @@ async function loadData() {
           return {
             id:             clipId,
             sceneId:        scene.id || scene.index,
-            character:      ac.character || '',
+            // v1.5.1: 优先用音频阶段保存过的说话人覆盖（用户在此页改过的）
+            character:      saved.character ?? (ac.character || ''),
             emotion:        ac.emotion   || '',
             text:           ac.text      || '',
             pre_silence_ms:  ac.pre_silence_ms  ?? 500,
@@ -683,6 +694,7 @@ async function saveAudio() {
   } else {
     for (const clip of allClips.value) {
       payload[clip.id] = {
+        character:    clip.character,   // v1.5.1: 说话人改动随项目落盘
         voiceRef:     clip._voiceRef,
         emoRef:       clip._emoRef,
         emoMethod:    clip._emoMethod,
@@ -851,7 +863,45 @@ function stopBatch() {
 //   - dialogue ：引号内的对话/心理活动；character 字段尽力识别"说话人"
 //     识别策略：取该引号之前最近的 ~40 个字符窗口，扫描已知角色名做 substring 匹配，
 //     命中最后一个 → 该说话者；没命中 → character=''（生成时按"对话音色"fallback）
+// v1.5.1: 确定性说话人标注解析（与 services/dialogue_tags.py 同规则）
+const _NARR_ALIASES = new Set(['旁白', '叙述', '旁白/默认', 'narration', 'narrator'])
+const _TAG_RE = /^[@＠]?\s*([^:：\n]{1,20}?)\s*[:：]\s*(.+?)\s*$/
+function _hasSpeakerTags(text, knownNames = []) {
+  const known = new Set(knownNames)
+  for (const raw of (text || '').split(/\r?\n/)) {
+    const mm = raw.trim().match(_TAG_RE)
+    if (!mm) continue
+    const name = mm[1].trim()
+    if (_NARR_ALIASES.has(name) || _NARR_ALIASES.has(name.toLowerCase())) return true
+    if (!known.size || known.has(name)) return true
+  }
+  return false
+}
+function _segmentByTags(text, knownNames = []) {
+  const known = new Set(knownNames)
+  const segs = []
+  for (const raw of (text || '').split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line) continue
+    const mm = line.match(_TAG_RE)
+    if (mm) {
+      const name = mm[1].trim(), body = mm[2].trim()
+      if (_NARR_ALIASES.has(name) || _NARR_ALIASES.has(name.toLowerCase())) {
+        if (body) segs.push({ kind: 'narration', text: body }); continue
+      }
+      if ((!known.size || known.has(name)) && body) {
+        segs.push({ kind: 'dialogue', text: body, character: name }); continue
+      }
+    }
+    segs.push({ kind: 'narration', text: line })
+  }
+  return segs
+}
+
 function _segmentForDualVoice(text, knownNames = []) {
+  // v1.5.1: 文本含显式 `角色：台词` 标注 → 确定性按标注切分（说话人 100% 准）
+  if (_hasSpeakerTags(text, knownNames)) return _segmentByTags(text, knownNames)
+  // 否则退回引号启发式（尽力识别说话人，识别不到走 fallback 音色）
   const segs = []
   const re = /[「“‘"'](.+?)[」”’"']/gs
   let cursor = 0
