@@ -194,7 +194,7 @@
               </div>
             </div>
           </div>
-          <div class="image-slots">
+          <div class="image-slots" :style="slotVars">
             <div
               v-for="slot in getFrameSlotCount(activeScene.id, 'start')" :key="slot-1"
               class="image-slot"
@@ -277,7 +277,7 @@
               </div>
             </div>
           </div>
-          <div class="image-slots">
+          <div class="image-slots" :style="slotVars">
             <div
               v-for="slot in getFrameSlotCount(activeScene.id, 'end')" :key="slot-1"
               class="image-slot"
@@ -493,6 +493,17 @@ const selectedWorkflow = ref('')
 const genCount        = ref(3)
 const imgWidth        = ref(1920)
 const imgHeight       = ref(1080)
+
+// v1.5.1: 槽位按图片宽高比显示（竖幅自动变高窄，看清整张内容）
+const slotVars = computed(() => {
+  const w = imgWidth.value || 1, h = imgHeight.value || 1
+  const r = w / h
+  if (r >= 1) {                       // 横 / 方：宽固定 192
+    return { '--slot-w': '192px', '--slot-h': Math.round(192 / r) + 'px' }
+  }
+  const sh = 240                       // 竖：高固定 240，给足高度
+  return { '--slot-w': Math.round(sh * r) + 'px', '--slot-h': sh + 'px' }
+})
 
 const characters      = ref([])   // from /characters endpoint
 const manuscript      = ref('')   // for pronoun-aware LLM suggestions
@@ -1650,9 +1661,10 @@ async function addOneMore(scene, frameType) {
   border-radius: 0; border: none; border-bottom: 1px solid var(--border);
   background: var(--bg-panel); padding: 8px 12px; line-height: 1.5;
 }
-.image-slots { display: flex; gap: 12px; flex-wrap: wrap; padding: 12px; }
+.image-slots { display: flex; gap: 12px; flex-wrap: wrap; padding: 12px; align-items: flex-start; }
 .image-slot {
-  width: 192px; height: 128px; border-radius: 6px;
+  /* v1.5.1: 槽位尺寸跟随图片宽高比（竖幅→高窄，横幅→宽矮），整张可见无需逐个点开 */
+  width: var(--slot-w, 192px); height: var(--slot-h, 128px); border-radius: 6px;
   border: 2px solid var(--border); overflow: hidden; cursor: pointer;
   position: relative; background: var(--bg-input);
   transition: border-color .15s, box-shadow .15s;
@@ -1662,7 +1674,7 @@ async function addOneMore(scene, frameType) {
 .image-slot.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(99,179,237,.35); }
 .image-slot.loading  { cursor: default; }
 .image-slot.errored  { border-color: var(--danger, #fc8181); cursor: default; }
-.image-slot img      { width: 100%; height: 100%; object-fit: cover; }
+.image-slot img      { width: 100%; height: 100%; object-fit: contain; }
 .slot-loading { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .slot-progress-text { font-size: 11px; color: var(--text-muted); }
 .slot-error { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; }
