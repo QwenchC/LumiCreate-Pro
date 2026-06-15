@@ -1710,10 +1710,11 @@ async function addOneMore(scene, frameType) {
 .ratio-info-banner a { color: #63b3ed; text-decoration: none; }
 .ratio-info-banner a:hover { text-decoration: underline; }
 .slot-import {
+  /* v1.5.1: 尺寸继承 .image-slot 的 --slot-w/--slot-h（跟随图片宽高比，竖幅同步变高窄） */
   background: transparent;
   border: 2px dashed var(--border);
   color: var(--text-muted); font-size: 18px; cursor: pointer;
-  width: 192px; height: 128px; flex-shrink: 0;
+  flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   transition: border-color .15s, color .15s;
 }
