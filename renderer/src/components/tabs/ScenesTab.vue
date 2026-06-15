@@ -55,7 +55,7 @@
           @click="tagAllSpeakers"
           title="为所有分镜的每条台词指派说话人（AI 消解人称代词）→ 音色按说话人确定性映射"
         >
-          {{ taggingAll ? `🎭 标注中 ${tagProgress}/${scenes.length}…` : '🎭 标注说话人' }}
+          {{ taggingAll ? `🎭 标注中 ${tagProgress}/${tagTotal}…` : '🎭 标注说话人' }}
         </button>
         <button
           v-if="taggingAll"
@@ -358,6 +358,7 @@ const rosterNames    = computed(() => (manuscriptConfig.value.characters || []).
 const taggingSceneId = ref(null)   // 单镜标注中
 const taggingAll     = ref(false)  // 批量标注中
 const tagProgress    = ref(0)
+const tagTotal       = ref(0)
 let tagStopFlag      = false
 
 // ── Manual split state ──────────────────────────────────────────────────────────────────
@@ -516,15 +517,15 @@ function hasSpeakerTags(text, knownNames = []) {
 function _extractDialogues(text) {
   const t0 = (text || '').trim()
   if (!t0) return []
-  // v1.5.1: 显式说话人标注（角色：台词）→ 确定性解析，保留说话人（所有模式优先）
+  const mode = manuscriptConfig.value.dialogue_mode
+  // reading / narration：整段作为单条（朗读区分音色的说话人在音频页逐段指派，故此处不拆）
+  if (mode === 'reading' || mode === 'narration') {
+    return [{ character: '', text: t0, emotion: '平静' }]
+  }
+  // v1.5.1: dialogue / mixed 下，显式说话人标注（角色：台词）→ 确定性解析，保留说话人
   if (hasSpeakerTags(t0, rosterNames.value)) {
     return parseSpeakerTags(t0, rosterNames.value)
       .map(d => ({ character: d.character, text: d.text, emotion: '平静' }))
-  }
-  const mode = manuscriptConfig.value.dialogue_mode
-  // reading / narration：整段都作为单条（reading=直读全文，narration=旁白叙述）
-  if (mode === 'reading' || mode === 'narration') {
-    return [{ character: '', text: t0, emotion: '平静' }]
   }
   // dialogue：仅引号里的对白（混合模式同样使用此抽取；旁白部分留给 reading/narration 处理）
   // 兼顾中英文引号
@@ -795,11 +796,11 @@ function stopDetectCharacters() {
 // ── v1.5.1: 给每条台词指派说话人（AI 助手 + 角色名单校验，前端再用下拉确认）─────
 function stopTagging() { tagStopFlag = true }
 
-async function tagSpeakers(scene) {
+async function tagSpeakers(scene, { silent = false } = {}) {
   const sceneKey = scene.id || scene.index
   const lines = (scene.dialogues || []).map(d => d.text || '')
   if (!lines.some(t => t.trim()) || !rosterNames.value.length) return
-  taggingSceneId.value = sceneKey
+  if (!silent) taggingSceneId.value = sceneKey
   try {
     const res = await fetch(API + '/text-engine/tag-dialogue-speakers', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -820,23 +821,33 @@ async function tagSpeakers(scene) {
   } catch (e) {
     console.error('tagSpeakers failed', e)
   } finally {
-    if (taggingSceneId.value === sceneKey) taggingSceneId.value = null
+    if (!silent && taggingSceneId.value === sceneKey) taggingSceneId.value = null
   }
 }
 
+// 批量标注：并发跑（受 TAG_CONCURRENCY 限流），逐镜独立请求互不阻塞
+const TAG_CONCURRENCY = 4
 async function tagAllSpeakers() {
   if (taggingAll.value || !rosterNames.value.length) return
+  const targets = scenes.value.filter(
+    s => (s.dialogues || []).some(d => (d.text || '').trim())
+  )
   taggingAll.value = true
   tagStopFlag = false
   tagProgress.value = 0
-  try {
-    for (const scene of scenes.value) {
-      if (tagStopFlag) break
-      if ((scene.dialogues || []).some(d => (d.text || '').trim())) {
-        await tagSpeakers(scene)
-      }
+  tagTotal.value = targets.length
+  const queue = targets.slice()
+  const worker = async () => {
+    while (queue.length && !tagStopFlag) {
+      const scene = queue.shift()
+      await tagSpeakers(scene, { silent: true })
       tagProgress.value++
     }
+  }
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(TAG_CONCURRENCY, queue.length) }, worker)
+    )
   } finally {
     taggingAll.value = false
     tagStopFlag = false

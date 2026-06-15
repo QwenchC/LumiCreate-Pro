@@ -158,6 +158,43 @@
           </button>
         </div>
         <div class="reading-text">{{ scene.text.slice(0, 150) }}{{ scene.text.length > 150 ? '…' : '' }}</div>
+
+        <!-- v1.5.2: 区分音色 → 逐段指派说话人（解决“分镜整段里各角色台词”的归属） -->
+        <div v-if="dualVoiceEnabled" class="reading-segments">
+          <div class="seg-head">
+            <span class="seg-title">🎭 说话人分段</span>
+            <span class="text-muted seg-count">{{ (scene.segments || []).length }} 段</span>
+            <button class="btn btn-ghost btn-xs" :disabled="running"
+                    @click="rebuildReadingSegments(scene)"
+                    title="把本段文本拆成可逐段指派说话人的小段（角色：台词 标注 / 引号 / 按句）">
+              {{ (scene.segments || []).length ? '↻ 重建分段' : '构建分段' }}
+            </button>
+            <button class="btn btn-secondary btn-xs"
+                    v-if="(scene.segments || []).length && audioRosterNames.length"
+                    :disabled="running || scene._tagging"
+                    @click="tagReadingSegments(scene)"
+                    title="AI 结合上下文为每段指派说话人（消解人称代词）→ 再用下拉确认">
+              {{ scene._tagging ? '标注中…' : '🎭 AI 标注' }}
+            </button>
+          </div>
+          <div v-if="(scene.segments || []).length" class="seg-list">
+            <div v-for="seg in scene.segments" :key="seg.id" class="seg-row"
+                 :class="{ 'is-dlg': seg.character }">
+              <select class="input select-compact seg-speaker" v-model="seg.character"
+                      :disabled="running" @change="onSegChanged(scene)">
+                <option value="">旁白</option>
+                <option v-for="n in audioRosterNames" :key="n" :value="n">{{ n }}</option>
+                <option v-if="seg.character && !audioRosterNames.includes(seg.character)"
+                        :value="seg.character">{{ seg.character }}（表外）</option>
+              </select>
+              <span class="seg-text" :title="seg.text">{{ seg.text }}</span>
+            </div>
+          </div>
+          <div v-else class="text-muted seg-hint">
+            点「构建分段」把整段文本拆成小段，逐段指定说话人 → 区分音色按此 100% 分配
+          </div>
+        </div>
+
         <div v-if="scene.generating" class="reading-generating text-muted">
           <span class="spinner" style="width:16px;height:16px;border-width:2px" /> 语音生成中…
         </div>
@@ -595,6 +632,8 @@ async function loadData() {
             duration_ms: saved.duration_ms || 0,
             _format:     saved.format      || 'mp3',  // 区分单/双音色（决定 <audio> mime）
             _rev:        0,   // bump on each (re)generate to force <audio> re-render
+            segments:    saved.segments    || [],     // v1.5.2: 说话人分段
+            _tagging:    false,
           }
         })
     } else {
@@ -683,11 +722,12 @@ async function saveAudio() {
   const payload = {}
   if (isReadingMode.value) {
     for (const scene of readingScenes.value) {
-      if (scene.data) {
+      if (scene.data || scene.segments?.length) {
         payload[`__ms_reading__${scene.sceneId}`] = {
           data:        scene.data,
           duration_ms: scene.duration_ms,
           format:      scene._format || 'mp3',   // 单音色 mp3 / 双音色 wav
+          segments:    scene.segments || [],     // v1.5.2: 说话人分段
         }
       }
     }
@@ -898,6 +938,65 @@ function _segmentByTags(text, knownNames = []) {
   return segs
 }
 
+// v1.5.2: 把整段朗读文本切成可逐段指派说话人的"分段"
+//   - 有显式 `角色：台词` 标注 → 按标注（确定性）
+//   - 否则：引号内=对话段（先猜说话人，待用户/AI 纠正）；引号外叙述按句切，便于
+//     给"未加引号的角色台词"逐句指派说话人 → 这正是纯朗读区分音色的核心诉求
+function _sentencesOf(t) {
+  return ((t || '').match(/[^。！？!?\n]+[。！？!?]?/g) || [t || ''])
+    .map(s => s.trim()).filter(Boolean)
+}
+function buildReadingSegments(text, knownNames = []) {
+  if (_hasSpeakerTags(text, knownNames)) {
+    return _segmentByTags(text, knownNames)
+      .map(s => ({ character: s.kind === 'dialogue' ? (s.character || '') : '', text: s.text }))
+  }
+  const out = []
+  for (const seg of _segmentForDualVoice(text, knownNames)) {
+    if (seg.kind === 'dialogue') {
+      out.push({ character: seg.character || '', text: seg.text })
+    } else {
+      for (const sent of _sentencesOf(seg.text)) out.push({ character: '', text: sent })
+    }
+  }
+  return out
+}
+
+function onSegChanged(scene) { emit('dirty'); _saveOneReadingScene(scene) }
+
+// 在某个朗读分镜上（重新）构建分段，落到 scene.segments
+function rebuildReadingSegments(scene) {
+  scene.segments = buildReadingSegments(scene.text, audioRosterNames.value)
+    .map((s, i) => ({ id: i, character: s.character || '', text: s.text }))
+  emit('dirty')
+  _saveOneReadingScene(scene)
+}
+
+// AI 给该分镜的每个分段指派说话人（消解人称代词），再用下拉确认
+async function tagReadingSegments(scene) {
+  if (!scene.segments?.length || !audioRosterNames.value.length) return
+  scene._tagging = true
+  try {
+    const res = await fetch('http://localhost:18520/api/text-engine/tag-dialogue-speakers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lines: scene.segments.map(s => s.text),
+        characters: audioRosterNames.value,
+        context: scene.description || '',
+      }),
+    })
+    if (!res.ok) throw new Error(await res.text())
+    const speakers = (await res.json()).speakers || []
+    scene.segments.forEach((s, i) => { if (speakers[i]) s.character = speakers[i] })
+    emit('dirty')
+    await _saveOneReadingScene(scene)
+  } catch (e) {
+    console.error('tagReadingSegments failed', e)
+  } finally {
+    scene._tagging = false
+  }
+}
+
 function _segmentForDualVoice(text, knownNames = []) {
   // v1.5.1: 文本含显式 `角色：台词` 标注 → 确定性按标注切分（说话人 100% 准）
   if (_hasSpeakerTags(text, knownNames)) return _segmentByTags(text, knownNames)
@@ -948,7 +1047,8 @@ async function _msTtsClipWav(text, voice) {
 
 // A3: 朗读模式单条增量保存 —— 只写当前 scene，不全量重传 audio.json
 async function _saveOneReadingScene(scene) {
-  if (!props.projectId || !scene?.data) return
+  // v1.5.2: 即使尚未生成音频，只要有分段（说话人分配）也要落盘
+  if (!props.projectId || (!scene?.data && !scene?.segments?.length)) return
   try {
     await fetch(`http://localhost:18520/api/projects/${props.projectId}/audio/slot`, {
       method: 'PUT',
@@ -956,9 +1056,10 @@ async function _saveOneReadingScene(scene) {
       body: JSON.stringify({
         key:   `__ms_reading__${scene.sceneId}`,
         entry: {
-          data:        scene.data,
-          duration_ms: scene.duration_ms,
+          data:        scene.data || null,
+          duration_ms: scene.duration_ms || 0,
           format:      scene._format || 'mp3',
+          segments:    scene.segments || [],   // 说话人分段随项目持久化
         },
       }),
     })
@@ -976,7 +1077,13 @@ async function generateMsTts(scene) {
     // 对话段优先按"说话角色的 voice"取音色，没填则退回"对话音色"，再退回叙述音色
     if (dualVoiceEnabled.value) {
       const knownNames = Object.keys(charsVoiceMap.value || {})
-      const segs = _segmentForDualVoice(scene.text, knownNames)
+      // v1.5.2: 优先用用户/AI 锁定的分段（说话人 100% 可控）；没有才自动切分
+      const segs = (scene.segments?.length)
+        ? scene.segments.map(s => ({
+            kind: s.character ? 'dialogue' : 'narration',
+            text: s.text, character: s.character,
+          }))
+        : _segmentForDualVoice(scene.text, knownNames)
       const clips = []
       for (const seg of segs) {
         let v
@@ -1138,6 +1245,20 @@ onUnmounted(() => {
 }
 .reading-player    { height:36px; width:100%; margin-top:6px; }
 .reading-generating { display:flex; align-items:center; gap:8px; padding:6px 2px; font-size:12px; }
+
+/* v1.5.2: 朗读区分音色 — 说话人分段编辑器 */
+.reading-segments { margin:6px 0 2px; padding:8px; border:1px solid var(--border-color);
+  border-radius:6px; background:var(--bg-secondary, rgba(0,0,0,.04)); }
+.seg-head { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.seg-title { font-size:12px; font-weight:600; }
+.seg-count { font-size:11px; }
+.seg-list { display:flex; flex-direction:column; gap:4px; max-height:280px; overflow:auto; }
+.seg-row { display:flex; align-items:center; gap:8px; padding:2px 0; }
+.seg-row.is-dlg .seg-text { color:var(--text-primary); }
+.seg-speaker { width:120px; flex:0 0 auto; }
+.seg-text { font-size:12px; color:var(--text-secondary); line-height:1.5;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.seg-hint { font-size:11px; padding:2px; }
 
 .audio-tab { display:flex; flex-direction:column; height:100%; overflow:hidden; }
 .last-errors-banner {
