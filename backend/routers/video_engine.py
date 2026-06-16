@@ -684,22 +684,6 @@ async def merge_project_video(req: MergeVideoRequest):
     transition = (req.transition or "cut").lower()
     use_xfade = transition != "cut" and len(ordered_files) >= 2
 
-    # v1.5.1: 把输出按【视频流】总时长封顶，消除"音频比画面长 → 末尾画面定格"。
-    # 漫剧每个分镜的 TTS 音频常比生成的画面长几十~一百多毫秒；两条重编码路径
-    # （快路径 concat 再编码 / 慢路径 filter_complex）原本都没有 -t / -shortest，
-    # 输出 = 最长流(音频) → 末帧被定格保持到音频放完。这里用视频流时长给输出封顶。
-    from services.exec_pool import run_blocking as _run_blocking
-    td_secs = max(0.05, req.transition_duration_ms / 1000.0)
-    v_secs: list[float] = []
-    for _p in ordered_files:
-        v_secs.append(await _run_blocking(_ffprobe_video_stream_seconds, ffmpeg, _p))
-    video_total = sum(v_secs)
-    if use_xfade:
-        video_total -= td_secs * max(0, len(ordered_files) - 1)
-    # 仅当全部探测成功且时长合理才封顶，避免探测失败把视频截没（安全回退到原行为）
-    cap_output = video_total > 0.5 and all(s > 0 for s in v_secs)
-    dur_flags = ["-t", f"{video_total:.3f}"] if cap_output else []
-
     video_dir = proj_dir / "video"
     video_dir.mkdir(parents=True, exist_ok=True)
     out_path = video_dir / "final_video.mp4"
@@ -739,7 +723,6 @@ async def merge_project_video(req: MergeVideoRequest):
                 # 200 镜次累积到 60s drift。
                 "-af", "aresample=async=1000:first_pts=0",
                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-                *dur_flags,
                 "-movflags", "+faststart",
                 str(out_path),
             ]
@@ -762,33 +745,54 @@ async def merge_project_video(req: MergeVideoRequest):
         # -stream_loop -1 必须出现在它对应的 -i 之前
         inputs += ["-stream_loop", "-1", "-i", str(bgm_file)]
 
-    # 用 ffprobe 测每镜时长，xfade 偏移需要累计时长
+    # 用 ffprobe 测每镜【容器】时长（= max(画面,音频)，漫剧里通常 = 音频）+【视频流】时长
     from services.exec_pool import run_blocking
-    durations: list[float] = []
-    for p in ordered_files:
+    n = len(ordered_files)
+
+    async def _probe(p, *sel):
         try:
             r = await run_blocking(
                 subprocess.run,
-                [ffmpeg.replace("ffmpeg", "ffprobe"), "-v", "error",
-                 "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(p)],
+                [ffmpeg.replace("ffmpeg", "ffprobe"), "-v", "error", *sel,
+                 "-show_entries", "format=duration" if not sel else "stream=duration",
+                 "-of", "default=nw=1:nk=1", str(p)],
                 capture_output=True, text=True, timeout=10,
             )
-            durations.append(float(r.stdout.strip() or "0") or 4.0)
+            return float(r.stdout.strip() or "0")
         except Exception:
-            durations.append(4.0)
+            return 0.0
+
+    durations: list[float] = []
+    v_secs: list[float] = []
+    for p in ordered_files:
+        durations.append(await _probe(p) or 4.0)
+        v_secs.append(await _probe(p, "-select_streams", "v:0"))
+
+    # v1.5.1 关键修复：逐镜把【画面】补到与【音频】等长（克隆末帧）。
+    # concat filter 分别拼接 v / a 流，逐镜"音频比画面长 ~几十~一百毫秒"的差会在拼接时
+    # 累积成【渐进音画错位】——后段台词整体滞后、末尾被裁，正是"视频播完音频还没播完"。
+    # 把每镜画面补齐到其音频长度后，逐镜 v==a → 拼接无累积偏移，画面与声音始终对齐。
+    pads = [max(0.0, durations[i] - v_secs[i]) if v_secs[i] > 0 else 0.0 for i in range(n)]
 
     fc_parts: list[str] = []
-    last_v_label = "[0:v]"
+    for i in range(n):
+        if pads[i] > 0.01:
+            fc_parts.append(
+                f"[{i}:v]tpad=stop_mode=clone:stop_duration={pads[i]:.3f},settb=AVTB[vp{i}]")
+        else:
+            fc_parts.append(f"[{i}:v]settb=AVTB[vp{i}]")
+
+    last_v_label = "[vp0]"
     last_a_label = "[0:a]"
     td = max(0.05, req.transition_duration_ms / 1000.0)
     if use_xfade:
         cur_offset = 0.0
-        for i in range(len(ordered_files) - 1):
-            cur_offset += durations[i] - td
+        for i in range(n - 1):
+            cur_offset += durations[i] - td   # 画面已补到容器时长 → offset 用 durations 正确
             v_out = f"[v{i+1}]"
             a_out = f"[a{i+1}]"
             fc_parts.append(
-                f"{last_v_label}[{i+1}:v]xfade=transition={transition}:duration={td}:offset={cur_offset:.3f}{v_out}"
+                f"{last_v_label}[vp{i+1}]xfade=transition={transition}:duration={td}:offset={cur_offset:.3f}{v_out}"
             )
             # 音频也跟着 crossfade，保持衔接平顺
             fc_parts.append(
@@ -797,14 +801,16 @@ async def merge_project_video(req: MergeVideoRequest):
             last_v_label = v_out
             last_a_label = a_out
     else:
-        # 无过渡但仍走 filter_complex（因为有 BGM）；用 concat filter
-        n = len(ordered_files)
-        v_chain = "".join(f"[{i}:v]" for i in range(n))
+        # 无过渡但仍走 filter_complex（因为有 BGM）；用 concat filter（画面已逐镜补齐）
+        v_chain = "".join(f"[vp{i}]" for i in range(n))
         a_chain = "".join(f"[{i}:a]" for i in range(n))
         fc_parts.append(f"{v_chain}concat=n={n}:v=1:a=0[vcat]")
         fc_parts.append(f"{a_chain}concat=n={n}:v=0:a=1[acat]")
         last_v_label = "[vcat]"
         last_a_label = "[acat]"
+
+    # 对齐后的总时长（画面≈音频）：作为 BGM 裁剪长度 + 输出 -t 安全封顶
+    video_out_total = (sum(durations) - td * max(0, n - 1)) if use_xfade else sum(durations)
 
     final_audio_label = last_a_label
     if use_bgm:
@@ -812,10 +818,8 @@ async def merge_project_video(req: MergeVideoRequest):
         gain = req.bgm_volume_db
         fi  = max(0, req.bgm_fade_in_ms)  / 1000.0
         fo  = max(0, req.bgm_fade_out_ms) / 1000.0
-        total_dur = sum(durations) - td * max(0, len(ordered_files) - 1) if use_xfade else sum(durations)
-        # v1.5.1: 优先用视频流总时长（让 BGM 与画面同时结束、淡出落在真正的片尾）
-        if cap_output:
-            total_dur = video_total
+        # 画面已逐镜补齐到音频长度 → 用对齐后的总时长，BGM 与画面同时结束、淡出落在真正片尾
+        total_dur = video_out_total
         # BGM 调音量 + fade in/out 裁剪到视频总时长
         fc_parts.append(
             f"[{bgm_input_idx}:a]volume={gain}dB,"
@@ -855,7 +859,8 @@ async def merge_project_video(req: MergeVideoRequest):
         "-vsync", "cfr",
         "-video_track_timescale", "90000",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-        *dur_flags,
+        # 画面已逐镜补齐到音频；再按对齐后的总时长安全封顶（同时给无限循环的 BGM 收尾）
+        *(["-t", f"{video_out_total:.3f}"] if video_out_total > 0.5 else []),
         "-movflags", "+faststart",
         str(out_path),
     ]

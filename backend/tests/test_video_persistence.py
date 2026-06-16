@@ -63,7 +63,8 @@ def test_load_videos_skips_dangling_keeps_existing(isolated_app):
 # ── bug2: 合并输出按视频流时长封顶 ────────────────────────────────────────────
 
 
-def test_merge_with_bgm_caps_output_to_video_length(isolated_app, monkeypatch):
+def test_merge_with_bgm_pads_clips_and_caps_to_aligned_total(isolated_app, monkeypatch):
+    """含 BGM 慢路径：逐镜把画面补到音频长度(tpad)消除累积音画错位，输出按对齐总时长封顶。"""
     pid = isolated_app["make_project"]()
     client = isolated_app["client"]
     pdir = isolated_app["tmp_path"] / pid
@@ -83,7 +84,10 @@ def test_merge_with_bgm_caps_output_to_video_length(isolated_app, monkeypatch):
     captured = []
     def _fake_run(cmd, *a, **k):
         s = " ".join(str(x) for x in cmd)
-        if "-show_entries" in s:            # ffprobe（容器/视频流时长）
+        if "-show_entries" in s:            # ffprobe
+            # 视频流 4.5s，容器(音频)5.0s → 每镜 pad=0.5s 触发 tpad
+            if "-select_streams" in s:
+                return SimpleNamespace(returncode=0, stdout=b"4.5\n", stderr=b"")
             return SimpleNamespace(returncode=0, stdout=b"5.0\n", stderr=b"")
         captured.append(cmd)                 # ffmpeg 合并
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
@@ -102,9 +106,10 @@ def test_merge_with_bgm_caps_output_to_video_length(isolated_app, monkeypatch):
     assert r.status_code == 200, r.text
     assert captured, "ffmpeg 合并未被调用"
     cmd = captured[-1]
-    # 走了慢路径（filter_complex + amix），且输出被 -t 封顶
-    assert "-filter_complex" in cmd
-    assert "-t" in cmd, f"合并(含 BGM)输出必须按视频流时长封顶: {cmd}"
-    # 2 段各 5s = 10s（cut 无 xfade 重叠）
-    t_val = float(cmd[cmd.index("-t") + 1])
-    assert abs(t_val - 10.0) < 0.01, t_val
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    # 逐镜画面补齐（消除累积音画错位）
+    assert "tpad=stop_mode=clone" in fc, f"缺少逐镜画面补齐: {fc}"
+    assert "concat=n=2" in fc
+    # 输出按对齐后总时长封顶（2 段容器各 5s = 10s）
+    assert "-t" in cmd
+    assert abs(float(cmd[cmd.index("-t") + 1]) - 10.0) < 0.01
