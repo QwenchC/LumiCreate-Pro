@@ -856,13 +856,16 @@ async def load_videos(project_id: str):
     except Exception:
         pass
 
-    # 3) 只保留盘上确实存在的文件
+    # 3) 只保留盘上确实存在的文件；返回【流式 URL】而非 base64。
+    #    关键修复：原来把每个分镜视频 base64 塞进一个 JSON 响应，ComfyUI 高清成片
+    #    一个项目可达数百 MB → 单个响应 ~500MB+ → 前端请求失败/超时 → 整页无预览、
+    #    无法合成。改为返回每镜的流式地址，<video> 按需懒加载，响应只有几 KB。
     result = {}
     healed: dict = {}
     for scene_id, filename in discovered.items():
         vid_path = vid_dir / filename
         if vid_path.exists():
-            result[scene_id] = base64.b64encode(vid_path.read_bytes()).decode("ascii")
+            result[scene_id] = f"/api/projects/{project_id}/video-file/{scene_id}"
             healed[scene_id] = filename
 
     # 4) 若补出新键，回写 videos.json 让索引自我修正（下次直接命中、合成也能读到）
@@ -873,6 +876,44 @@ async def load_videos(project_id: str):
         except Exception:
             pass
     return result
+
+
+def _resolve_scene_video_filename(project_id: str, scene_id: str) -> Optional[str]:
+    """按 videos.json → scene_assets → {scene_id}.mp4 解析某分镜的视频文件名。"""
+    proj_dir = _project_dir(project_id)
+    vid_dir = proj_dir / "video"
+    meta_path = proj_dir / "videos.json"
+    if meta_path.exists():
+        try:
+            md = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+            fn = md.get(scene_id)
+            if fn and (vid_dir / fn).is_file():
+                return fn
+        except Exception:
+            pass
+    try:
+        from services.project_repo import list_video_assets
+        rel = list_video_assets(project_id).get(scene_id)
+        if rel and (vid_dir / Path(rel).name).is_file():
+            return Path(rel).name
+    except Exception:
+        pass
+    cand = f"{scene_id}.mp4"
+    if (vid_dir / cand).is_file():
+        return cand
+    return None
+
+
+@router.get("/{project_id}/video-file/{scene_id}")
+async def get_scene_video_file(project_id: str, scene_id: str):
+    """流式返回单个分镜视频（支持 Range，<video> 可拖拽）。替代 base64 整包传输。"""
+    filename = _resolve_scene_video_filename(project_id, scene_id)
+    if not filename:
+        raise HTTPException(status_code=404, detail="该分镜暂无视频")
+    full = _project_dir(project_id) / "video" / filename
+    if not full.is_file():
+        raise HTTPException(status_code=404, detail="视频文件不存在")
+    return _FileResponse(full, media_type="video/mp4", filename=full.name)
 
 
 @router.put("/{project_id}/videos")

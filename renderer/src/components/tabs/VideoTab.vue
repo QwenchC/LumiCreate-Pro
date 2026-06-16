@@ -560,8 +560,9 @@
         <!-- Video result -->
         <div v-if="sceneVideos[scene.id]" class="video-result">
           <video
-            :src="'data:video/mp4;base64,' + sceneVideos[scene.id]"
+            :src="sceneVideos[scene.id]"
             controls
+            preload="metadata"
             class="video-player"
           />
         </div>
@@ -783,7 +784,21 @@ const stopFlag        = ref(false)
 const genError        = ref('')
 const sceneState      = ref({})   // id → pending|active|done|error
 const sceneProgress   = ref({})   // id → {value, max}
-const sceneVideos     = ref({})   // id → base64 mp4
+const sceneVideos     = ref({})   // id → 可直接喂给 <video> 的 src（流式 URL / data URL）
+
+// v1.5.1: GET /videos 现在返回 {scene_id: url 路径}（不再 base64 整包）。
+// 拼成带主机名 + 防缓存戳的完整地址，让 <video> 按需流式加载。
+function _toVideoSrcMap(data) {
+  const host = API.replace(/\/api\/?$/, '')
+  const stamp = Date.now()
+  const out = {}
+  for (const [sid, v] of Object.entries(data || {})) {
+    const s = String(v)
+    // 新后端：'/api/projects/.../video-file/xxx' 路径 → 加主机名 + 防缓存
+    out[sid] = s.startsWith('/') ? `${host}${s}?t=${stamp}` : s
+  }
+  return out
+}
 const mergeResult     = ref(null) // { output_path, output_dir } once merged
 const merging         = ref(false)
 
@@ -958,7 +973,7 @@ async function runSlideshow() {
     // 刷新已有视频映射：让分镜卡片显示新出的 .mp4
     try {
       const { data } = await axios.get(`${API}/projects/${props.projectId}/videos`)
-      sceneVideos.value = data || sceneVideos.value
+      if (data) sceneVideos.value = { ...sceneVideos.value, ..._toVideoSrcMap(data) }
     } catch {}
   } catch (e) {
     alert('图片放映渲染失败: ' + (e.message || e))
@@ -1113,8 +1128,8 @@ async function loadData() {
     }
     workflows.value  = wfRes.data || []
 
-    // Saved videos
-    sceneVideos.value = vidRes.data || {}
+    // Saved videos（流式 URL 映射，不再整包 base64）
+    sceneVideos.value = _toVideoSrcMap(vidRes.data)
 
     // Saved video prompts
     scenePrompts.value = promptsRes.data || {}
@@ -1149,7 +1164,7 @@ watch(() => tabsStore.activeId, async (newId) => {
   if (running.value || !scenes.value.length) return
   try {
     const { data } = await axios.get(`${API}/projects/${props.projectId}/videos`)
-    sceneVideos.value = data || {}
+    sceneVideos.value = _toVideoSrcMap(data)
   } catch {}
 })
 
@@ -1539,8 +1554,11 @@ function handleEvent(evt) {
   } else if (event === 'scene_done') {
     sceneState.value = { ...sceneState.value, [scene_id]: 'done' }
     if (evt.video) {
-      sceneVideos.value = { ...sceneVideos.value, [scene_id]: evt.video }
-      // A3: 单镜增量保存（避免一次 PUT 30+ 个 mp4 base64）
+      // 即时预览：本镜刚生成的 base64 已在内存里，直接当 data URL 喂 <video>
+      // （一次只一镜，不会像 reload 那样一次性 base64 全部 → 不会撑爆响应/内存）
+      sceneVideos.value = { ...sceneVideos.value,
+        [scene_id]: 'data:video/mp4;base64,' + evt.video }
+      // A3: 单镜增量保存（落盘，reload 后改走流式 URL）
       _saveOneVideo(scene_id, evt.video)
     }
   } else if (event === 'scene_retrying') {

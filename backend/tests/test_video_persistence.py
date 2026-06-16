@@ -32,11 +32,17 @@ def test_load_videos_heals_from_scene_assets(isolated_app):
     r = client.get(f"/api/projects/{pid}/videos")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert "scene_001" in body and body["scene_001"], "应从 scene_assets 自愈补回"
+    # 返回流式 URL（不再 base64 整包），且自愈补回了 scene_001
+    assert body.get("scene_001") == f"/api/projects/{pid}/video-file/scene_001"
     # 索引被回写，下次直接命中、合成也能读到
     assert (pdir / "videos.json").exists()
     idx = json.loads((pdir / "videos.json").read_text(encoding="utf-8-sig"))
     assert idx.get("scene_001") == "scene_001.mp4"
+
+    # 流式端点能取到该分镜视频
+    rf = client.get(f"/api/projects/{pid}/video-file/scene_001")
+    assert rf.status_code == 200, rf.text
+    assert rf.headers["content-type"].startswith("video/mp4")
 
 
 def test_load_videos_skips_dangling_keeps_existing(isolated_app):
