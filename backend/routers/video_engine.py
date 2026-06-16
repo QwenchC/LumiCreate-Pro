@@ -762,11 +762,17 @@ async def merge_project_video(req: MergeVideoRequest):
         except Exception:
             return 0.0
 
-    durations: list[float] = []
-    v_secs: list[float] = []
+    # 同时取容器、视频流、音频流时长：画面要补齐到的目标 = max(音频流, 容器)
+    # （有的 mp4 容器时长报的是画面长度，必须显式拿音频流，否则补不够 → 残留累积错位）
+    durations: list[float] = []   # 每镜的对齐目标长度（≈ 音频长度）
+    v_secs: list[float] = []      # 每镜画面流时长
     for p in ordered_files:
-        durations.append(await _probe(p) or 4.0)
-        v_secs.append(await _probe(p, "-select_streams", "v:0"))
+        cont = await _probe(p) or 0.0
+        vd   = await _probe(p, "-select_streams", "v:0")
+        ad   = await _probe(p, "-select_streams", "a:0")
+        target = max(ad, cont) or vd or 4.0
+        durations.append(target)
+        v_secs.append(vd)
 
     # v1.5.1 关键修复：逐镜把【画面】补到与【音频】等长（克隆末帧）。
     # concat filter 分别拼接 v / a 流，逐镜"音频比画面长 ~几十~一百毫秒"的差会在拼接时
