@@ -801,6 +801,13 @@ async def merge_project_video(req: MergeVideoRequest):
     fc_parts.append(f"{final_audio_label}aresample=async=1000:first_pts=0[afinal]")
     final_audio_label = "[afinal]"
 
+    # v1.5.1: 片尾让【画面比音频多撑 END_HOLD 秒】（克隆末帧）→ 最后一句台词务必说完、
+    # 画面再结束，彻底消除"视频播完音频还没播完/末尾对白被切"。用户实测：画面晚于音频
+    # 结束时台词完整收尾；画面早于音频则末尾对白被截。这里给 0.5s 舒适余量。
+    END_HOLD = 0.5
+    fc_parts.append(f"{last_v_label}tpad=stop_mode=clone:stop_duration={END_HOLD + 0.5:.3f}[vfinal]")
+    last_v_label = "[vfinal]"
+
     filter_complex = ";".join(fc_parts)
 
     # v1.4.6++ 慢路径也用 Windows-safe 编码档 + bitrate 上限，
@@ -823,7 +830,8 @@ async def merge_project_video(req: MergeVideoRequest):
         "-video_track_timescale", "90000",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
         # 画面已逐镜补齐到音频；再按对齐后的总时长安全封顶（同时给无限循环的 BGM 收尾）
-        *(["-t", f"{video_out_total:.3f}"] if video_out_total > 0.5 else []),
+        # 输出按【音频总长 + END_HOLD】封顶：音频在 video_out_total 结束，画面多撑 0.5s
+        *(["-t", f"{video_out_total + END_HOLD:.3f}"] if video_out_total > 0.5 else []),
         "-movflags", "+faststart",
         str(out_path),
     ]

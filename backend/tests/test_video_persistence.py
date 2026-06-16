@@ -114,6 +114,8 @@ def test_merge_with_bgm_pads_clips_and_caps_to_aligned_total(isolated_app, monke
     import re as _re
     m = _re.search(r"setpts=PTS\*([0-9.]+)", fc)
     assert m and abs(float(m.group(1)) - (5.0 / 4.5)) < 0.001, fc
-    # 输出按对齐后总时长封顶（2 段音频各 5s = 10s）
+    # 片尾画面多撑 0.5s 让末句说完
+    assert "tpad=stop_mode=clone" in fc, "缺少片尾画面补帧"
+    # 输出 = 音频总长(2×5=10s) + 末尾 0.5s 余量
     assert "-t" in cmd
-    assert abs(float(cmd[cmd.index("-t") + 1]) - 10.0) < 0.01
+    assert abs(float(cmd[cmd.index("-t") + 1]) - 10.5) < 0.01
