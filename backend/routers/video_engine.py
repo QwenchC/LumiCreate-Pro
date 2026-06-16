@@ -774,17 +774,20 @@ async def merge_project_video(req: MergeVideoRequest):
         durations.append(target)
         v_secs.append(vd)
 
-    # v1.5.1 关键修复：逐镜把【画面】补到与【音频】等长（克隆末帧）。
-    # concat filter 分别拼接 v / a 流，逐镜"音频比画面长 ~几十~一百毫秒"的差会在拼接时
-    # 累积成【渐进音画错位】——后段台词整体滞后、末尾被裁，正是"视频播完音频还没播完"。
-    # 把每镜画面补齐到其音频长度后，逐镜 v==a → 拼接无累积偏移，画面与声音始终对齐。
-    pads = [max(0.0, durations[i] - v_secs[i]) if v_secs[i] > 0 else 0.0 for i in range(n)]
+    # v1.5.1 关键修复（逐镜实测根因）：AI 生成的分镜视频帧是按"非标准帧率"(常 ~23.7fps)
+    # 生成的，却被标成 24fps 播放 → 每镜画面比其音频【快约 1%】(短几十~一百毫秒)。单镜
+    # <20s 时察觉不到，但 80+ 镜拼接后累积成数秒"画面跑在音频前、末尾音频没播完"。
+    # 正确做法：逐镜把【画面重定时】到其音频时长（setpts，按画面本应的速度播放）——
+    # 画面与音频【全程】对齐(非仅末尾)、无定格、无累积漂移。
+    ratios = [
+        min(2.0, max(0.5, durations[i] / v_secs[i])) if v_secs[i] > 0.01 else 1.0
+        for i in range(n)
+    ]
 
     fc_parts: list[str] = []
     for i in range(n):
-        if pads[i] > 0.01:
-            fc_parts.append(
-                f"[{i}:v]tpad=stop_mode=clone:stop_duration={pads[i]:.3f},settb=AVTB[vp{i}]")
+        if abs(ratios[i] - 1.0) > 0.001:
+            fc_parts.append(f"[{i}:v]setpts=PTS*{ratios[i]:.6f},settb=AVTB[vp{i}]")
         else:
             fc_parts.append(f"[{i}:v]settb=AVTB[vp{i}]")
 

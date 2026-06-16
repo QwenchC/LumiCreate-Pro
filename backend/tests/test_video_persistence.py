@@ -107,9 +107,13 @@ def test_merge_with_bgm_pads_clips_and_caps_to_aligned_total(isolated_app, monke
     assert captured, "ffmpeg 合并未被调用"
     cmd = captured[-1]
     fc = cmd[cmd.index("-filter_complex") + 1]
-    # 逐镜画面补齐（消除累积音画错位）
-    assert "tpad=stop_mode=clone" in fc, f"缺少逐镜画面补齐: {fc}"
+    # 逐镜把画面重定时到音频长度（消除非标准帧率导致的累积音画错位）
+    assert "setpts=PTS*" in fc, f"缺少逐镜画面重定时: {fc}"
     assert "concat=n=2" in fc
-    # 输出按对齐后总时长封顶（2 段容器各 5s = 10s）
+    # 视频流 4.5s、音频 5.0s → 重定时比例 5/4.5≈1.111
+    import re as _re
+    m = _re.search(r"setpts=PTS\*([0-9.]+)", fc)
+    assert m and abs(float(m.group(1)) - (5.0 / 4.5)) < 0.001, fc
+    # 输出按对齐后总时长封顶（2 段音频各 5s = 10s）
     assert "-t" in cmd
     assert abs(float(cmd[cmd.index("-t") + 1]) - 10.0) < 0.01
