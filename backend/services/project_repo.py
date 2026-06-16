@@ -200,6 +200,30 @@ def _try_auto_advance(conn, scene_id: str) -> None:
 # ── Queries ────────────────────────────────────────────────────────────────────
 
 
+def list_video_assets(project_id: str) -> dict:
+    """返回 {scene_id: 视频文件相对路径}（已登记的 video 资产）。
+
+    v1.5.1：供 GET /videos 自愈用 —— videos.json 可能缺失/不全，但生成时
+    record_asset 已把 video 资产写进 scene_assets；据此把"盘上有、索引缺"的
+    分镜视频补回来。失败回 {}（SQLite 是辅助层，不抛）。
+    """
+    out: dict = {}
+    try:
+        with project_db(project_id) as conn:
+            rows = conn.execute(
+                "SELECT scene_id, file_path FROM scene_assets "
+                "WHERE asset_type = 'video' AND file_path != '' "
+                "ORDER BY is_selected DESC, slot_index ASC"
+            ).fetchall()
+            for r in rows:
+                sid = r["scene_id"]
+                if sid not in out:
+                    out[sid] = r["file_path"]
+    except Exception as e:
+        print(f"[project_repo] list_video_assets: {e}", flush=True)
+    return out
+
+
 def list_scene_status(project_id: str) -> list[dict]:
     try:
         with project_db(project_id) as conn:

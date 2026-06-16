@@ -684,6 +684,22 @@ async def merge_project_video(req: MergeVideoRequest):
     transition = (req.transition or "cut").lower()
     use_xfade = transition != "cut" and len(ordered_files) >= 2
 
+    # v1.5.1: 把输出按【视频流】总时长封顶，消除"音频比画面长 → 末尾画面定格"。
+    # 漫剧每个分镜的 TTS 音频常比生成的画面长几十~一百多毫秒；两条重编码路径
+    # （快路径 concat 再编码 / 慢路径 filter_complex）原本都没有 -t / -shortest，
+    # 输出 = 最长流(音频) → 末帧被定格保持到音频放完。这里用视频流时长给输出封顶。
+    from services.exec_pool import run_blocking as _run_blocking
+    td_secs = max(0.05, req.transition_duration_ms / 1000.0)
+    v_secs: list[float] = []
+    for _p in ordered_files:
+        v_secs.append(await _run_blocking(_ffprobe_video_stream_seconds, ffmpeg, _p))
+    video_total = sum(v_secs)
+    if use_xfade:
+        video_total -= td_secs * max(0, len(ordered_files) - 1)
+    # 仅当全部探测成功且时长合理才封顶，避免探测失败把视频截没（安全回退到原行为）
+    cap_output = video_total > 0.5 and all(s > 0 for s in v_secs)
+    dur_flags = ["-t", f"{video_total:.3f}"] if cap_output else []
+
     video_dir = proj_dir / "video"
     video_dir.mkdir(parents=True, exist_ok=True)
     out_path = video_dir / "final_video.mp4"
@@ -723,6 +739,7 @@ async def merge_project_video(req: MergeVideoRequest):
                 # 200 镜次累积到 60s drift。
                 "-af", "aresample=async=1000:first_pts=0",
                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                *dur_flags,
                 "-movflags", "+faststart",
                 str(out_path),
             ]
@@ -796,6 +813,9 @@ async def merge_project_video(req: MergeVideoRequest):
         fi  = max(0, req.bgm_fade_in_ms)  / 1000.0
         fo  = max(0, req.bgm_fade_out_ms) / 1000.0
         total_dur = sum(durations) - td * max(0, len(ordered_files) - 1) if use_xfade else sum(durations)
+        # v1.5.1: 优先用视频流总时长（让 BGM 与画面同时结束、淡出落在真正的片尾）
+        if cap_output:
+            total_dur = video_total
         # BGM 调音量 + fade in/out 裁剪到视频总时长
         fc_parts.append(
             f"[{bgm_input_idx}:a]volume={gain}dB,"
@@ -835,6 +855,7 @@ async def merge_project_video(req: MergeVideoRequest):
         "-vsync", "cfr",
         "-video_track_timescale", "90000",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        *dur_flags,
         "-movflags", "+faststart",
         str(out_path),
     ]
@@ -890,6 +911,30 @@ def _ffprobe_duration_seconds(ffmpeg_path: str, file_path: Path) -> float:
     except Exception:
         pass
     return 0.0
+
+
+def _ffprobe_video_stream_seconds(ffmpeg_path: str, file_path: Path) -> float:
+    """探测【视频流】时长（秒）。漫剧分镜里音频(TTS)常比画面长 ~30-130ms，
+    合并若不封顶会让画面比声音早结束 → 末尾定格。用视频流时长给输出封顶。
+    视频流没报 duration 时回退到容器时长。失败回 0。"""
+    import shutil as _sh, subprocess as _sp
+    ffprobe = _sh.which("ffprobe") or str(Path(ffmpeg_path).parent / "ffprobe.exe")
+    if not Path(ffprobe).is_file():
+        ffprobe = "ffprobe"
+    try:
+        out = _sp.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(file_path)],
+            capture_output=True, timeout=30,
+        )
+        if out.returncode == 0:
+            v = float((out.stdout or b"").decode().strip() or "0")
+            if v > 0:
+                return v
+    except Exception:
+        pass
+    return _ffprobe_duration_seconds(ffmpeg_path, file_path)
 
 
 class MixBgmRequest(BaseModel):

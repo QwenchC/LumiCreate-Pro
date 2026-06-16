@@ -832,14 +832,46 @@ async def load_videos(project_id: str):
     proj_dir = _project_dir(project_id)
     vid_dir = proj_dir / "video"
     meta_path = proj_dir / "videos.json"
-    if not meta_path.exists():
-        return {}
-    metadata = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+
+    # 1) 现有 videos.json 索引（可能缺失/不全）
+    metadata: dict = {}
+    if meta_path.exists():
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            metadata = {}
+
+    # 2) v1.5.1 自愈：mp4 已在 video/ 目录、scene_assets 也有登记，但 videos.json
+    #    缺这条（生成时写盘中断 / 没保存）→ 用 scene_assets 补齐，避免"视频在目录里
+    #    但视频生成页不显示、无法点合成"。
+    discovered = dict(metadata)
+    try:
+        from services.project_repo import list_video_assets
+        for scene_id, rel in list_video_assets(project_id).items():
+            if scene_id in discovered:
+                continue
+            fn = Path(rel).name
+            if (vid_dir / fn).exists():
+                discovered[scene_id] = fn
+    except Exception:
+        pass
+
+    # 3) 只保留盘上确实存在的文件
     result = {}
-    for scene_id, filename in metadata.items():
+    healed: dict = {}
+    for scene_id, filename in discovered.items():
         vid_path = vid_dir / filename
         if vid_path.exists():
             result[scene_id] = base64.b64encode(vid_path.read_bytes()).decode("ascii")
+            healed[scene_id] = filename
+
+    # 4) 若补出新键，回写 videos.json 让索引自我修正（下次直接命中、合成也能读到）
+    if set(healed) - set(metadata):
+        try:
+            meta_path.write_text(
+                json.dumps(healed, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
     return result
 
 
