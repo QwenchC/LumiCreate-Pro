@@ -804,7 +804,7 @@ async def merge_project_video(req: MergeVideoRequest):
     # v1.5.1: 片尾让【画面比音频多撑 END_HOLD 秒】（克隆末帧）→ 最后一句台词务必说完、
     # 画面再结束，彻底消除"视频播完音频还没播完/末尾对白被切"。用户实测：画面晚于音频
     # 结束时台词完整收尾；画面早于音频则末尾对白被截。这里给 0.5s 舒适余量。
-    END_HOLD = 0.5
+    END_HOLD = 1.5
     fc_parts.append(f"{last_v_label}tpad=stop_mode=clone:stop_duration={END_HOLD + 0.5:.3f}[vfinal]")
     last_v_label = "[vfinal]"
 
