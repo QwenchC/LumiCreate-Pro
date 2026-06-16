@@ -24,32 +24,24 @@ def test_slideshow_per_scene_clip_has_faststart():
     assert "movflags" in src
 
 
-def test_merge_fast_path_has_faststart():
-    """v1.4.6+: 快路径已从 `-c copy` 改为干净再编码（WMP 兼容修复），但仍必须
-    带 +faststart。这里改成在"快路径"特征 concat demuxer 后面找 +faststart。"""
+def test_merge_unified_filter_path_no_more_concat_demuxer():
+    """v1.5.1: 合并统一走 filter_complex（逐镜 setpts 重定时），移除了不做重定时的
+    concat demuxer 快路径 —— 否则无 BGM 合并画面仍偏快、音画不同步。"""
     src = _read("routers/video_engine.py")
-    matches = list(re.finditer(r'"-f",\s*"concat"', src))
-    assert matches, "merge concat path not found"
-    for m in matches:
-        window = src[m.start():m.start() + 1200]
-        assert "+faststart" in window, \
-            f"concat at offset {m.start()} missing +faststart"
+    assert '"-f", "concat"' not in src, "merge 应已移除 concat demuxer 快路径"
+    # 逐镜重定时到音频（消除 AI 视频非标准帧率导致的累积错位）
+    assert "setpts=PTS*" in src, "merge 必须逐镜 setpts 重定时"
 
 
-def test_merge_fast_path_no_longer_uses_codec_copy():
-    """v1.4.6+ WMP 兼容修复硬约束：concat demuxer 后面**不能**出现 `-c copy`
-    （-c copy 拼接对 LTX+slideshow 混合镜次会产出 WMP 拒播的 mp4）。
-    必须真编码（libx264 / aac）让所有跨镜次时基差异被消化。"""
+def test_merge_re_encodes_no_codec_copy():
+    """合并输出必须真编码（libx264 / aac），不能 -c copy（WMP 拒播 + 无法配合 filter）。"""
     src = _read("routers/video_engine.py")
-    # 找到 fast-path concat 块，断言其窗口内必须有 libx264 + aac，不能有 -c copy
-    matches = list(re.finditer(r'"-f",\s*"concat",\s*"-safe"', src))
-    assert matches, "merge fast path concat not found"
-    for m in matches:
-        window = src[m.start():m.start() + 1500]
-        assert '"-c", "copy"' not in window, \
-            "fast path must NOT use -c copy (WMP regression)"
-        assert "libx264" in window, "fast path must re-encode video"
-        assert '"aac"' in window, "fast path must re-encode audio"
+    idx = src.find('"-filter_complex", filter_complex')
+    assert idx >= 0, "merge filter_complex 路径未找到"
+    window = src[idx:idx + 1500]
+    assert '"-c", "copy"' not in window, "merge must NOT use -c copy (WMP regression)"
+    assert "libx264" in window, "merge must re-encode video"
+    assert '"aac"' in window, "merge must re-encode audio"
 
 
 def test_merge_slow_path_has_faststart():
@@ -76,32 +68,19 @@ def test_subtitle_burn_has_faststart():
 # ── v1.4.6++ WMP 数据速率限制 + A/V drift 修复 ─────────────────────────────
 
 
-def test_merge_fast_path_has_bitrate_cap():
-    """v1.4.6++ 用户主诉：合并视频"数据速率和总比特率过高"WMP 拒播。
-    H.264 Level 4.0 上限 ~25Mbps，必须在快路径 concat re-encode 块加 maxrate
-    / bufsize 上限（8M/16M 留足边距）。"""
+def test_merge_has_bitrate_cap():
+    """合并 H.264 Level 4.0 上限 ~25Mbps，必须加 maxrate/bufsize（8M/16M）防 WMP 拒播。"""
     src = _read("routers/video_engine.py")
-    matches = list(re.finditer(r'"-f",\s*"concat",\s*"-safe"', src))
-    assert matches
-    window = src[matches[0].start():matches[0].start() + 2500]
+    idx = src.find('"-filter_complex", filter_complex')
+    assert idx >= 0
+    window = src[idx:idx + 2000]
     assert '"-maxrate", "8M"' in window
     assert '"-bufsize", "16M"' in window
 
 
-def test_merge_paths_have_aresample_async_for_av_sync():
-    """v1.4.6++ 用户主诉：10min 视频音频比视频早 1min 结束（10% drift）。
-    根因：concat + re-encode 时跨镜次边界音频 PTS 有 50-100ms 间隙，
-    累积放大。修复：aresample=async=1000:first_pts=0 填补间隙。"""
+def test_merge_has_aresample_async_for_av_sync():
+    """合并 filter_complex 末节用 aresample=async 填补跨镜次音频 PTS 间隙。"""
     src = _read("routers/video_engine.py")
-    # 快路径：在 -af 里
-    fast_matches = list(re.finditer(r'"-f",\s*"concat",\s*"-safe"', src))
-    assert fast_matches
-    fast_window = src[fast_matches[0].start():fast_matches[0].start() + 2500]
-    assert "aresample=async=1000:first_pts=0" in fast_window
-    # 慢路径：在 filter_complex 节点里（不能用 -af on mapped label）
-    slow_matches = list(re.finditer(r'"-filter_complex",\s*filter_complex', src))
-    assert slow_matches
-    # 慢路径 aresample 应作为 filter chain 末节，找文件中是否存在
     assert "aresample=async=1000:first_pts=0[afinal]" in src
 
 

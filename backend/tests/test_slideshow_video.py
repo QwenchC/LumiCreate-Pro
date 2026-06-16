@@ -601,28 +601,20 @@ def test_per_scene_clip_enforces_wmp_bitrate_ceiling(tmp_path):
 
 
 def test_merge_re_encode_paths_have_aresample_async():
-    """v1.4.6++ merge 必须用 aresample=async 修复跨镜次 A/V drift。
-    快路径（concat re-encode）用 -af；慢路径（filter_complex）用 filter 节点。"""
+    """v1.5.1: merge 统一 filter_complex 路径，末节用 aresample=async 修跨镜次 A/V drift。"""
     src = (Path(__file__).resolve().parents[1] / "routers" / "video_engine.py")\
         .read_text(encoding="utf-8")
-    # 快路径：'-f', 'concat' 之后 1500 char 内必须出现 aresample=async
-    fast_idx = src.find('"-f", "concat", "-safe"')
-    assert fast_idx >= 0
-    assert "aresample=async" in src[fast_idx:fast_idx + 2000]
-    # 慢路径：filter_complex 构造 final_audio_label 处必须有 aresample 节点
-    assert "aresample=async=1000:first_pts=0[afinal]" in src or \
-           "aresample=async=1000:first_pts=0" in src
+    assert "aresample=async=1000:first_pts=0[afinal]" in src
 
 
 def test_merge_paths_enforce_wmp_bitrate_ceiling():
     src = (Path(__file__).resolve().parents[1] / "routers" / "video_engine.py")\
         .read_text(encoding="utf-8")
-    # 快路径
-    fast_idx = src.find('"-f", "concat", "-safe"')
-    assert fast_idx >= 0
-    fast_win = src[fast_idx:fast_idx + 2000]
-    assert '"-maxrate", "8M"' in fast_win
-    assert '"-bufsize", "16M"' in fast_win
+    idx = src.find('"-filter_complex", filter_complex')
+    assert idx >= 0
+    win = src[idx:idx + 2000]
+    assert '"-maxrate", "8M"' in win
+    assert '"-bufsize", "16M"' in win
 
 
 # ── v1.4.8 SFX overlays ─────────────────────────────────────────────────────

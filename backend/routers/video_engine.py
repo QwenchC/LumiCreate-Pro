@@ -688,55 +688,9 @@ async def merge_project_video(req: MergeVideoRequest):
     video_dir.mkdir(parents=True, exist_ok=True)
     out_path = video_dir / "final_video.mp4"
 
-    # ─── 快路径：无过渡 & 无 BGM → concat demuxer + 干净再编码 ───
-    # v1.4.6+ WMP 兼容修复：之前用 `-c copy`，但 concat demuxer + copy 要求所有输入
-    # 流的 SPS/PPS/timebase/timescale 完全一致 —— LTX 视频和 slideshow 静态/动态分
-    # 镜混合时往往不一致，产出 mp4 浏览器能解析但 WMP 拒播（"编码设置不受支持"）。
-    # 改为 concat 协议 → 真实再编码（同 Windows-safe 编码档），单次操作即可消除
-    # 所有跨镜次时基差异。代价：合并慢几十秒（值得换 WMP 可播）。
-    if not use_xfade and not use_bgm:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
-            for p in ordered_files:
-                f.write(f"file '{str(p).replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'\n")
-            concat_list = f.name
-        try:
-            cmd = [
-                ffmpeg, "-y",
-                "-f", "concat", "-safe", "0", "-i", concat_list,
-                # 视频：保守 H.264 档 + 强 CFR + 统一 timescale
-                "-c:v", "libx264",
-                "-profile:v", "main", "-level", "4.0",
-                "-preset", "fast", "-crf", "22",
-                "-pix_fmt", "yuv420p",
-                "-colorspace", "bt709",
-                "-color_primaries", "bt709",
-                "-color_trc", "bt709",
-                # v1.4.6++ WMP 拒播：用户主诉"数据速率和总比特率过高"。
-                # Level 4.0 硬上限 ~25Mbps，加 maxrate 8M / bufsize 16M 留足边距
-                "-maxrate", "8M", "-bufsize", "16M",
-                "-vsync", "cfr",
-                "-video_track_timescale", "90000",
-                # v1.4.6++ A/V 严重不同步（10min 视频音频早 1min 结束）修复：
-                # `aresample=async=1000:first_pts=0` 让重采样器在跨镜次边界用
-                # 静音填补 PTS 间隙，并把所有镜次音频拉平到 48kHz —— 之前每镜次
-                # 因 AAC 编码器 priming + concat 边界没填，每镜次"丢"~50-100ms，
-                # 200 镜次累积到 60s drift。
-                "-af", "aresample=async=1000:first_pts=0",
-                "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-                "-movflags", "+faststart",
-                str(out_path),
-            ]
-            from services.exec_pool import run_blocking
-            # 再编码可能更慢，把超时拉到 900s 与慢路径一致
-            result = await run_blocking(subprocess.run, cmd, capture_output=True, timeout=900)
-            if result.returncode != 0:
-                err = result.stderr.decode(errors="replace")[-500:]
-                raise HTTPException(status_code=500, detail=f"ffmpeg 合并失败: {err}")
-        finally:
-            Path(concat_list).unlink(missing_ok=True)
-        return MergeVideoResult(output_path=str(out_path), output_dir=str(proj_dir))
-
-    # ─── 慢路径：xfade 镜间过渡 / BGM 混音 ───
+    # v1.5.1: 统一走 filter_complex 路径（逐镜 setpts 重定时 → 消除 AI 视频非标准帧率
+    # 导致的"画面比音频快 1%"逐镜累积错位）。之前"无 BGM 无过渡"走 concat demuxer 快路径
+    # 不做重定时，画面仍偏快 → 音画不同步。两条路径合并后所有合并都正确对齐。
     # 需要重新编码（codec copy 不能配合 filter_complex）
     inputs: list[str] = []
     for p in ordered_files:
