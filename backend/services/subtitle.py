@@ -52,12 +52,17 @@ def _fps_filter(fps: int) -> str:
 
 def normalize_video(ffmpeg: str, input_video: str, output_video: str, fps: int = 24) -> None:
     """Convert AI video to CFR with correct timebase."""
+    # v1.5.1: 按【视频流】时长给输出封顶。漫剧音频(TTS)常比画面长几十毫秒~数秒，
+    # 不封顶时标准化产物 fixed_cfr 会保留更长的音频 → 烧字幕后成片"画面放完音频还在响"。
+    vdur = probe_video_stream_duration(_ffprobe_for(ffmpeg), input_video)
+    cap = ['-t', f'{vdur:.3f}'] if vdur > 0.5 else []
     cmd = [
         ffmpeg, '-i', input_video,
         '-vf', _fps_filter(fps),
         '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
         '-af', 'aresample=async=1',
         '-c:a', 'aac', '-ar', '48000',
+        *cap,
         '-movflags', '+faststart',
         '-y', output_video,
     ]
@@ -88,6 +93,32 @@ def probe_duration(ffprobe: str, path: str) -> float:
     ]
     out = subprocess.run(cmd, capture_output=True, text=True, timeout=30).stdout.strip()
     return float(out) if out else 0.0
+
+
+def probe_video_stream_duration(ffprobe: str, path: str) -> float:
+    """【视频流】时长（秒）。容器时长 = max(视频,音频)，按"画面"封顶必须取视频流，
+    否则字幕烧录/帧率标准化会保留比画面长的音频 → 画面放完音频还在响。
+    视频流没报时长则回退容器时长。失败回 0。"""
+    try:
+        cmd = [
+            ffprobe, '-v', 'error', '-select_streams', 'v:0',
+            '-show_entries', 'stream=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1', path,
+        ]
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=30).stdout.strip()
+        v = float(out) if out else 0.0
+        if v > 0:
+            return v
+    except Exception:
+        pass
+    return probe_duration(ffprobe, path)
+
+
+def _ffprobe_for(ffmpeg: str) -> str:
+    """从 ffmpeg 路径推 ffprobe（同目录），找不到回 'ffprobe'。"""
+    import shutil as _sh
+    p = _sh.which('ffprobe') or str(Path(ffmpeg).parent / 'ffprobe.exe')
+    return p if Path(p).is_file() else 'ffprobe'
 
 
 # libass (used by FFmpeg) requires English font names; Chinese display names won't work.
@@ -127,6 +158,12 @@ def embed_subtitles(
             total_ms = probe_duration(ffprobe, video_path) * 1000
         except Exception:
             pass
+
+    # v1.5.1: 按视频流时长封顶，避免把比画面长的音频原样烧进成片（画面放完音频还在响）
+    try:
+        _burn_vdur = probe_video_stream_duration(ffprobe or _ffprobe_for(ffmpeg), video_path)
+    except Exception:
+        _burn_vdur = 0.0
 
     srt_escaped = srt_path.replace('\\', '/').replace(':', '\\:')
 
@@ -183,6 +220,7 @@ def embed_subtitles(
         '-vsync', 'cfr',
         '-video_track_timescale', '90000',
         '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2',
+        *(['-t', f'{_burn_vdur:.3f}'] if _burn_vdur > 0.5 else []),
         '-movflags', '+faststart',
         '-progress', 'pipe:1',
         '-nostats',
