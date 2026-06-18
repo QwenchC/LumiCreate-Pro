@@ -37,6 +37,8 @@ from services.prompts import (
     IDEOGRAM_ELEMENTS_USER_TEMPLATE,
     TAG_SPEAKERS_SYSTEM,
     TAG_SPEAKERS_USER_TEMPLATE,
+    WHITE_BG_PORTRAIT_SYSTEM,
+    WHITE_BG_PORTRAIT_USER_TEMPLATE,
 )
 
 router = APIRouter()
@@ -892,6 +894,46 @@ async def tag_dialogue_speakers(req: TagSpeakersRequest):
         name = str(arr[i]).strip() if i < len(arr) else ""
         speakers.append(name if name in valid else "")
     return {"speakers": speakers}
+
+
+# ── v1.6: 纯白背景立绘提示词优化（供 MSR 多图参考视频）────────────────────────
+
+class WhiteBgPortraitRequest(BaseModel):
+    appearance:  str = ""        # 角色外观描述
+    base_prompt: str = ""        # 现有草稿提示词（可选）
+
+
+@router.post("/optimize-white-bg-portrait")
+async def optimize_white_bg_portrait(req: WhiteBgPortraitRequest):
+    """用文本引擎把角色外观改写成"纯白背景、单人、全身"的图像提示词。
+    返回 {prompt, negative}。LLM 失败时回退到确定性拼接，保证可用。"""
+    appearance = (req.appearance or "").strip()
+    base = (req.base_prompt or "").strip()
+    # 纯白背景的强负面词（直接给图片引擎用，进一步压制背景）
+    negative = ("background scenery, environment, room, furniture, props, gradient "
+                "background, colored background, shadow on background, multiple people, "
+                "text, watermark, lowres, blurry")
+
+    user_msg = WHITE_BG_PORTRAIT_USER_TEMPLATE.format(
+        appearance=appearance or "（未提供）",
+        base_prompt=base or "（无）",
+    )
+    cfg = load_settings().text_engine
+    full = ""
+    try:
+        async for chunk in stream_chat(cfg, WHITE_BG_PORTRAIT_SYSTEM, user_msg):
+            full += chunk
+    except Exception:
+        full = ""
+    prompt = re.sub(r"^```\w*\n?|\n?```$", "", full).strip().strip('"').strip()
+    if not prompt:
+        # 兜底：确定性拼接，仍能产出纯白背景立绘
+        wb = ("full body, single character, front view, neutral standing pose, "
+              "isolated on pure white background, plain white studio backdrop, "
+              "seamless white, no scenery, no props, even flat lighting, "
+              "no cast shadow on background, masterpiece, best quality")
+        prompt = f"{appearance}, {wb}" if appearance else wb
+    return {"prompt": prompt, "negative": negative}
 
 
 # ── Video prompt generation (streaming SSE) ────────────────────────────────────

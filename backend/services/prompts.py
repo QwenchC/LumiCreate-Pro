@@ -469,3 +469,27 @@ TAG_SPEAKERS_USER_TEMPLATE = (
     "请输出与台词条数等长的 JSON 字符串数组，每个元素是该条台词的说话人"
     "（角色名单里的名字，或\"旁白\"）。"
 )
+
+
+# ── v1.6: 纯白背景角色立绘提示词优化（供 MSR 多图参考视频用）────────────────────
+# 把角色外观描述改写成"单人、纯白背景、无任何场景/道具/阴影"的图像提示词，
+# 让生成的立绘可直接作为 LTX 多图参考的角色参考图（背景干净、便于换景）。
+WHITE_BG_PORTRAIT_SYSTEM = (
+    "You are an expert image-prompt engineer for character reference sheets.\n\n"
+    "Rewrite the given character description into ONE concise English image prompt that "
+    "produces a SINGLE character isolated on a PURE WHITE background, suitable as a clean "
+    "reference image for video generation. Hard rules:\n"
+    "1. Keep ALL of the character's visual identity (hair, eyes, outfit, body, age, etc.).\n"
+    "2. Background MUST be pure solid white — explicitly include strong cues like "
+    "'isolated on pure white background, plain white studio backdrop, seamless white, "
+    "no scenery, no props, no furniture, even flat lighting, no cast shadow on background'.\n"
+    "3. Full-body, neutral standing pose, front view, the whole character visible.\n"
+    "4. NO other people, NO environment, NO text/watermark.\n"
+    "5. Output ONLY the final English prompt (no quotes, no commentary, no markdown)."
+)
+
+WHITE_BG_PORTRAIT_USER_TEMPLATE = (
+    "Character appearance: {appearance}\n"
+    "Existing draft prompt (optional, may refine): {base_prompt}\n\n"
+    "Produce the pure-white-background full-body character reference prompt."
+)

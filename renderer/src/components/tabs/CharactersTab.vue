@@ -210,6 +210,17 @@
             </p>
           </div>
 
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" v-model="portraitGenDialog.whiteBg" />
+              纯白背景立绘（用于多图参考视频）
+            </label>
+            <p class="field-hint">
+              勾选后：提交前用<strong>文本 AI 引擎</strong>把提示词优化成「单人 · 全身 · 纯白背景」，
+              并附强力背景负面词 → 生成干净的纯白背景立绘,可直接作为 LTX 多图参考的角色参考图。
+            </p>
+          </div>
+
           <div v-if="portraitGenDialog.progress" class="form-group">
             <p style="font-size:12px">{{ portraitGenDialog.progress }}</p>
           </div>
@@ -341,6 +352,7 @@ const portraitGenDialog = reactive({
   prompt: '',         // 用户编辑的主提示词（不含画风前缀）
   stylePreset: '',    // 画风预设值或 '__custom__'
   customStyle: '',    // 自定义画风文本
+  whiteBg: false,     // v1.6: 纯白背景立绘（供 MSR 多图参考视频）
   running: false, progress: '',
 })
 
@@ -396,6 +408,7 @@ async function openPortraitGen(char) {
       portraitGenDialog.customStyle = ie.custom_style_text ?? ''
     }
   } catch {}
+  portraitGenDialog.whiteBg  = false
   portraitGenDialog.progress = ''
   portraitGenDialog.running  = false
   portraitGenDialog.show     = true
@@ -407,13 +420,32 @@ async function runPortraitGen() {
   dlg.running  = true
   dlg.progress = '提交到 ComfyUI…'
   try {
-    // 拼出最终 prompt：画风前缀 + 用户提示词
+    // v1.6: 纯白背景 → 先用文本 AI 引擎优化提示词（单人/全身/纯白背景）+ 取强力背景负面词
+    let promptBody = dlg.prompt.trim()
+    let negative = ''
+    if (dlg.whiteBg) {
+      dlg.progress = '文本 AI 优化纯白背景提示词…'
+      try {
+        const ch = characters.value.find(c => c.name === dlg.charName)
+        const wr = await fetch(`${API}/text-engine/optimize-white-bg-portrait`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ appearance: ch?.appearance || '', base_prompt: promptBody }),
+        })
+        if (wr.ok) {
+          const j = await wr.json()
+          if (j.prompt) promptBody = j.prompt
+          negative = j.negative || ''
+        }
+      } catch {}
+    }
+    // 拼出最终 prompt：画风前缀 + 优化后/用户提示词
     const style = dlg.stylePreset === '__custom__'
       ? (dlg.customStyle || '').trim()
       : (dlg.stylePreset || '').trim()
-    const fullPrompt = [style, dlg.prompt.trim()].filter(Boolean).join(', ')
+    const fullPrompt = [style, promptBody].filter(Boolean).join(', ')
 
     // 1) 调 image-engine 单图 SSE 生成（不传 seed → 后端随机，避免每次都生成同一张）
+    dlg.progress = '提交到 ComfyUI…'
     const resp = await fetch(`${API}/image-engine/generate-stream`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -422,7 +454,7 @@ async function runPortraitGen() {
         frame_type:      'portrait',
         slot_index:      0,
         positive_prompt: fullPrompt,
-        negative_prompt: '',
+        negative_prompt: negative,
         width:           1080, height: 1920,   // 立绘固定竖幅
       }),
     })
@@ -466,6 +498,7 @@ async function runPortraitGen() {
           workflow_name: dlg.workflowName,
           prompt: dlg.prompt,
           set_primary: false,   // 让后端按"无主图时第一张默认主"逻辑处理
+          white_bg: dlg.whiteBg,   // v1.6: 纯白背景立绘标记（供 MSR 多图参考）
         }),
       },
     )

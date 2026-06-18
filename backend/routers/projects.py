@@ -1181,6 +1181,7 @@ class PortraitUploadRequest(BaseModel):
     workflow_name: str = ""        # 来源工作流（记录用）
     prompt:        str = ""        # 生成时的 prompt（记录用）
     set_primary:   bool = False    # 上传后立刻设为主立绘
+    white_bg:      bool = False     # v1.6: 纯白背景立绘（供 MSR 多图参考视频用）
 
 
 from fastapi.responses import FileResponse  # noqa: E402
@@ -1222,6 +1223,7 @@ async def add_character_portrait(project_id: str, char_name: str,
         "prompt":        req.prompt or "",
         "created_at":    now,
         "is_primary":    bool(req.set_primary),
+        "white_bg":      bool(req.white_bg),   # v1.6: 纯白背景立绘标记
     }
     # 若设主，把别的清掉
     if req.set_primary:

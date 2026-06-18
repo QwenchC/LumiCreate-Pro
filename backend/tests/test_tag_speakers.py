@@ -71,3 +71,29 @@ def test_empty_lines(isolated_app, monkeypatch):
         "lines": ["   ", ""], "characters": ["张三"],
     })
     assert r.json()["speakers"] == []
+
+
+# ── v1.6: 纯白背景立绘提示词优化 ──────────────────────────────────────────────
+
+
+def test_white_bg_portrait_uses_llm(isolated_app, monkeypatch):
+    client = isolated_app["client"]
+    _mock_llm(monkeypatch, "tall girl, silver hair, isolated on pure white background, full body")
+    r = client.post("/api/text-engine/optimize-white-bg-portrait", json={
+        "appearance": "银发少女", "base_prompt": "anime",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "pure white background" in body["prompt"]
+    assert body["negative"]              # 强力背景负面词
+
+
+def test_white_bg_portrait_fallback_when_llm_empty(isolated_app, monkeypatch):
+    client = isolated_app["client"]
+    _mock_llm(monkeypatch, "")           # LLM 空 → 确定性兜底
+    r = client.post("/api/text-engine/optimize-white-bg-portrait", json={
+        "appearance": "red hair boy",
+    })
+    body = r.json()
+    assert "pure white background" in body["prompt"]
+    assert "red hair boy" in body["prompt"]
