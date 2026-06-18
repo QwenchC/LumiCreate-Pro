@@ -39,6 +39,10 @@ from services.prompts import (
     TAG_SPEAKERS_USER_TEMPLATE,
     WHITE_BG_PORTRAIT_SYSTEM,
     WHITE_BG_PORTRAIT_USER_TEMPLATE,
+    BG_SCENE_PROMPT_SYSTEM,
+    BG_SCENE_PROMPT_USER_TEMPLATE,
+    MSR_VIDEO_PROMPT_SYSTEM,
+    MSR_VIDEO_PROMPT_USER_TEMPLATE,
 )
 
 router = APIRouter()
@@ -934,6 +938,159 @@ async def optimize_white_bg_portrait(req: WhiteBgPortraitRequest):
               "no cast shadow on background, masterpiece, best quality")
         prompt = f"{appearance}, {wb}" if appearance else wb
     return {"prompt": prompt, "negative": negative}
+
+
+# ── v1.6: 无角色背景图提示词（单 + 批量）─────────────────────────────────────────
+
+def _bg_context_block(manuscript: str, scene_index: int, total_scenes: int) -> str:
+    parts = []
+    if scene_index or total_scenes:
+        parts.append(f"This is scene {scene_index} of {total_scenes}.")
+    ms = (manuscript or "").strip()
+    if ms:
+        if len(ms) > 1500:
+            ms = ms[:1500] + "..."
+        parts.append("Story context (for understanding only):\n" + ms)
+    return ("\n".join(parts) + "\n") if parts else ""
+
+
+async def _gen_bg_prompt(description: str, manuscript: str = "",
+                         scene_index: int = 0, total_scenes: int = 0) -> str:
+    user_msg = BG_SCENE_PROMPT_USER_TEMPLATE.format(
+        description=(description or "").strip() or "（无描述）",
+        context=_bg_context_block(manuscript, scene_index, total_scenes),
+    )
+    cfg = load_settings().text_engine
+    full = ""
+    async for chunk in stream_chat(cfg, BG_SCENE_PROMPT_SYSTEM, user_msg):
+        full += chunk
+    return re.sub(r"^```\w*\n?|\n?```$", "", full).strip().strip('"').strip()
+
+
+class BgPromptRequest(BaseModel):
+    description:  str = ""
+    manuscript:   str = ""
+    scene_index:  int = 0
+    total_scenes: int = 0
+
+
+@router.post("/generate-bg-prompt")
+async def generate_bg_prompt(req: BgPromptRequest):
+    """生成【无角色】背景图提示词（专用指令彻底排除人物）。返回 {prompt}。"""
+    prompt = await _gen_bg_prompt(req.description, req.manuscript,
+                                  req.scene_index, req.total_scenes)
+    return {"prompt": prompt}
+
+
+class BgPromptsBatchRequest(BaseModel):
+    scenes:       list[dict] = []    # [{scene_id, description}]
+    manuscript:   str = ""
+    total_scenes: int = 0
+    concurrency:  int = 0
+
+
+@router.post("/generate-bg-prompts-batch")
+async def generate_bg_prompts_batch(req: BgPromptsBatchRequest):
+    """为全部分镜批量生成无角色背景提示词。SSE: {event:result, scene_id, bg_prompt}。"""
+    sem = _asyncio.Semaphore(_resolve_concurrency(req.concurrency))
+
+    async def gen_one(s: dict) -> dict:
+        async with sem:
+            p = await _gen_bg_prompt(s.get("description", ""), req.manuscript,
+                                     int(s.get("scene_index", 0) or 0), req.total_scenes)
+            return {"scene_id": s.get("scene_id", ""), "bg_prompt": p}
+
+    return await _run_batched_sse(req.scenes, gen_one)
+
+
+# ── v1.6: MSR 多图参考视频提示词（“参考图N + 动作叙述”格式，单 + 批量）───────────
+
+def _msr_ref_block(characters: list) -> str:
+    """逐行列出参考图（角色顺序即 LiconMSR 槽位顺序），最后追加场景参考图占位。
+    编号一律按【已追加行数】推导（而非 enumerate 下标），跳过非法条目后仍连续 1..N。"""
+    lines = []
+    for c in characters or []:
+        if not isinstance(c, dict):
+            continue
+        n = len(lines) + 1
+        name = (c.get("name") or "").strip() or f"角色{n}"
+        appearance = (c.get("appearance") or c.get("traits") or "").strip() or "（未提供外观）"
+        lines.append(f"参考图{n}：标签={name}，外观={appearance}")
+    lines.append(f"参考图{len(lines) + 1}（场景）：见下方“背景/场景描述”")
+    return "\n".join(lines)
+
+
+def _msr_dialogues_block(dialogues: list) -> str:
+    parts = []
+    for d in dialogues or []:
+        if not isinstance(d, dict):
+            continue
+        text = (d.get("text") or "").strip()
+        if not text:
+            continue
+        spk = (d.get("character") or "").strip()
+        parts.append(f"  [{spk or '旁白'}]：{text}")
+    if not parts:
+        return ""
+    return ("台词（按叙事顺序，需逐字融入动作叙述并保留引号）：\n"
+            + "\n".join(parts) + "\n")
+
+
+async def _gen_msr_prompt(characters: list, background: str, description: str,
+                          dialogues: list, scene_index: int = 0,
+                          total_scenes: int = 0) -> str:
+    user_msg = MSR_VIDEO_PROMPT_USER_TEMPLATE.format(
+        ref_block=_msr_ref_block(characters),
+        background=(background or "").strip() or "（沿用画面描述中的环境，纯场景无人物）",
+        scene_index=scene_index or 0, total_scenes=total_scenes or 0,
+        description=(description or "").strip() or "（无描述）",
+        dialogues_block=_msr_dialogues_block(dialogues),
+    )
+    cfg = load_settings().text_engine
+    full = ""
+    async for chunk in stream_chat(cfg, MSR_VIDEO_PROMPT_SYSTEM, user_msg):
+        full += chunk
+    return re.sub(r"^```\w*\n?|\n?```$", "", full).strip()
+
+
+class MsrVideoPromptRequest(BaseModel):
+    characters:   list = []      # 参考图顺序，每个 {name, appearance/traits}
+    background:   str = ""       # 背景/场景描述（背景图的内容）
+    description:  str = ""
+    dialogues:    list = []
+    scene_index:  int = 0
+    total_scenes: int = 0
+
+
+@router.post("/generate-msr-video-prompt")
+async def generate_msr_video_prompt(req: MsrVideoPromptRequest):
+    """生成 MSR 多图参考视频提示词（参考图N + 动作叙述格式）。返回 {prompt}。"""
+    p = await _gen_msr_prompt(req.characters, req.background, req.description,
+                              req.dialogues, req.scene_index, req.total_scenes)
+    return {"prompt": p}
+
+
+class MsrVideoPromptsBatchRequest(BaseModel):
+    scenes:       list[dict] = []    # [{scene_id, characters, background, description, dialogues, scene_index}]
+    total_scenes: int = 0
+    concurrency:  int = 0
+
+
+@router.post("/generate-msr-video-prompts-batch")
+async def generate_msr_video_prompts_batch(req: MsrVideoPromptsBatchRequest):
+    """为全部 MSR 分镜批量生成提示词。SSE: {event:result, scene_id, prompt}。"""
+    sem = _asyncio.Semaphore(_resolve_concurrency(req.concurrency))
+
+    async def gen_one(s: dict) -> dict:
+        async with sem:
+            p = await _gen_msr_prompt(
+                s.get("characters") or [], s.get("background", ""),
+                s.get("description", ""), s.get("dialogues") or [],
+                s.get("scene_index", 0), req.total_scenes,
+            )
+            return {"scene_id": s.get("scene_id", ""), "prompt": p}
+
+    return await _run_batched_sse(req.scenes, gen_one)
 
 
 # ── Video prompt generation (streaming SSE) ────────────────────────────────────

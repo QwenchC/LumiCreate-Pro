@@ -1367,18 +1367,16 @@ async function genAllBgPrompts() {
   const sceneIdxById = {}
   scenes.value.forEach((s, i) => { sceneIdxById[String(s.id)] = i })
   try {
-    const resp = await fetch(`${API}/text-engine/generate-frame-prompts-batch`, {
+    // v1.6: 走【专用无角色背景端点】—— 强约束只描述空场景、彻底排除人物
+    const resp = await fetch(`${API}/text-engine/generate-bg-prompts-batch`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
-        // characters:[] → 后端不注入角色块 → 纯环境提示词
-        frames: targets.map(s => ({
+        scenes: targets.map(s => ({
           scene_id:    String(s.id),
           description: s.description,
-          dialogues:   s.dialogues || [],
-          characters:  [],
+          scene_index: s.index,
         })),
-        characters:   [],
         manuscript:   manuscript.value,
         total_scenes: scenes.value.length,
       }),
@@ -1400,9 +1398,8 @@ async function genAllBgPrompts() {
           const ev = JSON.parse(raw)
           if (ev.event === 'result' && ev.scene_id != null) {
             const i = sceneIdxById[String(ev.scene_id)]
-            // bg 取 start_frame_prompt（端点对 characters:[] 产出的就是纯环境描述）
-            if (i != null && ev.start_frame_prompt) {
-              scenes.value[i].bg_prompt = ev.start_frame_prompt
+            if (i != null && ev.bg_prompt) {
+              scenes.value[i].bg_prompt = ev.bg_prompt
             }
             bgPromptProgress.value++
             emit('dirty')
@@ -1412,7 +1409,9 @@ async function genAllBgPrompts() {
         } catch {}
       }
     }
-    await saveImages()
+    // bg_prompt 是 scene 字段 → 必须 saveScenes 才落盘（saveImages 不含 scene 提示词）；
+    // 否则切走再切回 Images 页（onActivated 重拉 /scenes）会把刚生成的 bg_prompt 覆盖丢失。
+    await saveScenes()
   } catch (e) {
     if (e.name !== 'AbortError') loadError.value = e.message || '批量背景提示词失败'
   } finally {
@@ -1490,10 +1489,26 @@ async function regenPromptOnly(scene, frameType) {
     const isBg = frameType === 'bg'
     const selected = scene._scene_characters || []
     const allChars = characters.value || []
-    // v1.6: 背景图不带角色 → 生成纯环境提示词
     const chars = isBg ? [] : allChars.filter(c => selected.includes(c.name))
 
-    // 轮 6: i2i 工作流走专门的 img2img 提示词端点（要求至少有 refs）；bg 始终走 t2i 文生
+    // v1.6: 背景图走【专用无角色端点】—— LLM 被强约束只描述空场景、彻底排除人物
+    if (isBg) {
+      const res = await fetch(API + '/text-engine/generate-bg-prompt', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          description:  scene.description,
+          manuscript:   manuscript.value,
+          scene_index:  scene.index,
+          total_scenes: scenes.value.length,
+        }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      const data = await res.json()
+      if (data.prompt) { scene.bg_prompt = data.prompt; emit('dirty'); saveScenes() }
+      return
+    }
+
+    // 轮 6: i2i 工作流走专门的 img2img 提示词端点（要求至少有 refs）
     let endpoint, body
     if (isI2I.value && !isBg) {
       const refs = getFrameRefsForBackend(scene, frameType)
@@ -1536,8 +1551,6 @@ async function regenPromptOnly(scene, frameType) {
       scene.start_frame_prompt = data.start_frame_prompt
     } else if (frameType === 'end' && data.end_frame_prompt) {
       scene.end_frame_prompt = data.end_frame_prompt
-    } else if (frameType === 'bg' && data.start_frame_prompt) {
-      scene.bg_prompt = data.start_frame_prompt   // v1.6: 用首帧端点的环境描述作背景图提示词
     }
     emit('dirty')
     saveScenes()

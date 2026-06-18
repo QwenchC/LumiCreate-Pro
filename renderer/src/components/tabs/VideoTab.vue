@@ -63,6 +63,18 @@
             class="btn btn-danger btn-sm"
             @click="_videoPromptAbort?.abort(); generatingAllVideoPrompts = false; generatingVideoPromptId = null"
           >⏹ 中断提示词</button>
+          <!-- v1.6: 批量生成全部【多图参考(MSR)】分镜的提示词（参考图N + 动作叙述格式）-->
+          <button
+            v-if="videoMode === 'ltx' && msrSceneCount"
+            class="btn btn-secondary btn-sm"
+            :disabled="msrPromptRunning"
+            title="为所有启用「多图参考」的分镜生成 MSR 视频提示词（参考图+动作叙述）"
+            @click="genAllMsrPrompts"
+          >
+            {{ msrPromptRunning
+              ? `MSR 提示词 ${msrPromptProgress}/${msrPromptTotal}…`
+              : `🎬 全部MSR提示词 (${msrSceneCount})` }}
+          </button>
           <button
             class="btn btn-primary btn-sm"
             :disabled="!selectedWorkflow || !readyCount"
@@ -568,6 +580,15 @@
             <span v-if="!(scene._scene_characters || []).length"
                   class="msr-ref-tag warn">未指定角色 → 仅用背景图驱动</span>
           </div>
+          <div v-if="msrEnabled[scene.id]" class="msr-hint">
+            <button class="btn btn-ghost btn-xs"
+                    :disabled="msrPromptingId === scene.id || msrPromptRunning"
+                    @click="genMsrPrompt(scene)"
+                    title="生成该镜的多图参考视频提示词（参考图N + 动作叙述，写入上方视频提示词）">
+              {{ msrPromptingId === scene.id ? '⏳ 生成中…' : '✦ 多图参考提示词' }}
+            </button>
+            <span class="text-muted" style="font-size:11px">写入上方「视频提示词」，作为 MSR 正向提示</span>
+          </div>
         </div>
 
         <!-- Per-scene progress bar -->
@@ -828,8 +849,10 @@ async function retryFailedBatch() {
   if (!Object.keys(lastErrors.value).length) return
   if (!selectedWorkflow.value) return
   const failedSceneIds = new Set(Object.keys(lastErrors.value))
-  // 失败镜过滤后调用 _runGeneration（已有函数）批量重做
-  const failedScenes = scenes.value.filter(
+  // 失败镜过滤后调用 _runGeneration（已有函数）批量重做。
+  // 必须用 scenesWithData（带 hasStart/hasBg/bgImageB64 等富集字段）—— 原始 scenes.value
+  // 没有这些字段，会让 sceneReady/isMsrScene 全部判否，retry 静默空跑（修复既有缺陷）。
+  const failedScenes = scenesWithData.value.filter(
     s => failedSceneIds.has(String(s.id)) && sceneReady(s)
   )
   if (!failedScenes.length) return
@@ -1097,12 +1120,122 @@ async function _whiteBgPortraitB64(charName) {
   return b64
 }
 
-// 收集某分镜 MSR 参考图：角色白底立绘（最多 3）+ 背景图
+// 解析某分镜的 MSR 角色：仅保留【在角色表里且有白底立绘】的出镜角色（≤3），顺序即
+// LiconMSR 槽位 / 参考图顺序。返回 [{name, appearance, b64}]。提示词与参考图都从这一份
+// 列表派生，确保“提示词里的参考图N”与“喂给 LiconMSR 槽位N 的图”始终是同一个角色（修复
+// 此前两处独立 .filter(Boolean) 谓词不同导致的错位）。_whiteBgPortraitB64 已做缓存，重复调用廉价。
+async function _msrResolvedChars(s) {
+  const byName = Object.fromEntries(allCharacters.value.map(c => [c.name, c]))
+  const names = (s._scene_characters || []).slice(0, 3)
+  const out = []
+  for (const n of names) {
+    const c = byName[n]
+    if (!c) continue
+    const b64 = await _whiteBgPortraitB64(n)
+    if (!b64) continue   // 无白底立绘 → 同时从提示词和参考图里排除，保持对齐
+    out.push({ name: c.name, appearance: c.appearance || c.traits || '', b64 })
+  }
+  return out
+}
+
+// 收集某分镜 MSR 参考图：角色白底立绘（与提示词同源同序）+ 背景图
 async function _gatherMsrRefs(s) {
-  const charNames = (s._scene_characters || []).slice(0, 3)
-  const charB64 = (await Promise.all(charNames.map(_whiteBgPortraitB64))).filter(Boolean)
+  const resolved = await _msrResolvedChars(s)
   const bgB64 = s.bgImageB64 ? await _srcToB64(s.bgImageB64) : ''
-  return { char_ref_b64: charB64, bg_ref_b64: bgB64 }
+  return { char_ref_b64: resolved.map(c => c.b64), bg_ref_b64: bgB64 }
+}
+
+// ── v1.6: MSR 多图参考视频提示词（参考图N + 动作叙述，写入 scenePrompts 作正向提示）──
+const msrPromptingId  = ref(null)   // 单镜生成中
+const msrPromptRunning = ref(false) // 批量生成中
+const msrPromptProgress = ref(0)
+const msrPromptTotal    = ref(0)
+const msrSceneCount = computed(() =>
+  scenesWithData.value.filter(s => isMsrScene(s)).length)
+
+// 组装 MSR 提示词请求体：角色用【解析后的同源列表】（参考图顺序 = LiconMSR 槽 1/2/3）
+async function _msrPromptBody(s) {
+  const resolved = await _msrResolvedChars(s)
+  return {
+    characters:   resolved.map(c => ({ name: c.name, appearance: c.appearance })),
+    background:   s.bg_prompt || s.description || '',
+    description:  s.description || '',
+    dialogues:    s.dialogues || [],
+    scene_index:  s.index,
+    total_scenes: scenes.value.length,
+  }
+}
+
+async function genMsrPrompt(scene) {
+  if (msrPromptingId.value || msrPromptRunning.value) return
+  msrPromptingId.value = scene.id
+  try {
+    const res = await fetch(`${API}/text-engine/generate-msr-video-prompt`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(await _msrPromptBody(scene)),
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json()
+    if (data.prompt) {
+      scenePrompts.value  = { ...scenePrompts.value,  [scene.id]: data.prompt }
+      promptVisible.value = { ...promptVisible.value, [scene.id]: true }
+      _scheduleSavePrompts()
+    }
+  } catch (e) {
+    genError.value = `MSR 提示词生成失败: ${e.message}`
+  } finally {
+    msrPromptingId.value = null
+  }
+}
+
+async function genAllMsrPrompts() {
+  if (msrPromptRunning.value) return
+  const targets = scenesWithData.value.filter(s => isMsrScene(s))
+  if (!targets.length) { genError.value = '没有启用「多图参考」的分镜'; return }
+  msrPromptRunning.value = true
+  msrPromptProgress.value = 0
+  msrPromptTotal.value = targets.length
+  const sceneById = {}
+  targets.forEach(s => { sceneById[String(s.id)] = s })
+  try {
+    const bodies = await Promise.all(targets.map(_msrPromptBody))
+    const resp = await fetch(`${API}/text-engine/generate-msr-video-prompts-batch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scenes: targets.map((s, i) => ({ scene_id: String(s.id), ...bodies[i] })),
+        total_scenes: scenes.value.length,
+      }),
+    })
+    if (!resp.ok) throw new Error('HTTP ' + resp.status)
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') continue
+        let ev; try { ev = JSON.parse(raw) } catch { continue }
+        if (ev.event === 'result' && ev.scene_id != null && ev.prompt) {
+          const sid = String(ev.scene_id)
+          scenePrompts.value  = { ...scenePrompts.value,  [sid]: ev.prompt }
+          promptVisible.value = { ...promptVisible.value, [sid]: true }
+          msrPromptProgress.value++
+        } else if (ev.event === 'item_error') {
+          msrPromptProgress.value++
+        }
+      }
+    }
+    _scheduleSavePrompts()
+  } catch (e) {
+    genError.value = `批量 MSR 提示词失败: ${e.message}`
+  } finally {
+    msrPromptRunning.value = false
+  }
 }
 
 function volcOpts(sceneId) {

@@ -493,3 +493,67 @@ WHITE_BG_PORTRAIT_USER_TEMPLATE = (
     "Existing draft prompt (optional, may refine): {base_prompt}\n\n"
     "Produce the pure-white-background full-body character reference prompt."
 )
+
+
+# ── v1.6: 无角色背景图提示词（彻底排除人物）─────────────────────────────────────
+# 供 MSR 多图参考视频的“场景参考图”用：只描述空场景/环境，绝不出现任何人物。
+
+BG_SCENE_PROMPT_SYSTEM = (
+    "You write English image-generation prompts for EMPTY BACKGROUND / ENVIRONMENT plates "
+    "(the stage/set with NO actors).\n\n"
+    "The output describes ONLY the location and setting — architecture, landscape, streets, "
+    "rooms, furniture, props, vegetation, sky, weather, lighting, time of day, mood, atmosphere.\n\n"
+    "HARD RULES (must all hold):\n"
+    "1. ABSOLUTELY NO people. No characters, no humans, no person, no figures, no silhouettes, "
+    "no crowds, no body parts, no faces, no hands. The frame must be completely empty of any "
+    "living person.\n"
+    "2. If the scene description mentions people or their actions, IGNORE the people entirely and "
+    "describe ONLY the empty place where the action would happen (the set without any actor).\n"
+    "3. Keep the same location, time of day and mood as the scene; do not invent a different place.\n"
+    "4. No text, no watermark, no logo.\n"
+    "5. Output ONLY the final English prompt — one paragraph, no quotes, no commentary, no markdown."
+)
+
+BG_SCENE_PROMPT_USER_TEMPLATE = (
+    "Scene description (it MAY mention people — describe ONLY the empty environment, never the people):\n"
+    "{description}\n"
+    "{context}"
+    "\nWrite the empty-background environment image prompt now (English, strictly NO people)."
+)
+
+
+# ── v1.6: MSR 多图参考视频提示词（“参考图N + 动作叙述”固定格式，中文）──────────────
+# 与 MSR 工作流自带 CLIPTextEncode 默认提示词同构：先逐行声明每张参考图（角色用标签 +
+# 外观；最后一张是场景），再写动作叙述（用标签指代、融入台词、加镜头运动）。
+
+MSR_VIDEO_PROMPT_SYSTEM = (
+    "你是“多图参考视频”（LTX 多图参考工作流）的中文提示词专家。"
+    "按【固定格式】输出中文提示词，用来驱动“多张参考图 + 动作描述”的视频生成。\n\n"
+    "输出格式（严格遵守）：\n"
+    "1) 先逐行声明参考图，顺序与给定的“参考图清单”完全一致：\n"
+    "   参考图1：<标签>，<性别>，<外观>\n"
+    "   参考图2：<标签>，<性别>，<外观>\n"
+    "   …（有几个角色写几行）\n"
+    "   最后一行是场景：参考图N（场景）：<场景/背景描述>\n"
+    "2) 然后另起一段写【动作叙述】：描述画面中发生的动作、表情变化与镜头运动；"
+    "台词必须【原样保留】并用中文引号「」或“”包裹。\n\n"
+    "硬性规则：\n"
+    "1. 只能出现“参考图清单”里给出的角色，一律用其【标签】指代；禁止引入任何其他人物。\n"
+    "2. 角色出现几次都用同一个标签，禁止用“他/她/那个人/两人之一”等代词指代具体角色。\n"
+    "3. <性别> 从外观推断（男人/女人 等）；拿不准就省略该字段。\n"
+    "4. <外观> 必须沿用给定的角色外观原文，保持视觉特征不变，不要增删关键特征。\n"
+    "5. 场景行用给定的“背景/场景描述”。\n"
+    "6. 动作叙述 2–6 句，把给定台词逐字融入并保留引号，并加入合理的镜头运动（推近 / 拉远 / 跟拍 / 环绕 等）。\n"
+    "7. 只输出最终的中文提示词，不要解释、不要标题、不要 markdown、不要代码块。"
+)
+
+MSR_VIDEO_PROMPT_USER_TEMPLATE = (
+    "参考图清单（顺序即参考图顺序；每个角色一张，最后追加一张场景参考图）：\n"
+    "{ref_block}\n"
+    "背景/场景描述（用于场景参考图行）：\n"
+    "{background}\n\n"
+    "本镜（第 {scene_index}/{total_scenes} 镜）画面描述：\n"
+    "{description}\n"
+    "{dialogues_block}"
+    "\n请严格按格式输出该镜的多图参考视频中文提示词。"
+)
