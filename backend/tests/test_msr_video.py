@@ -61,7 +61,10 @@ def test_patch_sets_size_and_frames():
     # EmptyLTXVLatentVideo 的 width/height/length 应来自被改写的 INTConstant
     assert _const_value_feeding(wf, "EmptyLTXVLatentVideo", "width") == 540
     assert _const_value_feeding(wf, "EmptyLTXVLatentVideo", "height") == 960
-    assert _const_value_feeding(wf, "EmptyLTXVLatentVideo", "length") == 24 * 5  # 120
+    # length 对齐到 8n+1（24×5=120 → 121），与实测可用的 flfa2i 帧数公式一致
+    length = _const_value_feeding(wf, "EmptyLTXVLatentVideo", "length")
+    assert length == 121, length
+    assert (length - 1) % 8 == 0       # 必须是 8n+1
 
 
 def test_patch_sets_fps():

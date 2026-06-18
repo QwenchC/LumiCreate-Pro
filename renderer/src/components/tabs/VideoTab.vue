@@ -462,13 +462,13 @@
             {{ scene.hasAudio ? '✓' : '✗' }} 合并音频
             <template v-if="scene.hasAudio"> ({{ formatMs(scene.audioDurationMs) }})</template>
           </span>
-          <span v-if="!workflowFeatures.supports_audio || noAudioMode"
+          <span v-if="(!workflowFeatures.supports_audio || noAudioMode) && !isMsrScene(scene)"
                 class="asset-tag duration-tag">
             ⏱ 时长
             <input type="number" min="1" max="30" step="1"
                    class="duration-input"
                    :value="manualDurations[scene.id] ?? 5"
-                   @input="manualDurations[scene.id] = Number($event.target.value) || 5" />
+                   @input="setManualDuration(scene.id, $event.target.value)" />
             <span class="text-muted" style="margin-left:2px">s</span>
           </span>
           <!-- v1.6: 背景图（无角色）—— 有则可启用 MSR 多图参考 -->
@@ -584,7 +584,7 @@
             <span class="msr-ref-tag" style="border:none;background:none;padding-left:0">⏱ 视频时长</span>
             <input type="number" min="1" max="30" step="1" class="duration-input"
                    :value="manualDurations[scene.id] ?? 5"
-                   @input="manualDurations[scene.id] = Number($event.target.value) || 5" />
+                   @input="setManualDuration(scene.id, $event.target.value)" />
             <span class="text-muted" style="font-size:11px">秒（MSR 自带音轨，时长由你设定）</span>
           </div>
           <div v-if="msrEnabled[scene.id]" class="msr-hint">
@@ -1108,6 +1108,22 @@ function toggleMsr(sceneId, val) {
   _saveMsrEnabled()
 }
 
+// v1.6: 每分镜手动时长按项目持久化（与 msrEnabled 对称）—— 否则刷新/切项目后
+// MSR 开关还在、时长却被清空回落 5s，用户设的值静默丢失。
+function _durStoreKey() { return `lumi_msr_durations_${props.projectId || ''}` }
+
+function _loadManualDurations() {
+  try {
+    const raw = localStorage.getItem(_durStoreKey())
+    manualDurations.value = raw ? (JSON.parse(raw) || {}) : {}
+  } catch { manualDurations.value = {} }
+}
+
+function setManualDuration(sceneId, val) {
+  manualDurations.value = { ...manualDurations.value, [sceneId]: Number(val) || 5 }
+  try { localStorage.setItem(_durStoreKey(), JSON.stringify(manualDurations.value)) } catch {}
+}
+
 // 角色白底立绘 b64 缓存：charName → b64（'' 表示该角色无白底立绘）
 const _whiteBgCache = {}
 
@@ -1571,8 +1587,9 @@ async function loadData() {
       allCharacters.value = chRes.data?.characters || []
     } catch {}
 
-    // v1.6: 恢复每分镜 MSR 开关 + 清空白底立绘缓存（切项目时重新拉）
+    // v1.6: 恢复每分镜 MSR 开关 + 手动时长 + 清空白底立绘缓存（切项目时重新拉）
     _loadMsrEnabled()
+    _loadManualDurations()
     for (const k of Object.keys(_whiteBgCache)) delete _whiteBgCache[k]
 
   } catch (e) {

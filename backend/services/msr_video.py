@@ -113,7 +113,10 @@ def patch_msr_workflow(
     nodes = {n["id"]: n for n in wf.get("nodes", [])}
     fps = float(fps)
     duration_secs = max(1, int(duration_secs))
-    frames = max(9, int(round(fps * duration_secs)))
+    # LTX-2.3 的 latent 视频长度必须是 8n+1（否则 ComfyUI 报错或内部重切帧、使输出时长
+    # 与请求不符）。这里用与已实测可用的 flfa2i 工作流（SimpleCalculatorKJ: 1+8*round(a*b/8)）
+    # 完全相同的对齐公式，保证 frames 永远是 8n+1（如 fps24×5s→121 而非 120）。
+    frames = max(9, int(1 + 8 * round(fps * duration_secs / 8)))
     char_files = [c for c in (char_files or []) if c]
 
     def _const_for(node: dict, input_name: str) -> dict | None:
