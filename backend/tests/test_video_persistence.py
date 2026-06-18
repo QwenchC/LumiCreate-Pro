@@ -119,3 +119,73 @@ def test_merge_with_bgm_pads_clips_and_caps_to_aligned_total(isolated_app, monke
     # 输出 = 音频总长(2×5=10s) + 末尾 END_HOLD(1.5s) 余量
     assert "-t" in cmd
     assert abs(float(cmd[cmd.index("-t") + 1]) - 11.5) < 0.01
+
+
+# ── v1.6 双模：合并按 msr_scene_ids 挑选 旧/MSR 视频 ──────────────────────────
+
+
+def test_videos_and_videos_msr_do_not_cross_contaminate(isolated_app):
+    """GET /videos 只返回旧/普通视频；GET /videos-msr 只返回 MSR 视频；同一镜两者可并存。"""
+    pid = isolated_app["make_project"]()
+    client = isolated_app["client"]
+    pdir = isolated_app["tmp_path"] / pid
+    vdir = pdir / "video"; vdir.mkdir(parents=True, exist_ok=True)
+    (vdir / "scene_001.mp4").write_bytes(b"old")
+    (vdir / "scene_001.msr.mp4").write_bytes(b"msr")
+    (pdir / "videos.json").write_text(json.dumps({"scene_001": "scene_001.mp4"}), encoding="utf-8")
+    (pdir / "videos_msr.json").write_text(json.dumps({"scene_001": "scene_001.msr.mp4"}), encoding="utf-8")
+
+    old = client.get(f"/api/projects/{pid}/videos").json()
+    msr = client.get(f"/api/projects/{pid}/videos-msr").json()
+    assert "scene_001" in old and "?kind=msr" not in old["scene_001"]
+    assert "scene_001" in msr and msr["scene_001"].endswith("?kind=msr")
+
+    # video-file kind 取对应文件
+    r_old = client.get(f"/api/projects/{pid}/video-file/scene_001")
+    r_msr = client.get(f"/api/projects/{pid}/video-file/scene_001?kind=msr")
+    assert r_old.status_code == 200 and r_old.content == b"old"
+    assert r_msr.status_code == 200 and r_msr.content == b"msr"
+
+
+def test_merge_picks_msr_or_old_per_scene(isolated_app, monkeypatch):
+    """启用 MSR 的分镜用 <scene>.msr.mp4，其余用 <scene>.mp4 —— 合并按 msr_scene_ids 选片。"""
+    pid = isolated_app["make_project"]()
+    client = isolated_app["client"]
+    pdir = isolated_app["tmp_path"] / pid
+
+    vdir = pdir / "video"; vdir.mkdir(parents=True, exist_ok=True)
+    # scene_001 两种都有；scene_002 只有旧的
+    (vdir / "scene_001.mp4").write_bytes(b"old1")
+    (vdir / "scene_001.msr.mp4").write_bytes(b"msr1")
+    (vdir / "scene_002.mp4").write_bytes(b"old2")
+    (pdir / "videos.json").write_text(json.dumps({
+        "scene_001": "scene_001.mp4", "scene_002": "scene_002.mp4"}), encoding="utf-8")
+    (pdir / "videos_msr.json").write_text(json.dumps({
+        "scene_001": "scene_001.msr.mp4"}), encoding="utf-8")
+
+    monkeypatch.setattr("routers.video_engine._find_ffmpeg", lambda *a, **k: "ffmpeg.exe")
+    captured = []
+    def _fake_run(cmd, *a, **k):
+        s = " ".join(str(x) for x in cmd)
+        if "-show_entries" in s:
+            return SimpleNamespace(returncode=0, stdout=b"4.0\n", stderr=b"")
+        captured.append(cmd)
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    import services.exec_pool
+    async def _fake_run_blocking(fn, *a, **k): return fn(*a, **k)
+    monkeypatch.setattr(services.exec_pool, "run_blocking", _fake_run_blocking)
+
+    r = client.post("/api/video-engine/merge-project-video", json={
+        "project_id": pid,
+        "scene_order": ["scene_001", "scene_002"],
+        "transition": "cut",
+        "msr_scene_ids": ["scene_001"],   # 仅 scene_001 用 MSR
+    })
+    assert r.status_code == 200, r.text
+    cmd = captured[-1]
+    inputs = [str(cmd[i + 1]) for i, a in enumerate(cmd) if a == "-i"]
+    joined = " ".join(inputs)
+    assert "scene_001.msr.mp4" in joined          # scene_001 → MSR
+    assert "scene_001.mp4" not in joined.replace("scene_001.msr.mp4", "")  # 没用旧的
+    assert "scene_002.mp4" in joined              # scene_002 → 旧/普通

@@ -262,6 +262,16 @@
             <option :value="30">30fps</option>
           </select>
         </div>
+        <!-- v1.6: 多图参考(MSR)视频默认时长 —— 新 MSR 镜未单独设时长时用它 -->
+        <div class="config-group">
+          <label class="cfg-label" title="启用「多图参考视频」的分镜，未单独设时长时用这个默认值；每镜仍可在分镜里单独调">
+            多图参考默认时长
+          </label>
+          <input type="number" min="1" max="30" step="1"
+                 class="input select-compact" style="width:72px"
+                 v-model.number="msrDefaultDuration" />
+          <span class="text-muted" style="font-size:12px">秒</span>
+        </div>
       </div>
       <!-- v1.4.1: 工作流模式提示 + 无音频开关 -->
       <div class="config-row" v-if="workflowKind !== 'unknown'">
@@ -431,6 +441,45 @@
     <!-- ── Scene list ── -->
     <div class="scene-video-list" v-if="scenes.length">
       <div v-for="scene in scenesWithData" :key="scene.id" class="scene-video-card card">
+        <div class="svcard-cols">
+
+        <!-- ── 左：视频预览区域 ── -->
+        <div class="svcard-col-preview">
+          <div v-if="videoSrcFor(scene)" class="video-result">
+            <video :src="videoSrcFor(scene)" controls preload="metadata" class="video-player" />
+            <!-- 双模标识：当前预览的是旧/普通还是多图参考视频（随 MSR 开关切换） -->
+            <div class="video-post-actions">
+              <span class="msr-ref-tag" :class="isMsrScene(scene) ? 'ok' : ''">
+                {{ isMsrScene(scene) ? '🎬 多图参考' : '🎞 普通' }}
+              </span>
+              <button class="btn btn-ghost btn-xs"
+                      :disabled="running || redubState[scene.id] === 'running'"
+                      @click="openRedub(scene)"
+                      title="用 RVC 把该分镜视频的人声统一变声（音色一致性）">
+                🎙 视频后期（变声）
+              </button>
+              <span v-if="redubState[scene.id] === 'running'" class="text-muted" style="font-size:11px">
+                后期处理中… {{ redubProgressPct(scene.id) }}%
+              </span>
+              <span v-else-if="redubState[scene.id] === 'done'" class="msr-ref-tag ok">✓ 已变声</span>
+              <span v-else-if="redubState[scene.id] === 'error'" class="msr-ref-tag warn">✗ 后期失败</span>
+            </div>
+          </div>
+          <div v-else class="video-preview-empty">
+            <span class="video-preview-empty-icon">🎬</span>
+            <span>{{ isMsrScene(scene) ? '多图参考视频尚未生成' : '视频尚未生成' }}</span>
+          </div>
+          <!-- 本镜生成进度 -->
+          <div class="scene-mini-bar-wrap" v-if="sceneState[scene.id] === 'active'">
+            <div class="scene-mini-bar">
+              <div class="scene-mini-fill" :style="{ width: sceneProgressPct(scene.id) + '%' }" />
+            </div>
+            <span class="text-muted" style="font-size:11px">{{ sceneProgressPct(scene.id) }}%</span>
+          </div>
+        </div>
+
+        <!-- ── 右：分镜配置区域 ── -->
+        <div class="svcard-col-config">
 
         <!-- Header -->
         <div class="svcard-header">
@@ -583,9 +632,9 @@
           <div v-if="msrEnabled[scene.id]" class="msr-hint" style="align-items:center">
             <span class="msr-ref-tag" style="border:none;background:none;padding-left:0">⏱ 视频时长</span>
             <input type="number" min="1" max="30" step="1" class="duration-input"
-                   :value="manualDurations[scene.id] ?? 5"
+                   :value="manualDurations[scene.id] ?? msrDefaultDuration"
                    @input="setManualDuration(scene.id, $event.target.value)" />
-            <span class="text-muted" style="font-size:11px">秒（MSR 自带音轨，时长由你设定）</span>
+            <span class="text-muted" style="font-size:11px">秒（默认 {{ msrDefaultDuration }}s，自带音轨，可逐镜调）</span>
           </div>
           <div v-if="msrEnabled[scene.id]" class="msr-hint">
             <button class="btn btn-ghost btn-xs"
@@ -598,38 +647,8 @@
           </div>
         </div>
 
-        <!-- Per-scene progress bar -->
-        <div class="scene-mini-bar-wrap" v-if="sceneState[scene.id] === 'active'">
-          <div class="scene-mini-bar">
-            <div class="scene-mini-fill" :style="{ width: sceneProgressPct(scene.id) + '%' }" />
-          </div>
-          <span class="text-muted" style="font-size:11px">{{ sceneProgressPct(scene.id) }}%</span>
-        </div>
-
-        <!-- Video result -->
-        <div v-if="sceneVideos[scene.id]" class="video-result">
-          <video
-            :src="sceneVideos[scene.id]"
-            controls
-            preload="metadata"
-            class="video-player"
-          />
-          <!-- v1.6: 视频后期 RVC 变声（音色一致性）—— 对已生成的分镜视频做后期换音轨 -->
-          <div class="video-post-actions">
-            <button class="btn btn-ghost btn-xs"
-                    :disabled="running || redubState[scene.id] === 'running'"
-                    @click="openRedub(scene)"
-                    title="用 RVC 把该分镜视频的人声统一变声（音色一致性）">
-              🎙 视频后期（变声）
-            </button>
-            <span v-if="redubState[scene.id] === 'running'" class="text-muted" style="font-size:11px">
-              后期处理中… {{ redubProgressPct(scene.id) }}%
-            </span>
-            <span v-else-if="redubState[scene.id] === 'done'" class="msr-ref-tag ok">✓ 已变声</span>
-            <span v-else-if="redubState[scene.id] === 'error'" class="msr-ref-tag warn">✗ 后期失败</span>
-          </div>
-        </div>
-
+        </div><!-- /svcard-col-config -->
+        </div><!-- /svcard-cols -->
       </div>
     </div>
 
@@ -892,6 +911,17 @@ const workflowFeatures = ref({
 const noAudioMode = ref(false)
 // 无音频时的手动时长（秒），按分镜 id 存
 const manualDurations = ref({})   // { sceneId: number }
+// v1.6: 多图参考(MSR)视频默认时长（秒），页面顶部可设；新 MSR 镜未单独设时长时用它。
+const msrDefaultDuration = ref(10)
+try {
+  const _d = Number(localStorage.getItem('lumi_msr_default_duration'))
+  if (_d >= 1) msrDefaultDuration.value = _d
+} catch {}
+watch(msrDefaultDuration, (v) => {
+  const n = Math.max(1, Math.min(30, Number(v) || 10))
+  if (n !== v) { msrDefaultDuration.value = n; return }
+  try { localStorage.setItem('lumi_msr_default_duration', String(n)) } catch {}
+})
 
 async function loadWorkflowInfo() {
   workflowKind.value = 'unknown'
@@ -916,9 +946,10 @@ const stopFlag        = ref(false)
 const genError        = ref('')
 const sceneState      = ref({})   // id → pending|active|done|error
 const sceneProgress   = ref({})   // id → {value, max}
-const sceneVideos     = ref({})   // id → 可直接喂给 <video> 的 src（流式 URL / data URL）
+const sceneVideos     = ref({})   // id → 旧/普通视频 src（流式 URL / data URL）
+const sceneVideosMsr  = ref({})   // v1.6: id → 多图参考(MSR)视频 src（与旧视频并存）
 
-// v1.5.1: GET /videos 现在返回 {scene_id: url 路径}（不再 base64 整包）。
+// v1.5.1: GET /videos 返回 {scene_id: url 路径}（不再 base64 整包）。
 // 拼成带主机名 + 防缓存戳的完整地址，让 <video> 按需流式加载。
 function _toVideoSrcMap(data) {
   const host = API.replace(/\/api\/?$/, '')
@@ -926,10 +957,29 @@ function _toVideoSrcMap(data) {
   const out = {}
   for (const [sid, v] of Object.entries(data || {})) {
     const s = String(v)
-    // 新后端：'/api/projects/.../video-file/xxx' 路径 → 加主机名 + 防缓存
-    out[sid] = s.startsWith('/') ? `${host}${s}?t=${stamp}` : s
+    if (!s.startsWith('/')) { out[sid] = s; continue }   // data URL 等原样
+    // 已带 query(?kind=msr) 用 & 续防缓存戳，否则用 ?
+    const sep = s.includes('?') ? '&' : '?'
+    out[sid] = `${host}${s}${sep}t=${stamp}`
   }
   return out
+}
+
+// v1.6 双模：按该镜的 MSR 开关返回应预览/应合并的视频源 & 是否就绪
+function videoSrcFor(scene) {
+  return isMsrScene(scene) ? sceneVideosMsr.value[scene.id] : sceneVideos.value[scene.id]
+}
+function hasVideoFor(scene) { return !!videoSrcFor(scene) }
+
+// v1.6: 同时拉旧/普通视频 + MSR 视频两套索引
+async function _reloadAllVideos() {
+  if (!props.projectId) return
+  const [o, m] = await Promise.all([
+    axios.get(`${API}/projects/${props.projectId}/videos`).catch(() => ({ data: {} })),
+    axios.get(`${API}/projects/${props.projectId}/videos-msr`).catch(() => ({ data: {} })),
+  ])
+  sceneVideos.value = _toVideoSrcMap(o.data || {})
+  sceneVideosMsr.value = _toVideoSrcMap(m.data || {})
 }
 const mergeResult     = ref(null) // { output_path, output_dir } once merged
 const merging         = ref(false)
@@ -1039,11 +1089,8 @@ async function runRedub() {
     }
     if (ok) {
       redubState.value = { ...redubState.value, [sid]: 'done' }
-      // 刷新该分镜视频（音轨已换、加防缓存戳）
-      try {
-        const { data } = await axios.get(`${API}/projects/${props.projectId}/videos`)
-        sceneVideos.value = _toVideoSrcMap(data)
-      } catch {}
+      // 刷新视频（音轨已换、加防缓存戳）
+      try { await _reloadAllVideos() } catch {}
       d.visible = false
     } else {
       redubState.value = { ...redubState.value, [sid]: 'error' }
@@ -1406,10 +1453,7 @@ async function runSlideshow() {
     }
     slideshowResult.value = await r.json()
     // 刷新已有视频映射：让分镜卡片显示新出的 .mp4
-    try {
-      const { data } = await axios.get(`${API}/projects/${props.projectId}/videos`)
-      if (data) sceneVideos.value = { ...sceneVideos.value, ..._toVideoSrcMap(data) }
-    } catch {}
+    try { await _reloadAllVideos() } catch {}
   } catch (e) {
     alert('图片放映渲染失败: ' + (e.message || e))
   } finally {
@@ -1470,8 +1514,9 @@ const overallPct = computed(() =>
 )
 
 const allVideosReady = computed(() =>
-  scenes.value.length > 0 &&
-  scenes.value.every(s => !!sceneVideos.value[s.id])
+  scenesWithData.value.length > 0 &&
+  // v1.6 双模：每镜按其 MSR 开关检查对应那套视频是否就绪
+  scenesWithData.value.every(s => hasVideoFor(s))
 )
 
 // v1.4.1: 按工作流类型决定 readiness
@@ -1520,13 +1565,14 @@ async function loadData() {
   if (!props.projectId) return
   loadingScenes.value = true
   try {
-    const [scenesRes, imgRes, audRes, settingsRes, wfRes, vidRes, promptsRes] = await Promise.all([
+    const [scenesRes, imgRes, audRes, settingsRes, wfRes, vidRes, vidMsrRes, promptsRes] = await Promise.all([
       axios.get(`${API}/projects/${props.projectId}/scenes`),
       axios.get(`${API}/projects/${props.projectId}/images`).catch(() => ({ data: { slots: [], selected: {} } })),
       axios.get(`${API}/projects/${props.projectId}/audio`).catch(() => ({ data: {} })),
       axios.get(`${API}/settings`).catch(() => ({ data: {} })),
       axios.get(`${API}/video-engine/workflows`).catch(() => ({ data: [] })),
       axios.get(`${API}/projects/${props.projectId}/videos`).catch(() => ({ data: {} })),
+      axios.get(`${API}/projects/${props.projectId}/videos-msr`).catch(() => ({ data: {} })),
       axios.get(`${API}/projects/${props.projectId}/video-prompts`).catch(() => ({ data: {} })),
     ])
 
@@ -1573,6 +1619,7 @@ async function loadData() {
 
     // Saved videos（流式 URL 映射，不再整包 base64）
     sceneVideos.value = _toVideoSrcMap(vidRes.data)
+    sceneVideosMsr.value = _toVideoSrcMap(vidMsrRes.data)
 
     // Saved video prompts
     scenePrompts.value = promptsRes.data || {}
@@ -1610,10 +1657,7 @@ const tabsStore = useTabsStore()
 watch(() => tabsStore.activeId, async (newId) => {
   if (newId !== props.projectId) return
   if (running.value || !scenes.value.length) return
-  try {
-    const { data } = await axios.get(`${API}/projects/${props.projectId}/videos`)
-    sceneVideos.value = _toVideoSrcMap(data)
-  } catch {}
+  try { await _reloadAllVideos() } catch {}
 })
 
 // ── generation ─────────────────────────────────────────────────────────────────
@@ -1622,7 +1666,7 @@ let currentReader = null
 async function startGeneration() {
   if (!selectedWorkflow.value) return
 
-  const existingCount = scenes.value.filter(s => !!sceneVideos.value[s.id]).length
+  const existingCount = scenesWithData.value.filter(s => hasVideoFor(s)).length
   if (existingCount > 0) {
     const ok = confirm(
       `检测到已有 ${existingCount} 个分镜视频。\n` +
@@ -1653,8 +1697,8 @@ async function resumeGeneration() {
   genError.value    = ''
 
   const states = { ...sceneState.value }
-  for (const s of scenes.value) {
-    if (sceneVideos.value[s.id]) {
+  for (const s of scenesWithData.value) {
+    if (hasVideoFor(s)) {
       states[s.id] = 'done'
     } else if (!states[s.id]) {
       states[s.id] = 'pending'
@@ -1662,7 +1706,7 @@ async function resumeGeneration() {
   }
   sceneState.value = states
 
-  const readyScenes = scenesWithData.value.filter(s => sceneReady(s) && !sceneVideos.value[s.id])
+  const readyScenes = scenesWithData.value.filter(s => sceneReady(s) && !hasVideoFor(s))
   if (!readyScenes.length) {
     running.value = false
     genFinished.value = true
@@ -1918,12 +1962,13 @@ async function _runGeneration(sceneList) {
             needEnd ? _srcToB64(s.endImageB64) : Promise.resolve(''),
           ])
 
-      // 时长：无音频模式用手动设置（默认 5s），有音频用音频时长。
-      // v1.6: MSR 分镜【自带 LTX 原生音轨、不依赖预合并 TTS】→ 时长必须由用户手控
-      // （此前误用 s.audioDurationMs，导致被某条残留音频长度自动定成 3s 无法改）。
-      const dur_ms = (msrOn || dropAudio)
-        ? Math.max(1, Number(manualDurations.value[s.id] ?? 5)) * 1000
-        : (s.audioDurationMs || 4000)
+      // 时长：MSR 镜【自带 LTX 原生音轨、不依赖预合并 TTS】→ 用户手控，默认取页面顶部
+      // 的「多图参考默认时长」(10s)；无音频模式手控默认 5s；有音频镜用音频时长。
+      const dur_ms = msrOn
+        ? Math.max(1, Number(manualDurations.value[s.id] ?? msrDefaultDuration.value)) * 1000
+        : (dropAudio
+            ? Math.max(1, Number(manualDurations.value[s.id] ?? 5)) * 1000
+            : (s.audioDurationMs || 4000))
 
       // v1.4.10++: 火山引擎模式 —— 注入每分镜独立的 volcengine_options
       let volcOptions = undefined
@@ -2023,12 +2068,16 @@ function handleEvent(evt) {
   } else if (event === 'scene_done') {
     sceneState.value = { ...sceneState.value, [scene_id]: 'done' }
     if (evt.video) {
-      // 即时预览：本镜刚生成的 base64 已在内存里，直接当 data URL 喂 <video>
-      // （一次只一镜，不会像 reload 那样一次性 base64 全部 → 不会撑爆响应/内存）
-      sceneVideos.value = { ...sceneVideos.value,
-        [scene_id]: 'data:video/mp4;base64,' + evt.video }
-      // A3: 单镜增量保存（落盘，reload 后改走流式 URL）
-      _saveOneVideo(scene_id, evt.video)
+      // 即时预览：本镜刚生成的 base64 当 data URL 喂 <video>。v1.6 双模：MSR 镜写进
+      // sceneVideosMsr（后端已落盘 .msr.mp4，前端不再 PUT /videos/slot 以免误写旧 .mp4）；
+      // 普通镜写 sceneVideos 并增量落盘（保持旧行为）。
+      const dataUrl = 'data:video/mp4;base64,' + evt.video
+      if (evt.msr) {
+        sceneVideosMsr.value = { ...sceneVideosMsr.value, [scene_id]: dataUrl }
+      } else {
+        sceneVideos.value = { ...sceneVideos.value, [scene_id]: dataUrl }
+        _saveOneVideo(scene_id, evt.video)   // A3: 单镜增量保存（仅旧/普通视频）
+      }
     }
   } else if (event === 'scene_retrying') {
     // VRAM offload detected — backend is freeing memory and retrying; keep scene active
@@ -2075,9 +2124,12 @@ async function mergeVideos() {
   genError.value = ''
   try {
     const scene_order = scenes.value.map(s => String(s.id))
+    // v1.6 双模：把启用「多图参考」的分镜 id 传给后端 → 这些镜合并时用 .msr.mp4
+    const msr_scene_ids = scenesWithData.value.filter(s => isMsrScene(s)).map(s => String(s.id))
     const { data } = await axios.post(`${API}/video-engine/merge-project-video`, {
       project_id: props.projectId,
       scene_order,
+      msr_scene_ids,
       // D3: 镜间过渡
       transition: mergeTransition.value,
       transition_duration_ms: mergeTransitionMs.value,
@@ -2305,7 +2357,23 @@ async function showMergedInFolder() {
 .scene-video-list {
   flex:1; overflow-y:auto; padding:0 16px 16px; display:flex; flex-direction:column; gap:10px;
 }
-.scene-video-card { padding:12px; display:flex; flex-direction:column; gap:8px; }
+.scene-video-card { padding:12px; }
+
+/* v1.6: 分镜卡左右双栏 —— 左视频预览，右分镜配置 */
+.svcard-cols { display:flex; gap:14px; align-items:flex-start; }
+.svcard-col-preview { flex:0 0 42%; max-width:42%; display:flex; flex-direction:column; gap:8px; position:sticky; top:8px; }
+.svcard-col-config  { flex:1; min-width:0; display:flex; flex-direction:column; gap:8px; }
+.video-preview-empty {
+  width:100%; aspect-ratio:16/10; border-radius:6px;
+  border:1px dashed var(--border-color); background:var(--bg-tertiary,#1a1a1a);
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:6px; color:var(--color-text-muted); font-size:12px;
+}
+.video-preview-empty-icon { font-size:26px; opacity:.5; }
+@media (max-width: 900px) {
+  .svcard-cols { flex-direction:column; }
+  .svcard-col-preview { flex:none; max-width:100%; width:100%; position:static; }
+}
 
 .svcard-header { display:flex; align-items:flex-start; gap:8px; }
 .svcard-desc {

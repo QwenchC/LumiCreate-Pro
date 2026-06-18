@@ -76,8 +76,13 @@ def test_generate_stream_dispatches_msr_scene(isolated_app, monkeypatch):
     assert "video_msr" in joined
     assert "scene_done" in joined
 
-    # 完成事件复用现有落盘通路：video/<scene>.mp4 写盘
-    assert (pdir / "video" / "scene_001.mp4").exists()
+    # v1.6 双模：MSR 视频写到独立的 <scene>.msr.mp4（与旧/普通 <scene>.mp4 并存）
+    assert (pdir / "video" / "scene_001.msr.mp4").exists()
+    assert not (pdir / "video" / "scene_001.mp4").exists()
+    # MSR 索引 videos_msr.json 落盘
+    import json as _json
+    msr_idx = _json.loads((pdir / "videos_msr.json").read_text(encoding="utf-8-sig"))
+    assert msr_idx.get("scene_001") == "scene_001.msr.mp4"
 
 
 def test_msr_scene_without_refs_errors(isolated_app, monkeypatch):

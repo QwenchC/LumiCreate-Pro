@@ -887,11 +887,55 @@ async def load_videos(project_id: str):
     return result
 
 
-def _resolve_scene_video_filename(project_id: str, scene_id: str) -> Optional[str]:
-    """按 videos.json → scene_assets → {scene_id}.mp4 解析某分镜的视频文件名。"""
+@router.get("/{project_id}/videos-msr")
+async def load_videos_msr(project_id: str):
+    """v1.6：返回【多图参考(MSR)视频】索引 {scene_id: 流式URL}。与 GET /videos（旧/普通
+    视频）并行、互不影响；前端据此按分镜 MSR 开关切换预览/合并。结构同 /videos。"""
     proj_dir = _project_dir(project_id)
     vid_dir = proj_dir / "video"
-    meta_path = proj_dir / "videos.json"
+    meta_path = proj_dir / "videos_msr.json"
+    metadata: dict = {}
+    if meta_path.exists():
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            metadata = {}
+    # 自愈：scene_assets 'video_msr' 有登记但索引缺
+    discovered = dict(metadata)
+    try:
+        from services.project_repo import list_video_assets
+        for scene_id, rel in list_video_assets(project_id, asset_type="video_msr").items():
+            if scene_id in discovered:
+                continue
+            fn = Path(rel).name
+            if (vid_dir / fn).exists():
+                discovered[scene_id] = fn
+    except Exception:
+        pass
+    result, healed = {}, {}
+    for scene_id, filename in discovered.items():
+        if (vid_dir / filename).exists():
+            result[scene_id] = f"/api/projects/{project_id}/video-file/{scene_id}?kind=msr"
+            healed[scene_id] = filename
+    if set(healed) - set(metadata):
+        try:
+            meta_path.write_text(
+                json.dumps(healed, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+    return result
+
+
+def _resolve_scene_video_filename(project_id: str, scene_id: str,
+                                  kind: str = "old") -> Optional[str]:
+    """按 索引json → scene_assets → 约定文件名 解析某分镜的视频文件名。
+    kind='old'（旧/普通视频）或 'msr'（多图参考视频）—— 双模分别存盘、互不覆盖。"""
+    proj_dir = _project_dir(project_id)
+    vid_dir = proj_dir / "video"
+    is_msr = kind == "msr"
+    idx_name = "videos_msr.json" if is_msr else "videos.json"
+    asset_kind = "video_msr" if is_msr else "video"
+    meta_path = proj_dir / idx_name
     if meta_path.exists():
         try:
             md = json.loads(meta_path.read_text(encoding="utf-8-sig"))
@@ -902,21 +946,22 @@ def _resolve_scene_video_filename(project_id: str, scene_id: str) -> Optional[st
             pass
     try:
         from services.project_repo import list_video_assets
-        rel = list_video_assets(project_id).get(scene_id)
+        rel = list_video_assets(project_id, asset_type=asset_kind).get(scene_id)
         if rel and (vid_dir / Path(rel).name).is_file():
             return Path(rel).name
     except Exception:
         pass
-    cand = f"{scene_id}.mp4"
+    cand = f"{scene_id}.msr.mp4" if is_msr else f"{scene_id}.mp4"
     if (vid_dir / cand).is_file():
         return cand
     return None
 
 
 @router.get("/{project_id}/video-file/{scene_id}")
-async def get_scene_video_file(project_id: str, scene_id: str):
-    """流式返回单个分镜视频（支持 Range，<video> 可拖拽）。替代 base64 整包传输。"""
-    filename = _resolve_scene_video_filename(project_id, scene_id)
+async def get_scene_video_file(project_id: str, scene_id: str, kind: str = "old"):
+    """流式返回单个分镜视频（支持 Range，<video> 可拖拽）。替代 base64 整包传输。
+    kind=msr 取多图参考视频（<scene>.msr.mp4），否则取旧/普通视频。"""
+    filename = _resolve_scene_video_filename(project_id, scene_id, kind=kind)
     if not filename:
         raise HTTPException(status_code=404, detail="该分镜暂无视频")
     full = _project_dir(project_id) / "video" / filename

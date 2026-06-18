@@ -536,8 +536,13 @@ async def generate_video_stream(req: VideoGenerateRequest):
                         break
                     elif ev == "completed":
                         # D1: project_id 提供时由后端直接落盘 + 事件加 file_path
+                        # v1.6 双模：MSR 分镜与普通分镜【分别存盘】——
+                        #   普通 → video/<scene>.mp4 + videos.json + asset 'video'
+                        #   MSR  → video/<scene>.msr.mp4 + videos_msr.json + asset 'video_msr'
+                        # 两者并存，合并时按分镜的 MSR 开关挑选用哪一个。
                         ev_out = {**event, "event": "scene_done",
-                                  "scene_index": scene.scene_index}
+                                  "scene_index": scene.scene_index,
+                                  "msr": is_msr_scene}
                         if req.project_id and event.get("video"):
                             try:
                                 import base64 as _b64
@@ -545,25 +550,30 @@ async def generate_video_stream(req: VideoGenerateRequest):
                                 from config import load_settings as _ls
                                 vid_dir = _P(_ls().projects_dir) / req.project_id / "video"
                                 vid_dir.mkdir(parents=True, exist_ok=True)
-                                filename = f"{scene.scene_id}.mp4"
+                                filename = (f"{scene.scene_id}.msr.mp4" if is_msr_scene
+                                            else f"{scene.scene_id}.mp4")
                                 (vid_dir / filename).write_bytes(
                                     _b64.b64decode(event["video"])
                                 )
                                 rel = f"video/{filename}"
+                                asset_kind = "video_msr" if is_msr_scene else "video"
                                 ev_out["file_path"] = rel
                                 ev_out["url"] = (
-                                    f"/api/projects/{req.project_id}/assets/file/"
-                                    f"{scene.scene_id}/video"
+                                    f"/api/projects/{req.project_id}/video-file/"
+                                    f"{scene.scene_id}"
+                                    + ("?kind=msr" if is_msr_scene else "")
                                 )
-                                # 同步 SQLite scene_assets（自动推进 → video_ready）
+                                # 同步 SQLite scene_assets（普通走 'video' 自动推进 → video_ready；
+                                # MSR 走独立 asset_type 'video_msr'，不干扰旧状态机）
                                 from services.project_repo import record_asset
                                 record_asset(
-                                    req.project_id, scene.scene_id, "video",
+                                    req.project_id, scene.scene_id, asset_kind,
                                     slot_index=0, file_path=rel, format="mp4",
                                     is_selected=True,
                                 )
-                                # videos.json 也维护一份（前端老路径仍能用）
-                                meta_path = _P(_ls().projects_dir) / req.project_id / "videos.json"
+                                # 索引文件：普通 videos.json / MSR videos_msr.json
+                                idx_name = "videos_msr.json" if is_msr_scene else "videos.json"
+                                meta_path = _P(_ls().projects_dir) / req.project_id / idx_name
                                 metadata: dict = {}
                                 if meta_path.exists():
                                     try:
@@ -643,6 +653,9 @@ class MergeVideoRequest(BaseModel):
     bgm_volume_db: float = -20.0             # BGM 相对原音的音量（负值越大越轻），关闭 BGM 用 -100
     bgm_fade_in_ms: int = 1000
     bgm_fade_out_ms: int = 1500
+    # v1.6 双模：启用「多图参考视频」的分镜 id 集合 —— 这些镜用 <scene>.msr.mp4，
+    # 其余用旧/普通 <scene>.mp4。前端按每镜 MSR 开关传入；不传则全用旧视频（向后兼容）。
+    msr_scene_ids: list[str] = []
 
 
 class MergeVideoResult(BaseModel):
@@ -727,19 +740,38 @@ async def merge_project_video(req: MergeVideoRequest):
     projects_dir = Path(_ls().projects_dir)
     proj_dir = projects_dir / req.project_id
     vid_dir  = proj_dir / "video"
-    meta_path = proj_dir / "videos.json"
 
-    if not meta_path.exists():
+    # v1.6 双模：旧/普通视频走 videos.json，多图参考(MSR)走 videos_msr.json；按每镜的
+    # MSR 开关（req.msr_scene_ids）分别挑选 <scene>.mp4 / <scene>.msr.mp4，合到一条片里。
+    def _load_idx(name: str) -> dict:
+        p = proj_dir / name
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8-sig"))
+            except Exception:
+                return {}
+        return {}
+
+    old_idx = _load_idx("videos.json")
+    msr_idx = _load_idx("videos_msr.json")
+    msr_set = set(str(s) for s in (req.msr_scene_ids or []))
+
+    if not old_idx and not msr_idx and not any(vid_dir.glob("*.mp4")):
         raise HTTPException(status_code=400, detail="该项目尚无已保存的分镜视频")
-
-    saved: dict = json.loads(meta_path.read_text(encoding="utf-8"))
 
     # Build ordered list of video files
     ordered_files: list[Path] = []
     for scene_id in req.scene_order:
-        filename = saved.get(scene_id)
+        use_msr = scene_id in msr_set
+        filename = (msr_idx.get(scene_id) if use_msr else old_idx.get(scene_id))
+        if not filename:   # 索引缺失 → 回退到约定文件名
+            cand = f"{scene_id}.msr.mp4" if use_msr else f"{scene_id}.mp4"
+            if (vid_dir / cand).is_file():
+                filename = cand
         if not filename:
-            raise HTTPException(status_code=400, detail=f"分镜 {scene_id} 尚无视频，请先生成所有分镜")
+            label = "多图参考" if use_msr else ""
+            raise HTTPException(status_code=400,
+                                detail=f"分镜 {scene_id} 尚无{label}视频，请先生成该分镜")
         p = vid_dir / filename
         if not p.exists():
             raise HTTPException(status_code=400, detail=f"分镜视频文件不存在: {filename}")
