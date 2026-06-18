@@ -114,3 +114,22 @@ def test_patch_does_not_mutate_input():
     patch_msr_workflow(wf, width=540, height=960, fps=24, duration_secs=5,
                        char_files=["a.png"])
     assert json.dumps(wf, ensure_ascii=False) == before   # 深拷贝，原图不动
+
+
+def test_patched_workflow_converts_with_required_inputs():
+    """回归：patch 后过 _litegraph_to_api，LiconMSR.frame_count 与
+    LTXVEmptyLatentAudio.{frame_rate,batch_size} 必须都在（ComfyUI 校验依赖）。
+    根因：frame_count 是数值型 COMBO（会被旧 str-only 校验跳过）；audio.frame_rate 是 INT
+    （fps 写成 float 会被 INT 校验跳过并连带丢 batch_size）。"""
+    from services.comfyui import _litegraph_to_api
+    wf = patch_msr_workflow(_load_msr(), width=704, height=1280, fps=24,
+                            duration_secs=5, char_files=["c1.png", "c2.png"],
+                            bg_file="bg.png")
+    api = _litegraph_to_api(wf)
+    licon = next(n for n in api.values() if n["class_type"] == "LiconMSR")
+    aud = next(n for n in api.values() if n["class_type"] == "LTXVEmptyLatentAudio")
+    assert "frame_count" in licon["inputs"], licon["inputs"]
+    assert "frame_rate" in aud["inputs"] and "batch_size" in aud["inputs"], aud["inputs"]
+    # audio frame_rate 必须是整数（不是 24.0）
+    assert isinstance(aud["inputs"]["frame_rate"], int)
+    assert aud["inputs"]["frame_rate"] == 24

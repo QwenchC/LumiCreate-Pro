@@ -743,7 +743,10 @@ def _litegraph_to_api(workflow: dict) -> dict:
         "INT":     lambda v: isinstance(v, int) and not isinstance(v, bool),
         "FLOAT":   lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
         "STRING":  lambda v: isinstance(v, str),
-        "COMBO":   lambda v: isinstance(v, str),
+        # COMBO 下拉项可以是字符串，也可以是数值（如 LiconMSR.frame_count 是 INT 值的
+        # COMBO=41）。只认 str 会把数值型 COMBO 当作类型不符跳过 → 下游报
+        # "Required input is missing"。放宽到 str/int/float（排除 bool）。
+        "COMBO":   lambda v: isinstance(v, (str, int, float)) and not isinstance(v, bool),
         "BOOLEAN": lambda v: isinstance(v, bool),
     }
 

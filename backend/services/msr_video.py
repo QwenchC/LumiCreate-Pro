@@ -142,13 +142,16 @@ def patch_msr_workflow(
         if const is not None:
             _set_widget(const, 0, int(frames))
 
-    # 2) fps：CreateVideo[0] / LTXVConditioning[0] / LTXVEmptyLatentAudio[1]
+    # 2) fps：CreateVideo[0] / LTXVConditioning[0] 是 FLOAT；LTXVEmptyLatentAudio.frame_rate
+    #    是 INT —— 必须写整数，否则 _litegraph_to_api 的 INT 类型校验会把 24.0 跳过，
+    #    导致 frame_rate 错位 + batch_size 丢失（"Required input is missing"）。
+    fps_int = int(round(fps))
     for n in _nodes_by_type(wf, "CreateVideo"):
         _set_widget(n, 0, fps)
     for n in _nodes_by_type(wf, "LTXVConditioning"):
         _set_widget(n, 0, fps)
     for n in _nodes_by_type(wf, "LTXVEmptyLatentAudio"):
-        _set_widget(n, 1, fps)
+        _set_widget(n, 1, fps_int)
 
     # 3) 正向提示词：接到 LTXVConditioning.positive 的 CLIPTextEncode
     if prompt:
