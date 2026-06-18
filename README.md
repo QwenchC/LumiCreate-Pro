@@ -33,7 +33,12 @@
 - Master-detail 分割布局，支持多工作流选择 + 自动保存
 - 批量生成（跳过已有图片）、单个分镜生成、单帧操作、本地导入 + 比例剪裁
 - i2i 参考图槽位（角色立绘 / 元素库 / 本地上传）、SD 高级参数面板
+- **首帧 / 末帧 / 背景图三容器**（v1.6.0）：除首/末帧外新增「背景图」分镜容器，生成不含人物的纯环境图（`image_bg`），供 MSR 多图参考视频做背景参考
 - 图片预览和管理，WebSocket 流式进度更新，自动持久化保存/加载
+
+### 👤 角色管理
+- 角色卡（姓名 / 定位 / 性格 / 外观 appearance），立绘多版本生成 + 设主图
+- **纯白背景立绘**（v1.6.0）：立绘生成勾选「纯白背景」→ 文本引擎自动把外观改写成纯白底全身参考提示词（强力背景负面词 + 确定性兜底），供 MSR 多图参考视频做角色参考
 
 ### 📦 元素库
 - **全局库 + 项目库共通**（v1.5.0）：项目「元素」标签页一键在「本项目 / 全局库」间切换；每个元素可「⇄」跨库复制（全局 ↔ 项目，双向，新落一份独立文件）
@@ -70,6 +75,8 @@
   - **图片放映视频**（无 GPU / 低显存）— `render-slideshow` 端点直接 ffmpeg 渲染图片 + 音频；7 种 Ken Burns 动态（zoom_in/out + pan_left/right/up/down）+ 镜内/镜间转场 + 按 CPU 核数自动选并行 worker
   - **火山引擎 Seedance 2.0**（云端付费，v1.4.10）— 每分镜可独立配置模式（t2v / 首帧 / 首末帧 / 多模态参考）+ 时长 + 参考图（首尾帧 / 角色立绘 / 元素库）
   - 三个通路输出 schema 一致（`<scene_id>.mp4` + `videos.json`），下游 merge / 字幕 / BGM 无感复用
+- **MSR 多图参考视频**（v1.6.0，LTX-2.3 IC-LoRA）— **按分镜开关**：某分镜若有「无角色背景图」即可勾选「🎬 多图参考视频」，用角色**纯白背景立绘**（≤3 张）+ 背景图驱动，免首/末帧；输出无 BGM、复用现有落盘通路
+- **视频后期 RVC 变声**（v1.6.0，音色一致性）— 对已生成的分镜视频做后期：人声分离 → Whisper 分段 → 逐段 RVC 变声 → 换回原画面音轨；逐说话人映射留空 = 整片统一一个音色。成片换回该分镜（原片自动备份 `.orig.mp4` 可回退）。**需外部 RVC 环境 + 训练好的 .pth**
 - LiteGraph UI 格式工作流自动转换为 ComfyUI API 格式（`_litegraph_to_api`）
 - 多分辨率支持（720p/576p/544p，竖屏/横屏），可选帧率（24/25/30fps）
 - 每个分镜卡片展示就绪状态（首帧 / 末帧 / 合并音频）、生成进度条、视频预览
@@ -133,6 +140,8 @@ LumiCreate-Pro/
 │   ├── services/
 │   │   ├── comfyui.py          # ComfyUI API 封装 + LiteGraph→API 转换器（含 Ideogram4 专用注入）
 │   │   ├── ltx2video.py        # LTX-2.3 视频生成（上传/补丁工作流/拉取结果/音频替换）
+│   │   ├── msr_video.py        # MSR 多图参考视频 patch + 生成（v1.6.0，角色白底立绘 + 背景图驱动）
+│   │   ├── redub_video.py      # 视频后期 RVC 变声 patch + 生成（v1.6.0，识别分段→逐条变声→换音轨）
 │   │   ├── volcengine_seedance.py  # 火山引擎 Seedance 2.0 云端视频（v1.4.10）
 │   │   ├── slideshow_video.py  # 图片放映视频（v1.4.6，无 GPU 通路，支持 SFX 叠加）
 │   │   ├── pollinations_image.py   # Pollinations 云端图片（v1.4.5）
@@ -193,6 +202,22 @@ SKILL/
 智能体在对话中出现以下意图时会自动激活本 Skill：「用 LumiCreate 生成视频」「做漫剧 / 解说视频 / 朗读视频」「调用 ComfyUI / IndexTTS / LTX-2.3」「批量出图 / 出视频 / 拼字幕」。
 
 ## 更新日志
+
+### v1.6.0
+本版本新增 **多图参考（MSR）视频** + **视频后期 RVC 变声** 两条完整通路，并配套「纯白背景立绘」「无角色背景图」两个素材入口 —— 全部 **additive**，现有 LTX / Seedance / slideshow / 合并 / 字幕 / BGM 通路 0 破坏（用户硬约束「这次更新不能删去旧的机制」全程遵守）。
+
+- ✅ **MSR 多图参考视频**（`services/msr_video.py`，LTX-2.3 IC-LoRA `LiconMSR`）
+  - **按分镜开关**：视频生成页（LTX 模式）某分镜若有「无角色背景图」即可勾选「🎬 多图参考视频」—— 用角色白底立绘（≤3 张 → `LiconMSR` 槽 1/2/3）+ 背景图（→ `background`）驱动，**免首/末帧**；其余分镜保持原通路不变
+  - **工作流 patch 按节点连接拓扑定位**（非硬编码 ID）：尺寸/帧率/时长跟软件设置（`INTConstant→EmptyLTXVLatentVideo` + `CreateVideo/LTXVConditioning/LTXVEmptyLatentAudio` 的 fps），多余参考 `LoadImage` 自动 bypass(mode=4)
+  - **输出无 BGM**、含 LTX 自带音轨；完成事件复用现有落盘通路（`video/<scene>.mp4` + `record_asset` + `videos.json`）→ 合并/字幕无感复用
+- ✅ **纯白背景立绘**（角色管理页）：立绘生成勾选「纯白背景」→ 文本引擎自动把角色外观改写成纯白底全身参考提示词（`POST /text-engine/optimize-white-bg-portrait`，LLM 失败有确定性兜底 + 强力背景负面词）；元数据存 `white_bg`，供 MSR 取参考图
+- ✅ **无角色背景图容器**（图片生成页）：在首/末帧之外新增第三个「背景图」分镜容器（`frame_type=bg` → `image_bg`），生成不含人物的纯环境图，供 MSR 背景参考
+- ✅ **视频后期 RVC 变声**（`services/redub_video.py`，音色一致性）
+  - 对**已生成**的分镜视频做后期：人声/伴奏分离 → Whisper 分段 → **逐段 RVC 变声** → 换回原画面音轨。逐说话人映射留空 = **整片统一一个音色**（音色一致）
+  - 每个分镜视频下新增「🎙 视频后期(变声)」按钮 + 对话框（选 `.pth` 音色模型 / Whisper 模型 / 语言 / 可选逐说话人映射）；成片**换回**该分镜视频，原片自动备份 `<scene>.orig.mp4`（可回退）
+  - 设置页「视频引擎」新增 RVC 配置（根目录 / Python / 设备 / 默认模型 / Whisper / 语言）；`GET /rvc-models` 扫 `assets/weights` 列举 `.pth`。**需外部 RVC 环境**（默认 `E:\Clone\RVC20240604Nvidia50x0`）+ 训练好的 `.pth`
+- ✅ **逆向多智能体审查（两轮）**：Phase B 顺手修一处**既有**隐患——驱动无声退出（ComfyUI WS 干净关闭却无终止事件）时分镜静默消失 → 统一补 `scene_error`（覆盖 MSR/i2v/flfa2i）；Phase C 抓到并修复一处**关键** bug —— `RedubReVoice.project_dir` 是「widget 槽 + 已连线」，`_litegraph_to_api` 对其仍 `wv_idx+1` 导致字段整体右移一位，`voice_mapping` 实为下标 1 而非 0（原写法把它写进被丢弃的槽 → 音色一致/逐说话人映射全失效）。已改并经 `patch→_litegraph_to_api` 端到端实测；测试改为过转换器取**解析后** inputs 再断言（杜绝同义反复）
+- ✅ **测试**：后端 **384 / 384 pytest 通过**（v1.5.1 时 368 个），新增 MSR patch 6 + MSR dispatch 4（含无声退出兜底 + 普通分镜回归）+ redub patch 7 + redub dispatch 5；vite build green
 
 ### v1.5.1
 本版本解决**音色不可控**的根因 —— 把"说话人"从"运行时 AI 推断"改成"显式结构化 + 人工锁定"，让每条台词的音色 **100% 可控**。三层方案，全 additive。
