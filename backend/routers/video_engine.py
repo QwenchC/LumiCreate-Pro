@@ -57,6 +57,18 @@ class VolcSceneOptions(BaseModel):
     references:    list[VolcSceneRef] = []
 
 
+class MsrSceneOptions(BaseModel):
+    """v1.6: 某分镜启用 MSR 多图参考 LTX-2.3 视频工作流（仅当该镜有背景图时前端才会启用）。
+
+    char_ref_b64: 角色【白底立绘】参考（最多 3 张 → LiconMSR 槽 1/2/3）。
+    bg_ref_b64:   背景参考图（→ LiconMSR.background）。
+    启用后该镜【不需要首/末帧】，改由参考图 + 提示词驱动；输出含 LTX 自带音轨、无 BGM。
+    """
+    enabled:      bool = False
+    char_ref_b64: list[str] = []
+    bg_ref_b64:   str = ""
+
+
 class SceneVideoRequest(BaseModel):
     scene_id:        str
     scene_index:     int
@@ -67,6 +79,8 @@ class SceneVideoRequest(BaseModel):
     positive_prompt: str = ""
     # v1.4.10+: 火山引擎模式下的每分镜配置（其它引擎忽略此字段）
     volcengine_options: Optional[VolcSceneOptions] = None
+    # v1.6: 该分镜走 MSR 多图参考工作流（其它字段保持，仅 dispatch 改道）
+    msr_options: Optional[MsrSceneOptions] = None
 
 
 # D2: 视频工作流前置检查
@@ -346,23 +360,51 @@ async def generate_video_stream(req: VideoGenerateRequest):
     started_at = _dt.now(_tz.utc).isoformat()
     started_ms = int(__import__("time").time() * 1000)
 
+    # v1.6: 若有分镜启用 MSR 多图参考，懒加载 bundled MSR 工作流（一次）。
+    # 其它引擎/工作流完全不受影响——未启用 MSR 时此变量保持 None、零开销。
+    msr_workflow = None
+    if any(getattr(s, "msr_options", None) and s.msr_options.enabled for s in req.scenes):
+        try:
+            from services.msr_video import load_bundled_msr_workflow
+            msr_workflow = load_bundled_msr_workflow()
+        except Exception as e:
+            print(f"[video-batch] MSR workflow load failed: {e}", flush=True)
+
     async def stream():
         from services.ltx2video import generate_video, generate_video_i2v
 
         for idx, scene in enumerate(req.scenes):
-            # 必需字段校验（按 workflow kind 决定）
-            if not scene.start_image_b64:
-                _record_err(scene.scene_id, "缺少首帧图片")
-                yield _sse({"event": "scene_error", "scene_id": scene.scene_id,
-                            "scene_index": scene.scene_index,
-                            "message": "缺少首帧图片"})
-                continue
-            if wf_features.get("requires_end_image") and not scene.end_image_b64:
-                _record_err(scene.scene_id, "缺少末帧图片")
-                yield _sse({"event": "scene_error", "scene_id": scene.scene_id,
-                            "scene_index": scene.scene_index,
-                            "message": "缺少末帧图片"})
-                continue
+            is_msr_scene = bool(getattr(scene, "msr_options", None)
+                                and scene.msr_options.enabled)
+
+            # 必需字段校验（按 workflow kind / MSR 决定）
+            if is_msr_scene:
+                if msr_workflow is None:
+                    _record_err(scene.scene_id, "未找到 MSR 多图参考工作流")
+                    yield _sse({"event": "scene_error", "scene_id": scene.scene_id,
+                                "scene_index": scene.scene_index,
+                                "message": "未找到 MSR 多图参考工作流（workflows/ 缺少含 LiconMSR 的工作流）"})
+                    continue
+                mo = scene.msr_options
+                if not (mo.char_ref_b64 or mo.bg_ref_b64):
+                    _record_err(scene.scene_id, "MSR 分镜缺少参考图")
+                    yield _sse({"event": "scene_error", "scene_id": scene.scene_id,
+                                "scene_index": scene.scene_index,
+                                "message": "MSR 分镜至少需要 1 张参考图（角色白底立绘或背景图）"})
+                    continue
+            else:
+                if not scene.start_image_b64:
+                    _record_err(scene.scene_id, "缺少首帧图片")
+                    yield _sse({"event": "scene_error", "scene_id": scene.scene_id,
+                                "scene_index": scene.scene_index,
+                                "message": "缺少首帧图片"})
+                    continue
+                if wf_features.get("requires_end_image") and not scene.end_image_b64:
+                    _record_err(scene.scene_id, "缺少末帧图片")
+                    yield _sse({"event": "scene_error", "scene_id": scene.scene_id,
+                                "scene_index": scene.scene_index,
+                                "message": "缺少末帧图片"})
+                    continue
             # 音频：flfa2i 可选（空字符串 = 无音频模式），i2v 不接受音频
             # 不再做"缺音频就 fail"的硬校验
 
@@ -372,10 +414,28 @@ async def generate_video_stream(req: VideoGenerateRequest):
                 "scene_index": scene.scene_index,
                 "current":     idx + 1,
                 "total":       total,
-                "workflow_kind": wf_kind,
+                "workflow_kind": "video_msr" if is_msr_scene else wf_kind,
             })
 
             def _make_iter():
+                # v1.6: MSR 多图参考分镜【最优先】dispatch —— 走 bundled MSR 工作流，
+                # 上传角色白底立绘 + 背景参考、按软件设置 patch 尺寸/帧率/时长，
+                # 输出含 LTX 自带音轨、无 BGM。其它分镜走原通路，零影响。
+                if is_msr_scene:
+                    from services.msr_video import generate_msr_video
+                    mo = scene.msr_options
+                    return generate_msr_video(
+                        comfyui_url     = vcfg.comfyui_url,
+                        workflow        = msr_workflow,
+                        char_b64_list   = list(mo.char_ref_b64 or []),
+                        bg_b64          = (mo.bg_ref_b64 or None),
+                        width           = width,
+                        height          = height,
+                        fps             = req.fps,
+                        duration_ms     = scene.duration_ms,
+                        positive_prompt = scene.positive_prompt,
+                        scene_id        = scene.scene_id,
+                    )
                 # v1.4.10: 引擎 dispatch —— engine_type='volcengine_seedance' 走云端
                 # Ark API；其它（默认 'comfyui'）走原 ComfyUI / LTX 通路，行为不变。
                 if getattr(vcfg, "engine_type", "comfyui") == "volcengine_seedance":
@@ -460,6 +520,7 @@ async def generate_video_stream(req: VideoGenerateRequest):
 
             for attempt in range(2):   # at most one retry
                 vram_error = False
+                terminal_seen = False   # 是否收到 completed / scene_error 之类终止事件
                 async for event in _make_iter():
                     ev  = event.get("event")
                     msg = event.get("message", "")
@@ -471,6 +532,7 @@ async def generate_video_stream(req: VideoGenerateRequest):
                         _record_err(scene.scene_id, msg or "unknown error")
                         yield _sse({**event, "event": "scene_error",
                                     "scene_index": scene.scene_index})
+                        terminal_seen = True
                         break
                     elif ev == "completed":
                         # D1: project_id 提供时由后端直接落盘 + 事件加 file_path
@@ -518,6 +580,7 @@ async def generate_video_stream(req: VideoGenerateRequest):
                             except Exception as e:
                                 print(f"[video-batch] auto-persist failed: {e}", flush=True)
                         yield _sse(ev_out)
+                        terminal_seen = True
                         break
                     else:
                         yield _sse(event)
@@ -529,6 +592,14 @@ async def generate_video_stream(req: VideoGenerateRequest):
                     await _free_vram()
                     # attempt=1 will re-run generate_video
                 else:
+                    # 兜底：驱动无声退出（如 ComfyUI WebSocket 干净关闭却没给终止事件）
+                    # 时，别让该分镜静默消失——补一条 scene_error，前端可见、可重试。
+                    # 纯附加：仅在【既没 completed 也没 scene_error】时触发，不改原有成功/失败路径。
+                    if not terminal_seen:
+                        _record_err(scene.scene_id, "生成结束但未返回视频（连接中断或无输出）")
+                        yield _sse({"event": "scene_error", "scene_id": scene.scene_id,
+                                    "scene_index": scene.scene_index,
+                                    "message": "生成结束但未返回视频（ComfyUI 连接中断或无输出）"})
                     break   # success or non-retryable error — next scene
 
         # A1: 落盘失败镜次

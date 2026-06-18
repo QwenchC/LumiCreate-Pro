@@ -11,6 +11,12 @@
 """
 from __future__ import annotations
 
+import base64
+import json
+import math
+import uuid
+from typing import AsyncGenerator, Optional
+
 import copy
 
 
@@ -20,6 +26,39 @@ def is_msr_workflow(workflow: dict) -> bool:
     if not nodes:
         return False
     return any("LiconMSR" in str(n.get("type", "")) for n in nodes)
+
+
+def load_bundled_msr_workflow() -> Optional[dict]:
+    """从 bundled workflows/ 目录加载 MSR 多图参考工作流（按 LiconMSR 节点签名识别，
+    不依赖具体文件名，工作流被重命名也能找到）。找不到返回 None。
+
+    MSR 不在 SUPPORTED_VIDEO_WORKFLOWS 硬名单里——它不是用户可选的主工作流，
+    而是【按分镜开关】，所以这里独立加载、与视频工作流下拉互不影响。
+    """
+    try:
+        from services.comfyui import bundled_workflow_dir
+    except Exception:
+        return None
+    base = bundled_workflow_dir()
+    if base is None:
+        return None
+    import glob
+    from pathlib import Path
+    # 先按常见命名快速命中，再退化为「扫所有 json 找含 LiconMSR 的」
+    candidates = sorted(glob.glob(str(base / "MSR_*.json"))) + \
+        sorted(glob.glob(str(base / "*.json")))
+    seen: set[str] = set()
+    for fp in candidates:
+        if fp in seen:
+            continue
+        seen.add(fp)
+        try:
+            wf = json.loads(Path(fp).read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        if is_msr_workflow(wf):
+            return wf
+    return None
 
 
 def _nodes_by_type(wf: dict, type_name: str) -> list[dict]:
@@ -140,3 +179,123 @@ def patch_msr_workflow(
                 ld["mode"] = 4                       # bypass 未用的参考槽
 
     return wf
+
+
+async def generate_msr_video(
+    comfyui_url: str,
+    workflow: dict,
+    *,
+    char_b64_list: list[str],
+    bg_b64: Optional[str],
+    width: int,
+    height: int,
+    fps: float,
+    duration_ms: int,
+    positive_prompt: str = "",
+    scene_id: str = "",
+) -> AsyncGenerator[dict, None]:
+    """MSR 多图参考视频生成：上传角色白底参考 + 背景参考 → patch → 提交 ComfyUI →
+    流式回传进度。输出视频含 LTX 自带音轨、【无 BGM】，事件 schema 与现有视频通路一致
+    （uploading/queued/progress/completed/error），下游 record_asset/videos.json 0 改动。
+    """
+    # 复用 LTX 现成基础设施（上传/取视频/ws）+ comfyui 的 litegraph→api 转换
+    import httpx
+    from services.ltx2video import _upload_image, _fetch_video, websockets
+    from services.comfyui import _litegraph_to_api
+
+    yield {"event": "uploading", "scene_id": scene_id}
+
+    # ── 1. 上传参考图（角色白底立绘 + 背景图）──────────────────────────────────
+    try:
+        char_files: list[str] = []
+        for i, b in enumerate(char_b64_list or []):
+            if not b:
+                continue
+            name = await _upload_image(
+                comfyui_url, base64.b64decode(b), f"lumi_msr_{scene_id}_c{i}.png")
+            char_files.append(name)
+        bg_file = None
+        if bg_b64:
+            bg_file = await _upload_image(
+                comfyui_url, base64.b64decode(bg_b64), f"lumi_msr_{scene_id}_bg.png")
+    except Exception as e:
+        yield {"event": "error", "scene_id": scene_id, "message": f"参考图上传失败: {e}"}
+        return
+    if not char_files and not bg_file:
+        yield {"event": "error", "scene_id": scene_id, "message": "至少需要 1 张参考图"}
+        return
+
+    # ── 2. patch + 转 API ─────────────────────────────────────────────────────
+    duration_secs = max(1, math.ceil(duration_ms / 1000))
+    patched_lg = patch_msr_workflow(
+        workflow, width=width, height=height, fps=fps, duration_secs=duration_secs,
+        prompt=positive_prompt, char_files=char_files, bg_file=bg_file,
+    )
+    try:
+        api_workflow = _litegraph_to_api(patched_lg)
+    except Exception as e:
+        yield {"event": "error", "scene_id": scene_id, "message": f"工作流转换失败: {e}"}
+        return
+
+    # ── 3. 提交任务 ────────────────────────────────────────────────────────────
+    client_id = str(uuid.uuid4())
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            r = await http.post(f"{comfyui_url}/prompt",
+                                json={"prompt": api_workflow, "client_id": client_id})
+            if r.status_code >= 400:
+                try:
+                    detail = r.json()
+                    errmsg = detail.get("error", {}).get("message") or str(detail)
+                except Exception:
+                    errmsg = r.text[:500]
+                yield {"event": "error", "scene_id": scene_id,
+                       "message": f"提交任务失败 {r.status_code}: {errmsg}"}
+                return
+            r.raise_for_status()
+            prompt_id = r.json()["prompt_id"]
+    except Exception as e:
+        yield {"event": "error", "scene_id": scene_id, "message": f"提交任务失败: {e}"}
+        return
+
+    yield {"event": "queued", "prompt_id": prompt_id, "scene_id": scene_id}
+
+    # ── 4. WebSocket 进度 + 取视频 ─────────────────────────────────────────────
+    if websockets is None:
+        yield {"event": "error", "scene_id": scene_id, "message": "websockets 包未安装"}
+        return
+    ws_url = comfyui_url.replace("http://", "ws://").replace("https://", "wss://")
+    ws_url = f"{ws_url}/ws?clientId={client_id}"
+    try:
+        async with websockets.connect(ws_url, ping_interval=20) as ws:
+            async for raw in ws:
+                if isinstance(raw, bytes):
+                    continue
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                mtype = msg.get("type")
+                data = msg.get("data", {})
+                if mtype == "progress":
+                    yield {"event": "progress", "value": data.get("value", 0),
+                           "max": data.get("max", 1), "scene_id": scene_id}
+                elif mtype == "executing":
+                    if data.get("node") is None and data.get("prompt_id") == prompt_id:
+                        video_data = await _fetch_video(comfyui_url, prompt_id)
+                        if video_data:
+                            # MSR 输出含 LTX 自带音轨、无 BGM —— 不替换音轨
+                            yield {"event": "completed", "scene_id": scene_id,
+                                   "video": video_data["data"],
+                                   "filename": video_data["filename"], "mime": "video/mp4"}
+                        else:
+                            yield {"event": "error", "scene_id": scene_id,
+                                   "message": "未找到输出视频文件"}
+                        return
+                elif mtype == "execution_error":
+                    if data.get("prompt_id") == prompt_id:
+                        yield {"event": "error", "scene_id": scene_id,
+                               "message": data.get("exception_message", "ComfyUI 执行错误")}
+                        return
+    except Exception as e:
+        yield {"event": "error", "scene_id": scene_id, "message": f"WebSocket 错误: {e}"}

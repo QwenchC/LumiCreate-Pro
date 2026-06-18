@@ -459,6 +459,10 @@
                    @input="manualDurations[scene.id] = Number($event.target.value) || 5" />
             <span class="text-muted" style="margin-left:2px">s</span>
           </span>
+          <!-- v1.6: 背景图（无角色）—— 有则可启用 MSR 多图参考 -->
+          <span v-if="videoMode === 'ltx' && scene.hasBg" class="asset-tag ok">
+            ✓ 背景图
+          </span>
         </div>
 
         <!-- Prompt section -->
@@ -546,6 +550,23 @@
               <button class="volc-ref-del" @click="removeVolcRef(scene.id, ri)"
                       title="移除">✕</button>
             </div>
+          </div>
+        </div>
+
+        <!-- v1.6: MSR 多图参考视频（仅 LTX 模式 + 该镜有背景图时可启用） -->
+        <div v-if="videoMode === 'ltx' && scene.hasBg" class="msr-scene-block">
+          <label class="msr-toggle">
+            <input type="checkbox"
+                   :checked="!!msrEnabled[scene.id]"
+                   @change="toggleMsr(scene.id, $event.target.checked)" />
+            <span>🎬 多图参考视频（背景图 + 角色白底立绘，免首/末帧）</span>
+          </label>
+          <div v-if="msrEnabled[scene.id]" class="msr-hint">
+            <span class="msr-ref-tag ok">🖼 背景图 ✓</span>
+            <span v-for="nm in (scene._scene_characters || []).slice(0,3)"
+                  :key="nm" class="msr-ref-tag">🎭 {{ nm }} 白底立绘</span>
+            <span v-if="!(scene._scene_characters || []).length"
+                  class="msr-ref-tag warn">未指定角色 → 仅用背景图驱动</span>
           </div>
         </div>
 
@@ -826,6 +847,60 @@ const volcRunning          = ref(false)
 // 每分镜火山引擎独立配置 { [sceneId]: { mode, duration_secs, references: [refObj] } }
 const volcSceneOptions = ref({})
 
+// ── v1.6: MSR 多图参考视频（按分镜开关，仅 LTX/ComfyUI 模式 + 该镜有背景图时可用）──
+// { [sceneId]: bool }，按项目持久化到 localStorage，刷新后仍在。
+const msrEnabled = ref({})
+
+function _msrStoreKey() { return `lumi_msr_enabled_${props.projectId || ''}` }
+
+function _loadMsrEnabled() {
+  try {
+    const raw = localStorage.getItem(_msrStoreKey())
+    msrEnabled.value = raw ? (JSON.parse(raw) || {}) : {}
+  } catch { msrEnabled.value = {} }
+}
+
+function _saveMsrEnabled() {
+  try { localStorage.setItem(_msrStoreKey(), JSON.stringify(msrEnabled.value)) } catch {}
+}
+
+function isMsrScene(s) {
+  // 仅 LTX(ComfyUI) 模式 + 该镜有背景图 + 用户已勾选
+  return videoMode.value === 'ltx' && !!s.hasBg && !!msrEnabled.value[s.id]
+}
+
+function toggleMsr(sceneId, val) {
+  msrEnabled.value = { ...msrEnabled.value, [sceneId]: !!val }
+  _saveMsrEnabled()
+}
+
+// 角色白底立绘 b64 缓存：charName → b64（'' 表示该角色无白底立绘）
+const _whiteBgCache = {}
+
+async function _whiteBgPortraitB64(charName) {
+  if (!charName) return ''
+  if (charName in _whiteBgCache) return _whiteBgCache[charName]
+  let b64 = ''
+  try {
+    const { data } = await axios.get(
+      `${API}/projects/${props.projectId}/characters/${encodeURIComponent(charName)}/portraits`)
+    const list = (data && data.portraits) || []
+    // 优先「白底 + 主图」，否则任一白底
+    const wb = list.find(p => p.white_bg && p.is_primary) || list.find(p => p.white_bg)
+    if (wb && wb.url) b64 = await _srcToB64('http://localhost:18520' + wb.url)
+  } catch {}
+  _whiteBgCache[charName] = b64
+  return b64
+}
+
+// 收集某分镜 MSR 参考图：角色白底立绘（最多 3）+ 背景图
+async function _gatherMsrRefs(s) {
+  const charNames = (s._scene_characters || []).slice(0, 3)
+  const charB64 = (await Promise.all(charNames.map(_whiteBgPortraitB64))).filter(Boolean)
+  const bgB64 = s.bgImageB64 ? await _srcToB64(s.bgImageB64) : ''
+  return { char_ref_b64: charB64, bg_ref_b64: bgB64 }
+}
+
 function volcOpts(sceneId) {
   if (!volcSceneOptions.value[sceneId]) {
     volcSceneOptions.value[sceneId] = {
@@ -1001,15 +1076,21 @@ const scenesWithData = computed(() =>
     const endSlot   = imagesSelected.value[endKey]   ?? 0
     const startImg  = imagesData.value[`${startKey}:${startSlot}`] || null
     const endImg    = imagesData.value[`${endKey}:${endSlot}`]     || null
+    // v1.6: 背景图（无角色），用于 MSR 多图参考视频
+    const bgKey     = `${s.id}:bg`
+    const bgSlot    = imagesSelected.value[bgKey] ?? 0
+    const bgImg     = imagesData.value[`${bgKey}:${bgSlot}`] || null
     const stitchKey = `__stitched__${s.id}`
     const stitched  = audioData.value[stitchKey] || null
     return {
       ...s,
       hasStart:      !!startImg,
       hasEnd:        !!endImg,
+      hasBg:         !!bgImg,
       hasAudio:      !!stitched,
       startImageB64: startImg || '',
       endImageB64:   endImg   || '',
+      bgImageB64:    bgImg    || '',
       audioB64:      stitched?.data || '',
       audioDurationMs: stitched?.duration_ms || 0,
     }
@@ -1045,6 +1126,8 @@ function sceneReady(s) {
     if (mode === 'multi_ref') return (o?.references || []).length > 0 || !!s.hasStart
     return true
   }
+  // v1.6: MSR 分镜由背景图 + 角色白底立绘驱动 —— 有背景图即就绪（不需要首/末帧）
+  if (isMsrScene(s)) return !!s.hasBg
   if (!s.hasStart) return false
   if (workflowFeatures.value.requires_end_image && !s.hasEnd) return false
   // 音频：只有 flfa2i + 关闭无音频模式时才要求音频
@@ -1143,6 +1226,10 @@ async function loadData() {
       const chRes = await axios.get(`${API}/projects/${props.projectId}/characters`)
       allCharacters.value = chRes.data?.characters || []
     } catch {}
+
+    // v1.6: 恢复每分镜 MSR 开关 + 清空白底立绘缓存（切项目时重新拉）
+    _loadMsrEnabled()
+    for (const k of Object.keys(_whiteBgCache)) delete _whiteBgCache[k]
 
   } catch (e) {
     genError.value = e?.response?.data?.detail || e.message || '加载失败'
@@ -1455,16 +1542,23 @@ async function _runGeneration(sceneList) {
     for (const s of sceneList) {
       if (stopFlag.value) break
 
+      // v1.6: 该分镜走 MSR 多图参考？（LTX 模式 + 有背景图 + 已勾选）
+      const msrOn = isMsrScene(s)
+
       // v1.4.1: i2v 不需要末帧；无音频模式（i2v 始终 / flfa2i 可选）不带音频
       const needEnd = workflowFeatures.value.requires_end_image
       const dropAudio = !workflowFeatures.value.supports_audio || noAudioMode.value
 
-      const [startB64, endB64] = await Promise.all([
-        _srcToB64(s.startImageB64),
-        needEnd ? _srcToB64(s.endImageB64) : Promise.resolve(''),
-      ])
+      // MSR 分镜不需要首/末帧（改由参考图驱动），跳过这两张图的 b64 转换
+      const [startB64, endB64] = msrOn
+        ? ['', '']
+        : await Promise.all([
+            _srcToB64(s.startImageB64),
+            needEnd ? _srcToB64(s.endImageB64) : Promise.resolve(''),
+          ])
 
-      // 时长：无音频模式用手动设置（默认 5s），有音频用音频时长
+      // 时长：无音频模式用手动设置（默认 5s），有音频用音频时长。
+      // MSR 输出含 LTX 自带音轨、无 BGM；时长仍按音频/手动设置，保证与台词对齐。
       const dur_ms = dropAudio
         ? Math.max(1, Number(manualDurations.value[s.id] ?? 5)) * 1000
         : (s.audioDurationMs || 4000)
@@ -1478,6 +1572,18 @@ async function _runGeneration(sceneList) {
           duration_secs: o.duration_secs,
           references:    (o.references || []).map(_sanitizeVolcRef),
         }
+      }
+
+      // v1.6: MSR 多图参考 —— 收集角色白底立绘 + 背景图参考
+      let msrOptions = undefined
+      if (msrOn) {
+        const refs = await _gatherMsrRefs(s)
+        if (!(refs.char_ref_b64.length || refs.bg_ref_b64)) {
+          handleEvent({ event: 'scene_error', scene_id: String(s.id),
+                        message: 'MSR 分镜缺少参考图（请先在角色页生成白底立绘 / 在图片页生成背景图）' })
+          continue
+        }
+        msrOptions = { enabled: true, ...refs }
       }
 
       const payload = {
@@ -1494,6 +1600,7 @@ async function _runGeneration(sceneList) {
           duration_ms:     dur_ms,
           positive_prompt: scenePrompts.value[s.id] ?? _buildPromptFallback(s),
           ...(volcOptions ? { volcengine_options: volcOptions } : {}),
+          ...(msrOptions ? { msr_options: msrOptions } : {}),
         }],
       }
 
@@ -1758,6 +1865,29 @@ async function showMergedInFolder() {
   margin: 8px 0;
   display: flex; flex-direction: column; gap: 8px;
 }
+/* v1.6: MSR 多图参考视频块 */
+.msr-scene-block {
+  background: rgba(178, 102, 255, 0.06);
+  border: 1px solid rgba(178, 102, 255, 0.28);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 8px 0;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.msr-toggle {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; cursor: pointer; user-select: none;
+}
+.msr-toggle input { cursor: pointer; }
+.msr-hint { display: flex; gap: 6px; flex-wrap: wrap; }
+.msr-ref-tag {
+  font-size: 11px; padding: 1px 8px; border-radius: 10px;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  background: var(--color-surface, rgba(255,255,255,0.03));
+}
+.msr-ref-tag.ok   { border-color: rgba(80,200,120,0.5); color: #5bbf7b; }
+.msr-ref-tag.warn { border-color: rgba(230,180,80,0.5); color: #d8a24a; }
 .volc-scene-row {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
 }
