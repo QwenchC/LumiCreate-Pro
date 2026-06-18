@@ -331,6 +331,19 @@
               {{ regenPromptingId === activeScene.id + ':bg' ? '⏳' : '↺' }} 提示词
             </button>
             <button class="btn btn-ghost btn-xs" :disabled="running" @click="regenFrame(activeScene,'bg')">↺ 重新生成所有</button>
+            <span class="bg-batch-sep" />
+            <button class="btn btn-secondary btn-xs"
+              :disabled="running || bgPromptRunning || !scenes.length"
+              @click="genAllBgPrompts"
+              title="为【全部分镜】批量生成无角色背景提示词（跳过已有）">
+              {{ bgPromptRunning ? `✦ 提示词 ${bgPromptProgress}/${scenes.length}…` : '✦ 全部分镜提示词' }}
+            </button>
+            <button class="btn btn-secondary btn-xs"
+              :disabled="running || bgImageRunning || !selectedWorkflow || !scenes.length"
+              @click="genAllBgImages"
+              title="为【全部分镜】批量生成背景图（仅含已有背景提示词的分镜，跳过已出图）">
+              {{ bgImageRunning ? `🖼 背景图 ${bgImageProgress}/${bgImageTotal}…` : '🖼 全部分镜背景图' }}
+            </button>
           </div>
           <textarea
             class="input textarea frame-prompt-edit"
@@ -1333,6 +1346,121 @@ async function regenFrame(scene, frameType) {
   emit('dirty')
 }
 
+// ── v1.6: 批量【全部分镜】背景图（无角色）提示词 + 图片 ────────────────────────
+const bgPromptRunning  = ref(false)
+const bgPromptProgress = ref(0)
+const bgImageRunning   = ref(false)
+const bgImageProgress  = ref(0)
+const bgImageTotal     = ref(0)
+
+// 为全部分镜批量生成无角色背景提示词（复用 batch 端点，characters:[] → 纯环境；
+// 取 start_frame_prompt 作为 bg_prompt，与单镜「✦ 提示词」一致）。跳过已有 bg_prompt。
+async function genAllBgPrompts() {
+  if (bgPromptRunning.value || !scenes.value.length) return
+  const targets = scenes.value.filter(s => !(s.bg_prompt || '').trim())
+  if (!targets.length) {
+    alert('全部分镜都已有背景提示词（如需重写，请清空对应分镜的背景提示词后再试）')
+    return
+  }
+  bgPromptRunning.value = true
+  bgPromptProgress.value = scenes.value.length - targets.length   // 已有的算作完成
+  const sceneIdxById = {}
+  scenes.value.forEach((s, i) => { sceneIdxById[String(s.id)] = i })
+  try {
+    const resp = await fetch(`${API}/text-engine/generate-frame-prompts-batch`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        // characters:[] → 后端不注入角色块 → 纯环境提示词
+        frames: targets.map(s => ({
+          scene_id:    String(s.id),
+          description: s.description,
+          dialogues:   s.dialogues || [],
+          characters:  [],
+        })),
+        characters:   [],
+        manuscript:   manuscript.value,
+        total_scenes: scenes.value.length,
+      }),
+    })
+    if (!resp.ok) throw new Error('HTTP ' + resp.status)
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') break
+        try {
+          const ev = JSON.parse(raw)
+          if (ev.event === 'result' && ev.scene_id != null) {
+            const i = sceneIdxById[String(ev.scene_id)]
+            // bg 取 start_frame_prompt（端点对 characters:[] 产出的就是纯环境描述）
+            if (i != null && ev.start_frame_prompt) {
+              scenes.value[i].bg_prompt = ev.start_frame_prompt
+            }
+            bgPromptProgress.value++
+            emit('dirty')
+          } else if (ev.event === 'item_error') {
+            bgPromptProgress.value++
+          }
+        } catch {}
+      }
+    }
+    await saveImages()
+  } catch (e) {
+    if (e.name !== 'AbortError') loadError.value = e.message || '批量背景提示词失败'
+  } finally {
+    bgPromptRunning.value = false
+  }
+}
+
+// 为全部分镜批量生成背景图：只对【已有 bg_prompt】的分镜出图，跳过已出图的分镜。
+async function genAllBgImages() {
+  if (bgImageRunning.value || !selectedWorkflow.value) return
+  const _hasBgImg = (sid) => {
+    for (let s = 0; s < getFrameSlotCount(sid, 'bg'); s++) {
+      if (getImage(sid, 'bg', s)) return true
+    }
+    return false
+  }
+  const targets = scenes.value.filter(s => (s.bg_prompt || '').trim() && !_hasBgImg(s.id))
+  if (!targets.length) {
+    alert('没有需要生成的背景图（仅对【有背景提示词且尚未出图】的分镜生效；可先点「✦ 全部分镜提示词」）')
+    return
+  }
+  bgImageRunning.value = true
+  bgImageTotal.value = targets.length
+  bgImageProgress.value = 0
+  try {
+    for (const scene of targets) {
+      const prompt = _buildFramePrompt(scene, 'bg', _rawFramePrompt(scene, 'bg'))
+      setFrameSlotCount(scene.id, 'bg', genCount.value)
+      for (let s = 0; s < genCount.value; s++) {
+        const key = slotKey(scene.id, 'bg', s)
+        slotLoading.value[key] = true; slotImages.value[key] = undefined
+        slotError.value[key] = ''; slotProgress.value[key] = ''
+      }
+      const promises = Array.from({ length: genCount.value }, (_, s) =>
+        runSingleSlot(scene.id, 'bg', s, prompt)
+      )
+      await Promise.allSettled(promises)
+      bgImageProgress.value++
+      emit('dirty')
+    }
+    await saveImages()
+  } catch (e) {
+    loadError.value = e.message || '批量背景图失败'
+  } finally {
+    bgImageRunning.value = false
+  }
+}
+
 // ── Prompt editing: linked with ScenesTab via shared /scenes endpoint ─────────
 let _promptSaveTimer = null
 function onPromptInput(scene, frameType, value) {
@@ -1733,6 +1861,7 @@ async function addOneMore(scene, frameType) {
   border-bottom: 1px solid var(--border);
 }
 .frame-badge  { font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 600; flex-shrink: 0; }
+.bg-batch-sep { width: 1px; align-self: stretch; margin: 2px 4px; background: var(--border); flex-shrink: 0; }
 .badge-blue   { background: rgba(99,179,237,.15); color: #63b3ed; }
 .badge-purple { background: rgba(183,148,244,.15); color: #b794f4; }
 .frame-prompt { font-size: 12px; flex: 1; min-width: 0; }
