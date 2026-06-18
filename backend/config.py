@@ -120,6 +120,15 @@ class VideoEngineConfig(BaseModel):
     # seed：-1 = 随机；其它整数 = 复现
     volcengine_seed: int = -1
 
+    # ── v1.6: 视频后期 RVC 变声（仅对已生成的视频做后期换音轨，实现音色一致性）──
+    # 需要外部 RVC 环境（RVC-WebUI 整合包）+ 训练好的 .pth 模型。老配置自动取默认值。
+    redub_rvc_root:      str = "E:\\Clone\\RVC20240604Nvidia50x0"
+    redub_rvc_python:    str = ""        # 空 → 工作流默认 <rvc_root>\\runtime\\python.exe
+    redub_device:        str = "cuda:0"
+    redub_default_model: str = ""        # 默认 RVC .pth（voice_mapping 留空时整片统一此音色）
+    redub_whisper_model: str = "medium"  # Whisper 分段模型：tiny/base/small/medium/large-v3
+    redub_language:      str = "zh"
+
 
 class AppSettings(BaseModel):
     projects_dir: str = str(Path.home() / "LumiCreate-Projects")

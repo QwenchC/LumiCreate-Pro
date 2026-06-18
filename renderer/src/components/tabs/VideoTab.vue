@@ -586,6 +586,20 @@
             preload="metadata"
             class="video-player"
           />
+          <!-- v1.6: 视频后期 RVC 变声（音色一致性）—— 对已生成的分镜视频做后期换音轨 -->
+          <div class="video-post-actions">
+            <button class="btn btn-ghost btn-xs"
+                    :disabled="running || redubState[scene.id] === 'running'"
+                    @click="openRedub(scene)"
+                    title="用 RVC 把该分镜视频的人声统一变声（音色一致性）">
+              🎙 视频后期（变声）
+            </button>
+            <span v-if="redubState[scene.id] === 'running'" class="text-muted" style="font-size:11px">
+              后期处理中… {{ redubProgressPct(scene.id) }}%
+            </span>
+            <span v-else-if="redubState[scene.id] === 'done'" class="msr-ref-tag ok">✓ 已变声</span>
+            <span v-else-if="redubState[scene.id] === 'error'" class="msr-ref-tag warn">✗ 后期失败</span>
+          </div>
         </div>
 
       </div>
@@ -616,6 +630,73 @@
                     :project-id="projectId"
                     source="final_video"
                     @close="bgmMixerOpen = false" />
+
+    <!-- v1.6: 视频后期 RVC 变声对话框 -->
+    <div v-if="redubDialog.visible" class="merge-dialog-overlay"
+         @click.self="closeRedub">
+      <div class="merge-dialog card" style="max-width:520px">
+        <h4 class="merge-dialog-title">🎙 视频后期 · RVC 变声（音色一致性）</h4>
+        <p class="text-muted" style="font-size:12px;margin:4px 0 10px">
+          分镜 {{ redubDialog.sceneId }} —— 识别分段 → 逐条 RVC 变声 → 换回原画面音轨。
+          需要外部 RVC 环境 + 训练好的 .pth 模型。原片会自动备份为 .orig.mp4，可回退。
+        </p>
+
+        <div class="redub-field">
+          <label>RVC 模型（.pth）</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <select class="input input-xs" style="flex:1" v-model="redubDialog.model">
+              <option value="" disabled>{{ redubDialog.models.length ? '选择音色模型…' : '未找到模型' }}</option>
+              <option v-for="m in redubDialog.models" :key="m" :value="m">{{ m }}</option>
+            </select>
+            <button class="btn btn-ghost btn-xs" @click="reloadRvcModels"
+                    :disabled="redubDialog.loadingModels">↻</button>
+          </div>
+          <span v-if="!redubDialog.rvcExists" class="msr-ref-tag warn" style="margin-top:4px">
+            RVC 目录不存在：请在设置里配置 redub_rvc_root
+          </span>
+        </div>
+
+        <div class="redub-field">
+          <label>Whisper 分段模型 / 语言</label>
+          <div style="display:flex;gap:6px">
+            <select class="input input-xs" style="flex:1" v-model="redubDialog.whisperModel">
+              <option value="tiny">tiny</option>
+              <option value="base">base</option>
+              <option value="small">small</option>
+              <option value="medium">medium</option>
+              <option value="large-v3">large-v3</option>
+            </select>
+            <input class="input input-xs" style="width:90px" v-model="redubDialog.language"
+                   placeholder="zh" />
+          </div>
+        </div>
+
+        <div class="redub-field">
+          <label>逐说话人映射（可选，留空=整片统一上面的模型）</label>
+          <textarea class="prompt-textarea" rows="3"
+                    v-model="redubDialog.voiceMapping"
+                    placeholder="role1: alice.pth&#10;role2: bob.pth"></textarea>
+        </div>
+
+        <div v-if="redubDialog.error" class="error-banner" style="margin:6px 0">
+          ⚠ {{ redubDialog.error }}
+        </div>
+        <div v-if="redubDialog.running" class="redub-field">
+          <div class="scene-mini-bar"><div class="scene-mini-fill"
+               :style="{ width: redubDialog.progressPct + '%' }" /></div>
+          <span class="text-muted" style="font-size:11px">{{ redubDialog.progressPct }}%</span>
+        </div>
+
+        <div class="merge-dialog-actions">
+          <button class="btn btn-primary"
+                  :disabled="redubDialog.running || !redubDialog.model"
+                  @click="runRedub">
+            {{ redubDialog.running ? '处理中…' : '开始后期变声' }}
+          </button>
+          <button class="btn btn-ghost" :disabled="redubDialog.running" @click="closeRedub">关闭</button>
+        </div>
+      </div>
+    </div>
 
     <!-- v1.4.8: 试播预览 —— 串播分镜素材，不带字幕/SFX -->
     <PreviewPlayer v-if="previewOpen"
@@ -822,6 +903,129 @@ function _toVideoSrcMap(data) {
 }
 const mergeResult     = ref(null) // { output_path, output_dir } once merged
 const merging         = ref(false)
+
+// ── v1.6: 视频后期 RVC 变声 ───────────────────────────────────────────────────
+const redubState    = ref({})   // sceneId → 'running'|'done'|'error'
+const redubProgress = ref({})   // sceneId → 0..100
+function redubProgressPct(id) { return redubProgress.value[id] || 0 }
+
+const redubDialog = ref({
+  visible: false, sceneId: '', model: '',
+  whisperModel: 'medium', language: 'zh', voiceMapping: '',
+  models: [], rvcExists: false, loadingModels: false,
+  running: false, progressPct: 0, error: '',
+})
+
+async function reloadRvcModels() {
+  redubDialog.value.loadingModels = true
+  try {
+    const { data } = await axios.get(`${API}/video-engine/rvc-models`)
+    redubDialog.value.models = data?.models || []
+    redubDialog.value.rvcExists = !!data?.exists
+    // 默认选中第一个（若当前未选）
+    if (!redubDialog.value.model && redubDialog.value.models.length) {
+      redubDialog.value.model = redubDialog.value.models[0]
+    }
+  } catch (e) {
+    redubDialog.value.models = []
+    redubDialog.value.rvcExists = false
+  } finally {
+    redubDialog.value.loadingModels = false
+  }
+}
+
+async function openRedub(scene) {
+  const sid = String(scene.id)
+  const switchingScene = redubDialog.value.sceneId !== sid
+  redubDialog.value.visible = true
+  redubDialog.value.sceneId = sid
+  redubDialog.value.error = ''
+  redubDialog.value.progressPct = 0
+  redubDialog.value.running = false
+  // 切到不同分镜时清空逐说话人映射，避免把上一镜的角色映射误带过来（model 作为便利默认保留）
+  if (switchingScene) redubDialog.value.voiceMapping = ''
+  // 用设置里的默认回填 whisper/语言/默认模型，否则对话框里写死的 medium/zh 会盖掉后端设置
+  try {
+    const { data } = await axios.get(`${API}/settings`)
+    const ve = data?.video_engine || {}
+    if (ve.redub_whisper_model) redubDialog.value.whisperModel = ve.redub_whisper_model
+    if (ve.redub_language)      redubDialog.value.language     = ve.redub_language
+    if (ve.redub_default_model && !redubDialog.value.model)
+      redubDialog.value.model = ve.redub_default_model
+  } catch {}
+  await reloadRvcModels()
+}
+
+function closeRedub() {
+  if (redubDialog.value.running) return
+  redubDialog.value.visible = false
+}
+
+async function runRedub() {
+  const d = redubDialog.value
+  if (d.running || !d.model) return
+  const sid = d.sceneId
+  d.running = true; d.error = ''; d.progressPct = 0
+  redubState.value = { ...redubState.value, [sid]: 'running' }
+  redubProgress.value = { ...redubProgress.value, [sid]: 0 }
+  try {
+    const resp = await fetch(`${API}/video-engine/redub-stream`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_id: props.projectId, scene_id: sid,
+        default_model: d.model, voice_mapping: d.voiceMapping || '',
+        whisper_model: d.whisperModel || '', language: d.language || '',
+      }),
+    })
+    if (!resp.ok) {
+      let detail = 'HTTP ' + resp.status
+      try { const j = await resp.json(); detail = j.detail || detail } catch {}
+      throw new Error(detail)
+    }
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    let ok = false
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') continue
+        let ev; try { ev = JSON.parse(raw) } catch { continue }
+        if (ev.event === 'progress') {
+          const pct = ev.max ? Math.round(ev.value / ev.max * 100) : 0
+          d.progressPct = pct
+          redubProgress.value = { ...redubProgress.value, [sid]: pct }
+        } else if (ev.event === 'redub_done') {
+          ok = true
+        } else if (ev.event === 'redub_error') {
+          d.error = ev.message || '后期处理失败'
+        }
+      }
+    }
+    if (ok) {
+      redubState.value = { ...redubState.value, [sid]: 'done' }
+      // 刷新该分镜视频（音轨已换、加防缓存戳）
+      try {
+        const { data } = await axios.get(`${API}/projects/${props.projectId}/videos`)
+        sceneVideos.value = _toVideoSrcMap(data)
+      } catch {}
+      d.visible = false
+    } else {
+      redubState.value = { ...redubState.value, [sid]: 'error' }
+      if (!d.error) d.error = '后期处理结束但未返回成片'
+    }
+  } catch (e) {
+    d.error = e.message || String(e)
+    redubState.value = { ...redubState.value, [sid]: 'error' }
+  } finally {
+    d.running = false
+  }
+}
 
 // v1.4.10: 当前视频引擎来源（read-only，从后端 settings 拉一次）
 const engineType = ref('comfyui')   // 'comfyui' | 'volcengine_seedance'
@@ -1967,6 +2171,10 @@ async function showMergedInFolder() {
 .scene-mini-fill{ height:100%; background:var(--accent); transition:width .2s; }
 
 .video-result { border-top:1px dashed var(--border-color); padding-top:8px; }
+/* v1.6: 视频后期变声 */
+.video-post-actions { display:flex; align-items:center; gap:8px; margin-top:6px; }
+.redub-field { display:flex; flex-direction:column; gap:4px; margin:8px 0; }
+.redub-field > label { font-size:12px; color: var(--color-text-muted); }
 .video-player { width:100%; max-height:320px; border-radius:6px; background:#000; }
 
 .empty-state {

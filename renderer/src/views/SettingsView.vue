@@ -639,6 +639,43 @@
             <option :value="30">30 fps</option>
           </select>
         </div>
+
+        <!-- v1.6: 视频后期 RVC 变声（音色一致性）—— 对已生成视频做后期换音轨 -->
+        <h4 class="section-subtitle">🎙 视频后期 · RVC 变声（音色一致性）</h4>
+        <div class="form-group">
+          <label>RVC 根目录</label>
+          <input v-model="settings.video_engine.redub_rvc_root" class="input"
+                 placeholder="E:\Clone\RVC20240604Nvidia50x0" />
+          <p class="hint">RVC-WebUI 整合包根目录；训练好的 .pth 放在其 assets/weights 下</p>
+        </div>
+        <div class="form-group">
+          <label>RVC Python（可选）</label>
+          <input v-model="settings.video_engine.redub_rvc_python" class="input"
+                 placeholder="留空则用 <根目录>\runtime\python.exe" />
+        </div>
+        <div class="form-group">
+          <label>计算设备 / 默认音色模型</label>
+          <div style="display:flex;gap:8px">
+            <input v-model="settings.video_engine.redub_device" class="input"
+                   style="width:120px" placeholder="cuda:0" />
+            <input v-model="settings.video_engine.redub_default_model" class="input"
+                   style="flex:1" placeholder="默认 .pth（如 keruanV1.pth）" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Whisper 分段模型 / 语言</label>
+          <div style="display:flex;gap:8px">
+            <select v-model="settings.video_engine.redub_whisper_model" class="input select" style="flex:1">
+              <option value="tiny">tiny</option>
+              <option value="base">base</option>
+              <option value="small">small</option>
+              <option value="medium">medium</option>
+              <option value="large-v3">large-v3</option>
+            </select>
+            <input v-model="settings.video_engine.redub_language" class="input"
+                   style="width:120px" placeholder="zh" />
+          </div>
+        </div>
       </section>
 
       <!-- Footer actions -->

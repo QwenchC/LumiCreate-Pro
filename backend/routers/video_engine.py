@@ -1181,3 +1181,130 @@ async def render_slideshow(req: RenderSlideshowRequest):
         print(f"[slideshow] task_history append failed: {e}", flush=True)
 
     return result
+
+
+# ── v1.6: 视频后期 RVC 变声（识别分段 → 逐条变声 → 换音轨，音色一致性）─────────
+#
+# 仅对【已生成】的分镜视频做后期：把视频音轨用 RVC 统一变声后换回原画面。
+# 需要外部 RVC 环境（redub_rvc_root）+ 训练好的 .pth。纯附加：不改任何既有视频流程，
+# 走独立端点；成片复用现有 video/<scene>.mp4 通路（原片先备份到 .orig.mp4，可回退）。
+
+
+@router.get("/rvc-models")
+async def list_rvc_models(rvc_root: str = ""):
+    """列举 RVC 训练好的 .pth 模型（音色）。扫描 <rvc_root> 下常见的权重目录。"""
+    cfg = load_settings().video_engine
+    root = rvc_root or getattr(cfg, "redub_rvc_root", "") or ""
+    out: list[str] = []
+    if root and Path(root).is_dir():
+        base = Path(root)
+        # RVC-WebUI 常见权重位置
+        search_dirs = [base / "assets" / "weights", base / "weights", base]
+        seen: set[str] = set()
+        for d in search_dirs:
+            if not d.is_dir():
+                continue
+            for f in sorted(d.glob("*.pth")):
+                if f.name not in seen:
+                    seen.add(f.name)
+                    out.append(f.name)
+    return {"models": out, "rvc_root": root, "exists": bool(root and Path(root).is_dir())}
+
+
+class RedubRequest(BaseModel):
+    project_id:     str
+    scene_id:       str
+    default_model:  str = ""          # RVC .pth（空 → 用设置里的 redub_default_model）
+    voice_mapping:  str = ""          # 逐说话人映射；留空=整片统一 default_model（音色一致）
+    whisper_model:  str = ""          # 空 → 设置默认
+    language:       str = ""          # 空 → 设置默认
+    rvc_root:       str = ""          # 空 → 设置默认
+    rvc_python:     str = ""
+    device:         str = ""
+
+
+@router.post("/redub-stream")
+async def redub_video_stream(req: RedubRequest):
+    """对某分镜已生成的视频做 RVC 后期变声，SSE 回传进度；成片换回该分镜视频。"""
+    cfg  = load_settings()
+    vcfg = cfg.video_engine
+    icfg = cfg.image_engine
+    wdir = vcfg.workflow_dir or icfg.workflow_dir
+
+    from services.redub_video import load_bundled_redub_workflow, generate_redub_video
+    workflow = load_bundled_redub_workflow()
+    if workflow is None:
+        raise HTTPException(404, detail="未找到视频后期变声工作流（workflows/ 缺少含 RedubFinalize 的工作流）")
+
+    proj_dir = Path(cfg.projects_dir) / req.project_id
+    src_video = proj_dir / "video" / f"{req.scene_id}.mp4"
+    if not src_video.is_file():
+        raise HTTPException(404, detail=f"分镜 {req.scene_id} 尚无视频，无法后期变声")
+
+    # 配置：请求覆盖设置默认
+    default_model = req.default_model or getattr(vcfg, "redub_default_model", "")
+    if not default_model:
+        raise HTTPException(400, detail="请先选择 RVC 模型（.pth），或在设置里配置默认模型")
+    rvc_root   = req.rvc_root   or getattr(vcfg, "redub_rvc_root", "")
+    rvc_python = req.rvc_python or getattr(vcfg, "redub_rvc_python", "")
+    device     = req.device     or getattr(vcfg, "redub_device", "")
+    whisper    = req.whisper_model or getattr(vcfg, "redub_whisper_model", "")
+    language   = req.language   or getattr(vcfg, "redub_language", "")
+
+    try:
+        video_bytes = src_video.read_bytes()
+    except Exception as e:
+        raise HTTPException(500, detail=f"读取分镜视频失败: {e}")
+
+    async def stream():
+        terminal = False
+        async for ev in generate_redub_video(
+            vcfg.comfyui_url, workflow,
+            video_bytes=video_bytes,
+            default_model=default_model, voice_mapping=req.voice_mapping,
+            rvc_root=rvc_root, rvc_python=rvc_python, device=device,
+            whisper_model=whisper, language=language,
+            comfyui_input_dir=vcfg.comfyui_input_dir, workflow_dir=wdir or "",
+            scene_id=req.scene_id,
+        ):
+            evt = ev.get("event")
+            if evt == "completed":
+                terminal = True
+                out = {**ev, "event": "redub_done"}
+                if ev.get("video"):
+                    try:
+                        import base64 as _b64
+                        vid_dir = proj_dir / "video"
+                        vid_dir.mkdir(parents=True, exist_ok=True)
+                        # 原片先备份（仅首次），可回退
+                        orig_backup = vid_dir / f"{req.scene_id}.orig.mp4"
+                        if not orig_backup.exists():
+                            orig_backup.write_bytes(src_video.read_bytes())
+                        # 变声成片换回该分镜视频（画面不变、音轨已统一）
+                        src_video.write_bytes(_b64.b64decode(ev["video"]))
+                        out["file_path"] = f"video/{req.scene_id}.mp4"
+                        out["url"] = (f"/api/projects/{req.project_id}/video-file/{req.scene_id}")
+                        # scene_assets 仍是同一 video slot，无需改登记
+                    except Exception as e:
+                        out = {"event": "redub_error", "scene_id": req.scene_id,
+                               "message": f"后期成片落盘失败: {e}"}
+                yield _sse(out)
+            elif evt == "error":
+                terminal = True
+                yield _sse({**ev, "event": "redub_error"})
+            else:
+                yield _sse(ev)
+        if not terminal:
+            yield _sse({"event": "redub_error", "scene_id": req.scene_id,
+                        "message": "后期处理结束但未返回成片（ComfyUI 连接中断或 RVC 环境异常）"})
+        # task_history
+        try:
+            from services.task_history import append as _th_append
+            _th_append("redub", req.project_id, items=1, errors=0, status="ok",
+                       note=f"scene={req.scene_id}, model={default_model}")
+        except Exception as e:
+            print(f"[redub] task_history append failed: {e}", flush=True)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
