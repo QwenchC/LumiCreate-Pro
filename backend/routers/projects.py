@@ -533,6 +533,15 @@ async def serve_image_file(project_id: str, filename: str):
     return FileResponse(img_path, media_type="image/png")
 
 
+def _image_asset_type(frame_type: str) -> str:
+    """frame_type → scene_assets.asset_type。v1.6 新增 bg（无角色背景图，供 MSR 多图参考）。"""
+    if frame_type == "start":
+        return "image_start"
+    if frame_type == "bg":
+        return "image_bg"
+    return "image_end"
+
+
 @router.put("/{project_id}/images/slot")
 async def save_image_slot(project_id: str, slot: ImageSlot):
     """Save a single image slot file to disk + A2 双写到 scene_assets。"""
@@ -545,7 +554,7 @@ async def save_image_slot(project_id: str, slot: ImageSlot):
     # A2: 登记到 SQLite scene_assets（自动尝试推进 status → image_drafted）
     try:
         from services.project_repo import record_asset
-        asset_type = "image_start" if slot.frame_type == "start" else "image_end"
+        asset_type = _image_asset_type(slot.frame_type)
         record_asset(
             project_id, slot.scene_id, asset_type,
             slot_index=slot.slot_index,
@@ -594,7 +603,7 @@ async def save_image_metadata(project_id: str, meta_update: ImageMetadataUpdate)
                 if ":" not in compound_key:
                     continue
                 sid, ft = compound_key.split(":", 1)
-                asset_type = "image_start" if ft == "start" else "image_end"
+                asset_type = _image_asset_type(ft)
                 # 先把该镜该 frame_type 全部置 0，再把选中那个置 1
                 conn.execute(
                     "UPDATE scene_assets SET is_selected = 0 "

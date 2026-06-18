@@ -321,6 +321,65 @@
           </div>
         </div>
 
+        <!-- v1.6: 背景图(无角色) — 供 MSR 多图参考视频用 -->
+        <div class="detail-frame-section">
+          <div class="detail-frame-header">
+            <span class="frame-badge" style="background:#2f855a;color:#fff">背景图</span>
+            <span class="text-muted" style="font-size:11px">无角色背景图 · 供多图参考视频(LTX MSR)用</span>
+            <button class="btn btn-ghost btn-xs" :disabled="running || regenPromptingId === activeScene.id + ':bg'"
+              @click="regenPromptOnly(activeScene,'bg')" title="用 LLM 生成无角色的纯环境背景提示词">
+              {{ regenPromptingId === activeScene.id + ':bg' ? '⏳' : '↺' }} 提示词
+            </button>
+            <button class="btn btn-ghost btn-xs" :disabled="running" @click="regenFrame(activeScene,'bg')">↺ 重新生成所有</button>
+          </div>
+          <textarea
+            class="input textarea frame-prompt-edit"
+            rows="3"
+            placeholder="背景图提示词（英文，纯环境无人物）…"
+            :value="activeScene.bg_prompt"
+            @input="onPromptInput(activeScene, 'bg', $event.target.value)"
+          />
+          <div class="image-slots" :style="slotVars">
+            <div
+              v-for="slot in getFrameSlotCount(activeScene.id, 'bg')" :key="'bg'+(slot-1)"
+              class="image-slot"
+              :class="{
+                selected: activeScene._selected_bg === slot-1,
+                loading:  isLoading(activeScene.id,'bg',slot-1),
+                errored:  isErrored(activeScene.id,'bg',slot-1)
+              }"
+              @click="selectImage(activeScene,'bg',slot-1)"
+            >
+              <img v-if="getImage(activeScene.id,'bg',slot-1)"
+                   :src="getImage(activeScene.id,'bg',slot-1)" alt="背景图" />
+              <div v-else-if="isLoading(activeScene.id,'bg',slot-1)" class="slot-loading">
+                <div class="spinner spinner-sm"/>
+                <span class="slot-progress-text">{{ getProgress(activeScene.id,'bg',slot-1) }}</span>
+              </div>
+              <div v-else-if="isErrored(activeScene.id,'bg',slot-1)" class="slot-error">
+                <span>⚠</span><span class="slot-err-msg">{{ getError(activeScene.id,'bg',slot-1) }}</span>
+              </div>
+              <div v-else class="slot-empty"><span>{{ slot }}</span></div>
+              <div v-if="getImage(activeScene.id,'bg',slot-1)" class="slot-overlay">
+                <button class="slot-overlay-btn" @click.stop="openPreview(activeScene,'bg',slot-1)" title="预览">⛶</button>
+                <button class="slot-overlay-btn slot-overlay-del" @click.stop="deleteSlot(activeScene,'bg',slot-1)" title="删除">🗑</button>
+              </div>
+              <div v-else-if="!isLoading(activeScene.id,'bg',slot-1)" class="slot-overlay slot-overlay-empty">
+                <button class="slot-overlay-btn slot-overlay-del"
+                        @click.stop="deleteSlot(activeScene,'bg',slot-1)" title="删除此槽位">🗑</button>
+              </div>
+              <div class="selected-badge" v-if="activeScene._selected_bg === slot-1">✓</div>
+            </div>
+            <button class="image-slot slot-add"
+              :disabled="running || !!sceneGenerating[activeScene.id] || !selectedWorkflow"
+              @click="addOneMore(activeScene,'bg')" title="再生成一张">＋</button>
+            <button class="image-slot slot-import"
+              :disabled="running"
+              @click="triggerImport(activeScene, 'bg')"
+              title="导入本地背景图（自动按比例剪裁）">📥</button>
+          </div>
+        </div>
+
         <!-- Character selector panel -->
         <div v-if="characters.length" class="char-select-panel">
           <div class="char-select-header">
@@ -457,8 +516,9 @@ async function onCropped({ base64, dataUrl }) {
   setFrameSlotCount(sceneId, frameType, slotIndex + 1)
   const scene = scenes.value.find(s => s.id === sceneId)
   if (scene) {
-    if (frameType === 'start') scene._selected_start = slotIndex
-    else                       scene._selected_end   = slotIndex
+    if (frameType === 'start')   scene._selected_start = slotIndex
+    else if (frameType === 'bg') scene._selected_bg    = slotIndex
+    else                          scene._selected_end   = slotIndex
   }
   // PUT 到后端落盘
   try {
@@ -849,8 +909,10 @@ async function loadData() {
     ])
     scenes.value = ((scenesRes.data?.scenes) || []).map(s => ({
       ...s,
+      bg_prompt:       s.bg_prompt        ?? '',
       _selected_start: s._selected_start ?? 0,
       _selected_end:   s._selected_end   ?? 0,
+      _selected_bg:    s._selected_bg    ?? 0,
       _frame_refs:     s._frame_refs     ?? { start: [], end: [] },
     }))
     const imgCfg = settingsRes.data?.image_engine || {}
@@ -888,8 +950,10 @@ async function loadData() {
     for (const scene of scenes.value) {
       const ss = selectedMap[scene.id + ':start']
       const se = selectedMap[scene.id + ':end']
+      const sb = selectedMap[scene.id + ':bg']
       if (ss !== undefined) scene._selected_start = ss
       if (se !== undefined) scene._selected_end = se
+      if (sb !== undefined) scene._selected_bg = sb     // v1.6: 背景图选中
     }
   } catch (e) {
     loadError.value = e?.response?.data?.detail || e.message || '加载失败'
@@ -912,6 +976,7 @@ async function saveImages() {
   for (const scene of scenes.value) {
     selected[scene.id + ':start'] = scene._selected_start ?? 0
     selected[scene.id + ':end']   = scene._selected_end   ?? 0
+    selected[scene.id + ':bg']    = scene._selected_bg    ?? 0   // v1.6: 背景图
   }
 
   try {
@@ -1230,17 +1295,31 @@ async function generateOneScene(scene) {
   }
 }
 
-async function regenFrame(scene, frameType) {
-  const rawPrompt = frameType === 'start' ? scene.start_frame_prompt : scene.end_frame_prompt
-  if (!rawPrompt || !selectedWorkflow.value) return
+// v1.6: 统一取原始提示词 + 构建最终提示词（含 bg 无角色背景图分支）
+function _rawFramePrompt(scene, frameType) {
+  if (frameType === 'start') return scene.start_frame_prompt
+  if (frameType === 'bg')    return scene.bg_prompt
+  return scene.end_frame_prompt
+}
+function _buildFramePrompt(scene, frameType, rawPrompt) {
+  if (isIdeogram.value) return rawPrompt || ''   // Ideogram 送纯 JSON
+  if (frameType === 'bg') {
+    // 背景图：不拼角色外观，强调空场景无人物
+    return [effectiveStyle.value, rawPrompt,
+      'empty scene, environment only, no people, no characters, no person'
+    ].filter(Boolean).join(', ')
+  }
   const selectedNames = scene._scene_characters || []
   const charPrefix = characters.value
     .filter(c => selectedNames.includes(c.name) && c.appearance)
     .map(c => c.appearance.trim()).join(', ')
-  // v1.4.12: Ideogram 工作流送纯 JSON，不拼画风/角色前缀（否则 JSON 失效）
-  const prompt = isIdeogram.value
-    ? rawPrompt
-    : [effectiveStyle.value, charPrefix, rawPrompt].filter(Boolean).join(', ')
+  return [effectiveStyle.value, charPrefix, rawPrompt].filter(Boolean).join(', ')
+}
+
+async function regenFrame(scene, frameType) {
+  const rawPrompt = _rawFramePrompt(scene, frameType)
+  if (!rawPrompt || !selectedWorkflow.value) return
+  const prompt = _buildFramePrompt(scene, frameType, rawPrompt)
   setFrameSlotCount(scene.id, frameType, genCount.value)
   for (let s = 0; s < genCount.value; s++) {
     const key = slotKey(scene.id, frameType, s)
@@ -1257,8 +1336,9 @@ async function regenFrame(scene, frameType) {
 // ── Prompt editing: linked with ScenesTab via shared /scenes endpoint ─────────
 let _promptSaveTimer = null
 function onPromptInput(scene, frameType, value) {
-  if (frameType === 'start') scene.start_frame_prompt = value
-  else                        scene.end_frame_prompt   = value
+  if (frameType === 'start')   scene.start_frame_prompt = value
+  else if (frameType === 'bg') scene.bg_prompt          = value
+  else                          scene.end_frame_prompt   = value
   emit('dirty')
   clearTimeout(_promptSaveTimer)
   _promptSaveTimer = setTimeout(() => saveScenes(), 800)
@@ -1279,13 +1359,15 @@ async function regenPromptOnly(scene, frameType) {
   if (regenPromptingId.value === key) return
   regenPromptingId.value = key
   try {
+    const isBg = frameType === 'bg'
     const selected = scene._scene_characters || []
     const allChars = characters.value || []
-    const chars = allChars.filter(c => selected.includes(c.name))
+    // v1.6: 背景图不带角色 → 生成纯环境提示词
+    const chars = isBg ? [] : allChars.filter(c => selected.includes(c.name))
 
-    // 轮 6: i2i 工作流走专门的 img2img 提示词端点（要求至少有 refs）
+    // 轮 6: i2i 工作流走专门的 img2img 提示词端点（要求至少有 refs）；bg 始终走 t2i 文生
     let endpoint, body
-    if (isI2I.value) {
+    if (isI2I.value && !isBg) {
       const refs = getFrameRefsForBackend(scene, frameType)
       if (!refs.length) {
         alert('图生图工作流需要先选择参考图，才能生成对应的提示词')
@@ -1326,6 +1408,8 @@ async function regenPromptOnly(scene, frameType) {
       scene.start_frame_prompt = data.start_frame_prompt
     } else if (frameType === 'end' && data.end_frame_prompt) {
       scene.end_frame_prompt = data.end_frame_prompt
+    } else if (frameType === 'bg' && data.start_frame_prompt) {
+      scene.bg_prompt = data.start_frame_prompt   // v1.6: 用首帧端点的环境描述作背景图提示词
     }
     emit('dirty')
     saveScenes()
@@ -1385,8 +1469,9 @@ async function runSingleSlot(sceneId, frameType, slotIndex, prompt) {
 
 function selectImage(scene, frameType, slotIndex) {
   if (!getImage(scene.id, frameType, slotIndex)) return
-  if (frameType === 'start') scene._selected_start = slotIndex
-  else                        scene._selected_end   = slotIndex
+  if (frameType === 'start')   scene._selected_start = slotIndex
+  else if (frameType === 'bg') scene._selected_bg    = slotIndex
+  else                          scene._selected_end   = slotIndex
   emit('dirty')
 }
 
@@ -1427,7 +1512,9 @@ function deleteSlot(scene, frameType, slotIndex) {
   const prgs = { ...slotProgress.value }; delete prgs[lastKey]; slotProgress.value = prgs
   const lds  = { ...slotLoading.value };  delete lds[lastKey];  slotLoading.value  = lds
   setFrameSlotCount(scene.id, frameType, Math.max(1, count - 1))
-  const selKey = frameType === 'start' ? '_selected_start' : '_selected_end'
+  const selKey = frameType === 'start' ? '_selected_start'
+               : frameType === 'bg'    ? '_selected_bg'
+               : '_selected_end'
   if (scene[selKey] >= count - 1) scene[selKey] = Math.max(0, count - 2)
   else if (scene[selKey] > slotIndex) scene[selKey]--
   if (lightbox.value?.sceneId === scene.id && lightbox.value?.frameType === frameType
@@ -1436,16 +1523,9 @@ function deleteSlot(scene, frameType, slotIndex) {
 }
 
 async function addOneMore(scene, frameType) {
-  const rawPrompt = frameType === 'start' ? scene.start_frame_prompt : scene.end_frame_prompt
+  const rawPrompt = _rawFramePrompt(scene, frameType)
   if (!rawPrompt || !selectedWorkflow.value) return
-  const selectedNames = scene._scene_characters || []
-  const charPrefix = characters.value
-    .filter(c => selectedNames.includes(c.name) && c.appearance)
-    .map(c => c.appearance.trim()).join(', ')
-  // v1.4.12: Ideogram 工作流送纯 JSON，不拼画风/角色前缀（否则 JSON 失效）
-  const prompt = isIdeogram.value
-    ? rawPrompt
-    : [effectiveStyle.value, charPrefix, rawPrompt].filter(Boolean).join(', ')
+  const prompt = _buildFramePrompt(scene, frameType, rawPrompt)
   const newSlot = getFrameSlotCount(scene.id, frameType)
   setFrameSlotCount(scene.id, frameType, newSlot + 1)
   const key = slotKey(scene.id, frameType, newSlot)
