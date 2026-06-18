@@ -580,6 +580,13 @@
             <span v-if="!(scene._scene_characters || []).length"
                   class="msr-ref-tag warn">未指定角色 → 仅用背景图驱动</span>
           </div>
+          <div v-if="msrEnabled[scene.id]" class="msr-hint" style="align-items:center">
+            <span class="msr-ref-tag" style="border:none;background:none;padding-left:0">⏱ 视频时长</span>
+            <input type="number" min="1" max="30" step="1" class="duration-input"
+                   :value="manualDurations[scene.id] ?? 5"
+                   @input="manualDurations[scene.id] = Number($event.target.value) || 5" />
+            <span class="text-muted" style="font-size:11px">秒（MSR 自带音轨，时长由你设定）</span>
+          </div>
           <div v-if="msrEnabled[scene.id]" class="msr-hint">
             <button class="btn btn-ghost btn-xs"
                     :disabled="msrPromptingId === scene.id || msrPromptRunning"
@@ -1895,8 +1902,9 @@ async function _runGeneration(sceneList) {
           ])
 
       // 时长：无音频模式用手动设置（默认 5s），有音频用音频时长。
-      // MSR 输出含 LTX 自带音轨、无 BGM；时长仍按音频/手动设置，保证与台词对齐。
-      const dur_ms = dropAudio
+      // v1.6: MSR 分镜【自带 LTX 原生音轨、不依赖预合并 TTS】→ 时长必须由用户手控
+      // （此前误用 s.audioDurationMs，导致被某条残留音频长度自动定成 3s 无法改）。
+      const dur_ms = (msrOn || dropAudio)
         ? Math.max(1, Number(manualDurations.value[s.id] ?? 5)) * 1000
         : (s.audioDurationMs || 4000)
 
