@@ -463,6 +463,17 @@
               </span>
               <span v-else-if="redubState[scene.id] === 'done'" class="msr-ref-tag ok">✓ 已变声</span>
               <span v-else-if="redubState[scene.id] === 'error'" class="msr-ref-tag warn">✗ 后期失败</span>
+              <button class="btn btn-ghost btn-xs"
+                      :disabled="running || dewmState[scene.id] === 'running'"
+                      @click="openDewm(scene)"
+                      title="用 LTX V2V 去除该分镜视频的字幕/水印（按输入最长边重绘）">
+                🧹 去水印去字幕
+              </button>
+              <span v-if="dewmState[scene.id] === 'running'" class="text-muted" style="font-size:11px">
+                去水印中… {{ dewmProgressPct(scene.id) }}%
+              </span>
+              <span v-else-if="dewmState[scene.id] === 'done'" class="msr-ref-tag ok">✓ 已去水印</span>
+              <span v-else-if="dewmState[scene.id] === 'error'" class="msr-ref-tag warn">✗ 去水印失败</span>
             </div>
           </div>
           <div v-else class="video-preview-empty">
@@ -741,6 +752,40 @@
             {{ redubDialog.running ? '处理中…' : '开始后期变声' }}
           </button>
           <button class="btn btn-ghost" :disabled="redubDialog.running" @click="closeRedub">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- v1.6: 去水印/去字幕对话框 -->
+    <div v-if="dewmDialog.visible" class="merge-dialog-overlay" @click.self="closeDewm">
+      <div class="merge-dialog card" style="max-width:480px">
+        <h4 class="merge-dialog-title">🧹 视频去水印 / 去字幕（LTX V2V 重绘）</h4>
+        <p class="text-muted" style="font-size:12px;margin:4px 0 10px">
+          分镜 {{ dewmDialog.sceneId }} —— 用 LTX IC-LoRA 去字幕+去水印重绘整段视频。
+          输出最长边默认 = 输入视频最长边；显存不足可调小。原片自动备份为 .predewm.mp4，可回退。
+        </p>
+        <div class="redub-field">
+          <label>输出最长边像素上限（0 = 用输入视频原生最长边）</label>
+          <input type="number" min="0" max="2048" step="64" class="input input-xs"
+                 v-model.number="dewmDialog.maxLongestEdge"
+                 placeholder="0（原生）；低显存可填 960 / 832 / 768" />
+        </div>
+        <div class="redub-field">
+          <label>最大处理时长（秒，0 = 用工作流默认）</label>
+          <input type="number" min="0" max="120" step="1" class="input input-xs"
+                 v-model.number="dewmDialog.maxSeconds" placeholder="0" />
+        </div>
+        <div v-if="dewmDialog.error" class="error-banner" style="margin:6px 0">⚠ {{ dewmDialog.error }}</div>
+        <div v-if="dewmDialog.running" class="redub-field">
+          <div class="scene-mini-bar"><div class="scene-mini-fill"
+               :style="{ width: dewmDialog.progressPct + '%' }" /></div>
+          <span class="text-muted" style="font-size:11px">{{ dewmDialog.progressPct }}%（V2V 较慢，请耐心等待）</span>
+        </div>
+        <div class="merge-dialog-actions">
+          <button class="btn btn-primary" :disabled="dewmDialog.running" @click="runDewm">
+            {{ dewmDialog.running ? '处理中…' : '开始去水印去字幕' }}
+          </button>
+          <button class="btn btn-ghost" :disabled="dewmDialog.running" @click="closeDewm">关闭</button>
         </div>
       </div>
     </div>
@@ -1099,6 +1144,95 @@ async function runRedub() {
   } catch (e) {
     d.error = e.message || String(e)
     redubState.value = { ...redubState.value, [sid]: 'error' }
+  } finally {
+    d.running = false
+  }
+}
+
+// ── v1.6: 去水印 / 去字幕（LTX V2V）─────────────────────────────────────────────
+const dewmState    = ref({})   // sceneId → 'running'|'done'|'error'
+const dewmProgress = ref({})
+function dewmProgressPct(id) { return dewmProgress.value[id] || 0 }
+
+const dewmDialog = ref({
+  visible: false, sceneId: '',
+  maxLongestEdge: 0, maxSeconds: 0,
+  running: false, progressPct: 0, error: '',
+})
+
+function openDewm(scene) {
+  dewmDialog.value.visible = true
+  dewmDialog.value.sceneId = String(scene.id)
+  dewmDialog.value.error = ''
+  dewmDialog.value.progressPct = 0
+  dewmDialog.value.running = false
+}
+
+function closeDewm() {
+  if (dewmDialog.value.running) return
+  dewmDialog.value.visible = false
+}
+
+async function runDewm() {
+  const d = dewmDialog.value
+  if (d.running) return
+  const sid = d.sceneId
+  d.running = true; d.error = ''; d.progressPct = 0
+  dewmState.value = { ...dewmState.value, [sid]: 'running' }
+  dewmProgress.value = { ...dewmProgress.value, [sid]: 0 }
+  try {
+    const resp = await fetch(`${API}/video-engine/dewatermark-stream`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_id: props.projectId, scene_id: sid,
+        max_longest_edge: Number(d.maxLongestEdge) || 0,
+        max_seconds: Number(d.maxSeconds) || 0,
+      }),
+    })
+    if (!resp.ok) {
+      let detail = 'HTTP ' + resp.status
+      try { const j = await resp.json(); detail = j.detail || detail } catch {}
+      throw new Error(detail)
+    }
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    let ok = false
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') continue
+        let ev; try { ev = JSON.parse(raw) } catch { continue }
+        if (ev.event === 'progress') {
+          const pct = ev.max ? Math.round(ev.value / ev.max * 100) : 0
+          d.progressPct = pct
+          dewmProgress.value = { ...dewmProgress.value, [sid]: pct }
+        } else if (ev.event === 'dewm_done') {
+          ok = true
+        } else if (ev.event === 'dewm_error') {
+          d.error = ev.message || '去水印失败'
+        }
+      }
+    }
+    if (ok) {
+      dewmState.value = { ...dewmState.value, [sid]: 'done' }
+      try {
+        const { data } = await axios.get(`${API}/projects/${props.projectId}/videos`)
+        sceneVideos.value = _toVideoSrcMap(data)
+      } catch {}
+      d.visible = false
+    } else {
+      dewmState.value = { ...dewmState.value, [sid]: 'error' }
+      if (!d.error) d.error = '去水印结束但未返回成片'
+    }
+  } catch (e) {
+    d.error = e.message || String(e)
+    dewmState.value = { ...dewmState.value, [sid]: 'error' }
   } finally {
     d.running = false
   }

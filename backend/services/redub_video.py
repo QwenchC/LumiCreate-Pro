@@ -156,6 +156,13 @@ def patch_redub_workflow(
             _set_widget(n, 1, filename_prefix)
         _set_widget(n, 2, True)            # 必须 True 才真正写出成片
 
+    # 5) bypass 纯 UI 节点（ShowText / PreviewAudio）—— headless 无需，且 ShowText 在
+    #    API 提交（无 extra_pnginfo）时会刷 "extra_pnginfo[0] is not a dict" 噪声错。
+    for n in wf.get("nodes", []):
+        t = str(n.get("type", ""))
+        if "ShowText" in t or t == "PreviewAudio":
+            n["mode"] = 4
+
     return wf
 
 
@@ -223,6 +230,32 @@ async def _fetch_redub_output(comfyui_url: str, prompt_id: str) -> Optional[dict
     return None
 
 
+def _find_redub_output_on_disk(input_dir: str, prefix: str,
+                               since_ts: float) -> Optional[dict]:
+    """RedubFinalize 是 OUTPUT_NODE 但只返回路径字符串、不进 /history（没有 ui 输出），
+    所以 /view 取不到。这里直接从磁盘取：output 目录 = input 同级 output/，按 filename_prefix
+    在子目录里找 since_ts 之后【最新】的 mp4。RVC 后期必为本地 ComfyUI，磁盘可达。"""
+    try:
+        out_root = Path(input_dir).parent / "output"
+        sub, name = "", prefix
+        if "/" in prefix:
+            sub, name = prefix.rsplit("/", 1)
+        elif "\\" in prefix:
+            sub, name = prefix.rsplit("\\", 1)
+        search_dir = (out_root / sub) if sub else out_root
+        if not search_dir.is_dir():
+            return None
+        cands = [p for p in search_dir.glob(f"{name}_*.mp4")
+                 if p.stat().st_mtime >= since_ts - 3]
+        if not cands:
+            return None
+        newest = max(cands, key=lambda p: p.stat().st_mtime)
+        return {"filename": newest.name,
+                "data": base64.b64encode(newest.read_bytes()).decode()}
+    except Exception:
+        return None
+
+
 async def generate_redub_video(
     comfyui_url: str,
     workflow: dict,
@@ -257,7 +290,9 @@ async def generate_redub_video(
         yield {"event": "error", "scene_id": scene_id,
                "message": "未配置 ComfyUI input 目录，无法放置视频做后期变声"}
         return
-    fname = f"lumi_redub_{scene_id or uuid.uuid4().hex}.mp4"
+    base_id = scene_id or uuid.uuid4().hex
+    fname = f"lumi_redub_{base_id}.mp4"
+    out_prefix = f"redub/lumi_redub_{base_id}"   # 唯一前缀，便于从磁盘精确定位成片
     try:
         import asyncio
         dest = Path(input_dir) / fname
@@ -274,6 +309,7 @@ async def generate_redub_video(
         default_model=default_model, voice_mapping=voice_mapping,
         rvc_root=rvc_root, rvc_python=rvc_python, device=device,
         whisper_model=whisper_model, language=language,
+        filename_prefix=out_prefix,
     )
     try:
         api_workflow = _litegraph_to_api(patched)
@@ -282,6 +318,15 @@ async def generate_redub_video(
         return
 
     # ── 3. 提交任务 ────────────────────────────────────────────────────────────
+    submit_ts = __import__("time").time()
+
+    async def _get_out():
+        # RedubFinalize 不进 /history → 先从磁盘按唯一前缀取；再退化 /view 兜底
+        o = _find_redub_output_on_disk(input_dir, out_prefix, submit_ts)
+        if o:
+            return o
+        return await _fetch_redub_output(comfyui_url, prompt_id)
+
     client_id = str(uuid.uuid4())
     try:
         async with httpx.AsyncClient(timeout=15) as http:
@@ -327,7 +372,7 @@ async def generate_redub_video(
                            "max": data.get("max", 1), "scene_id": scene_id}
                 elif mtype == "executing":
                     if data.get("node") is None and data.get("prompt_id") == prompt_id:
-                        out = await _fetch_redub_output(comfyui_url, prompt_id)
+                        out = await _get_out()
                         produced_terminal = True
                         if out:
                             yield {"event": "completed", "scene_id": scene_id,
@@ -345,7 +390,7 @@ async def generate_redub_video(
                         return
         # WS 干净关闭却没给终止事件 —— 兜底取一次成片，别静默消失
         if not produced_terminal:
-            out = await _fetch_redub_output(comfyui_url, prompt_id)
+            out = await _get_out()
             if out:
                 yield {"event": "completed", "scene_id": scene_id,
                        "video": out["data"], "filename": out["filename"], "mime": "video/mp4"}

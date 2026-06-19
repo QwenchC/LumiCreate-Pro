@@ -1016,6 +1016,28 @@ def _ffprobe_video_stream_seconds(ffmpeg_path: str, file_path: Path) -> float:
     return _ffprobe_duration_seconds(ffmpeg_path, file_path)
 
 
+def _ffprobe_dimensions(ffmpeg_path: str, file_path: Path) -> tuple[int, int]:
+    """探测视频【宽,高】像素。失败回 (0,0)。用于去水印按输入最长边设输出分辨率。"""
+    import shutil as _sh, subprocess as _sp
+    ffprobe = _sh.which("ffprobe") or str(Path(ffmpeg_path).parent / "ffprobe.exe")
+    if not Path(ffprobe).is_file():
+        ffprobe = "ffprobe"
+    try:
+        out = _sp.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0",
+             str(file_path)],
+            capture_output=True, timeout=30,
+        )
+        if out.returncode == 0:
+            parts = (out.stdout or b"").decode().strip().replace(",", "x").split("x")
+            if len(parts) >= 2:
+                return int(float(parts[0])), int(float(parts[1]))
+    except Exception:
+        pass
+    return 0, 0
+
+
 class MixBgmRequest(BaseModel):
     project_id:         str
     source:             str = "final_video"   # 'final_video' | 'final_video_subbed'
@@ -1336,6 +1358,102 @@ async def redub_video_stream(req: RedubRequest):
                        note=f"scene={req.scene_id}, model={default_model}")
         except Exception as e:
             print(f"[redub] task_history append failed: {e}", flush=True)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── v1.6: 视频去水印 / 去字幕（LTX-2.3 V2V，按输入最长边设输出分辨率）──────────
+#
+# 与变声同属「视频后期」：对已生成的分镜视频用 LTX IC-LoRA 去字幕+去水印重绘。
+# 输出最长边像素默认 = 输入视频最长边（低显存可设上限）；成片换回该分镜视频
+# （原片先备份 .predewm.mp4，可回退）。纯附加、独立端点。
+
+
+class DewatermarkRequest(BaseModel):
+    project_id:       str
+    scene_id:         str
+    max_longest_edge: int = 0    # 0 = 用视频原生最长边；>0 = 上限（低显存调小，如 960/832/768）
+    max_seconds:      int = 0    # 0 = 用工作流默认（MAX SECONDS）
+
+
+@router.post("/dewatermark-stream")
+async def dewatermark_video_stream(req: DewatermarkRequest):
+    """对某分镜已生成的视频做去水印/去字幕，SSE 回传进度；成片换回该分镜视频。"""
+    cfg  = load_settings()
+    vcfg = cfg.video_engine
+    icfg = cfg.image_engine
+    wdir = vcfg.workflow_dir or icfg.workflow_dir
+
+    from services.watermark_video import (
+        load_bundled_watermark_workflow, generate_watermark_removal)
+    workflow = load_bundled_watermark_workflow()
+    if workflow is None:
+        raise HTTPException(404, detail="未找到去水印/去字幕工作流（workflows/ 缺少对应 V2V 工作流）")
+
+    proj_dir = Path(cfg.projects_dir) / req.project_id
+    src_video = proj_dir / "video" / f"{req.scene_id}.mp4"
+    if not src_video.is_file():
+        raise HTTPException(404, detail=f"分镜 {req.scene_id} 尚无视频，无法去水印")
+
+    # 输出最长边 = 输入视频最长边（探测）；用户设了上限则取 min（不放大）
+    ffmpeg = _find_ffmpeg(vcfg.comfyui_input_dir, wdir)
+    w, h = _ffprobe_dimensions(ffmpeg, src_video) if ffmpeg else (0, 0)
+    native = max(w, h)
+    if req.max_longest_edge and req.max_longest_edge > 0:
+        longest = min(native, req.max_longest_edge) if native > 0 else req.max_longest_edge
+    else:
+        longest = native or 1280   # 探测失败兜底
+    longest = max(64, int(longest))
+
+    try:
+        video_bytes = src_video.read_bytes()
+    except Exception as e:
+        raise HTTPException(500, detail=f"读取分镜视频失败: {e}")
+
+    async def stream():
+        terminal = False
+        async for ev in generate_watermark_removal(
+            vcfg.comfyui_url, workflow,
+            video_bytes=video_bytes, longest_edge=longest,
+            max_seconds=(req.max_seconds or None),
+            comfyui_input_dir=vcfg.comfyui_input_dir, workflow_dir=wdir or "",
+            scene_id=req.scene_id,
+        ):
+            evt = ev.get("event")
+            if evt == "completed":
+                terminal = True
+                out = {**ev, "event": "dewm_done"}
+                if ev.get("video"):
+                    try:
+                        import base64 as _b64
+                        vid_dir = proj_dir / "video"
+                        vid_dir.mkdir(parents=True, exist_ok=True)
+                        backup = vid_dir / f"{req.scene_id}.predewm.mp4"
+                        if not backup.exists():
+                            backup.write_bytes(src_video.read_bytes())
+                        src_video.write_bytes(_b64.b64decode(ev["video"]))
+                        out["file_path"] = f"video/{req.scene_id}.mp4"
+                        out["url"] = f"/api/projects/{req.project_id}/video-file/{req.scene_id}"
+                    except Exception as e:
+                        out = {"event": "dewm_error", "scene_id": req.scene_id,
+                               "message": f"去水印成片落盘失败: {e}"}
+                yield _sse(out)
+            elif evt == "error":
+                terminal = True
+                yield _sse({**ev, "event": "dewm_error"})
+            else:
+                yield _sse(ev)
+        if not terminal:
+            yield _sse({"event": "dewm_error", "scene_id": req.scene_id,
+                        "message": "去水印结束但未返回成片（ComfyUI 连接中断或显存不足）"})
+        try:
+            from services.task_history import append as _th_append
+            _th_append("dewatermark", req.project_id, items=1, errors=0, status="ok",
+                       note=f"scene={req.scene_id}, longest={longest}")
+        except Exception as e:
+            print(f"[dewm] task_history append failed: {e}", flush=True)
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream",
