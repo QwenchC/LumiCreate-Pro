@@ -2670,6 +2670,8 @@ async function showMergedInFolder() {
 }
 .merge-dialog {
   min-width:360px; max-width:520px; padding:20px 24px; display:flex; flex-direction:column; gap:14px;
+  /* v1.6: 高度不超过窗口，内容超出时对话框内部滚动（否则后期/去水印面板会被截断看不到） */
+  max-height:90vh; overflow-y:auto; box-sizing:border-box;
 }
 .merge-dialog-title { margin:0; font-size:16px; font-weight:700; }
 .merge-dialog-path {
