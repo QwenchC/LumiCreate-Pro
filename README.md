@@ -203,6 +203,27 @@ SKILL/
 
 ## 更新日志
 
+### v1.6.1
+本版本新增 **角色「标准造型」立绘**（Z-Image ControlNet 固定姿势 + 空白背景），并把**视频后期**（变声/去水印）打磨为：作用于当前双模视频、变声改预览→确认制 + 暴露可调参数、对话框高度不超窗口。全部 **additive**。
+
+- ✅ **角色「标准造型」立绘**（角色管理页立绘生成新增勾选项）：用固定标准姿势图
+  `assets/pic/character_default_pose.png` 做 **ControlNet** 约束 + 该角色 appearance，
+  经 `Z-Image-Turbo-ControlNet` 工作流生成**空白背景**的标准姿势角色图。
+  - 尺寸**按姿势图比例自适应**（`ImageScaleByAspectRatio "original"`），不约束竖幅。
+  - 提示词强制空白背景（`empty/white background, no scenery…`），保证可直接作 MSR 多图参考的角色参考图。
+  - 结果按现有立绘方式存放、自动标白底（`white_bg`），用户可标星设为该角色默认参考图。
+  - 后端 `services/standard_pose.py`（按节点连接定位姿势 LoadImage + KSampler 正/负 CLIPTextEncode）
+    + `POST /image-engine/generate-standard-pose`（SSE，schema 同 generate-stream）；姿势图随包
+    （extraResources `assets`）。
+- ✅ **视频后期作用于「当前选择的」双模视频**：变声/去水印按该镜「🎬 多图参考视频」开关
+  分别处理 `.msr.mp4` / `.mp4`，备份按类型分开。
+- ✅ **变声改预览→确认制**：生成预览 → 内嵌视频试看 → 确认 / 重新 / 取消（对应工作流 finalize
+  「满意后再打开」）；暴露 RedubReVoice 可调项（变调 / index_rate / protect / rms_mix_rate / mixback_gain）；
+  确认带源指纹校验（目标被改 → 409）。
+- ✅ **修复 & 打磨**：视频后期变声成片取回（RedubFinalize 不进 /history → 改磁盘取）；bypass
+  ShowText 噪声错；视频后期/去水印对话框高度 ≤90vh 内部滚动（不再截断）；同镜后期单飞锁。
+- ✅ **测试**：后端 **419** 通过（含 standard-pose patch 5 + redub 预览/确认/指纹 + 去水印 + 单飞锁）。
+
 ### v1.6.0
 本版本新增 **多图参考（MSR）视频** + **视频后期 RVC 变声** 两条完整通路，并配套「纯白背景立绘」「无角色背景图」两个素材入口 —— 全部 **additive**，现有 LTX / Seedance / slideshow / 合并 / 字幕 / BGM 通路 0 破坏（用户硬约束「这次更新不能删去旧的机制」全程遵守）。
 

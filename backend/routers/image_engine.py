@@ -746,3 +746,44 @@ async def generate_batch_stream(req: BatchGenerateRequest):
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+
+
+# ── v1.6.1: 角色「标准造型」立绘（Z-Image ControlNet + 固定姿势图）─────────────
+#
+# 用固定姿势图做 ControlNet 约束 + 角色外貌提示词，生成【空白背景】特定角色姿势图，
+# 供 MSR 多图参考视频做角色参考。尺寸按姿势图比例自适应（不约束竖幅）。
+# 事件 schema 与 /generate-stream 一致（queued/progress/completed.images/error），
+# 前端复用现有立绘上传通路（白底标记 white_bg=True）。
+
+
+class StandardPoseRequest(BaseModel):
+    appearance: str = ""     # 角色外貌（来自角色卡）
+    style:      str = ""     # 画风前缀（可选）
+
+
+@router.post("/generate-standard-pose")
+async def generate_standard_pose_stream(req: StandardPoseRequest):
+    cfg = load_settings().image_engine
+    from services.standard_pose import (
+        load_bundled_zimage_workflow, bundled_pose_image_path, generate_standard_pose)
+
+    if load_bundled_zimage_workflow() is None:
+        raise HTTPException(404, detail="未找到 Z-Image ControlNet 标准造型工作流")
+    pose_path = bundled_pose_image_path()
+    if pose_path is None:
+        raise HTTPException(404, detail="未找到固定姿势图 assets/pic/character_default_pose.png")
+    try:
+        pose_bytes = pose_path.read_bytes()
+    except Exception as e:
+        raise HTTPException(500, detail=f"读取姿势图失败: {e}")
+
+    async def stream():
+        async for event in generate_standard_pose(
+            cfg, pose_image_bytes=pose_bytes,
+            appearance=req.appearance, style=req.style,
+        ):
+            yield _sse(event)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

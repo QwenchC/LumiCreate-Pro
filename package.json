@@ -1,6 +1,6 @@
 {
   "name": "lumicreate-pro",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "LumiCreate Local - Comic drama generation tool",
   "main": "electron/main.js",
   "scripts": {
@@ -45,6 +45,10 @@
       {
         "from": "workflows",
         "to": "workflows"
+      },
+      {
+        "from": "assets",
+        "to": "assets"
       }
     ]
   },
