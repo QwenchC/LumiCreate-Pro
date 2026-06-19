@@ -757,8 +757,9 @@ async def generate_batch_stream(req: BatchGenerateRequest):
 
 
 class StandardPoseRequest(BaseModel):
-    appearance: str = ""     # 角色外貌（来自角色卡）
-    style:      str = ""     # 画风前缀（可选）
+    appearance:  str = ""     # 角色外貌（来自角色卡）
+    style:       str = ""     # 画风前缀（可选）
+    orientation: str = "landscape"   # 'landscape'(横幅) | 'portrait'(竖幅)；决定姿势图 → 出图朝向
 
 
 @router.post("/generate-standard-pose")
@@ -769,9 +770,9 @@ async def generate_standard_pose_stream(req: StandardPoseRequest):
 
     if load_bundled_zimage_workflow() is None:
         raise HTTPException(404, detail="未找到 Z-Image ControlNet 标准造型工作流")
-    pose_path = bundled_pose_image_path()
+    pose_path = bundled_pose_image_path(req.orientation)
     if pose_path is None:
-        raise HTTPException(404, detail="未找到固定姿势图 assets/pic/character_default_pose.png")
+        raise HTTPException(404, detail="未找到固定姿势图（assets/pic/character_default_pose*.png）")
     try:
         pose_bytes = pose_path.read_bytes()
     except Exception as e:

@@ -34,6 +34,19 @@ def test_detects_workflow():
     assert is_standard_pose_workflow({"nodes": [{"type": "KSampler"}]}) is False
 
 
+def test_pose_image_orientation_maps_to_files():
+    """竖幅→character_default_pose_2.png（适配竖屏视频）；横幅→character_default_pose.png。"""
+    from services.standard_pose import bundled_pose_image_path
+    land = bundled_pose_image_path("landscape")
+    port = bundled_pose_image_path("portrait")
+    if land is None or port is None:
+        pytest.skip("pose images not bundled in test env")
+    assert land.name == "character_default_pose.png"
+    assert port.name == "character_default_pose_2.png"
+    # 默认（不传/未知）走横幅
+    assert bundled_pose_image_path().name == "character_default_pose.png"
+
+
 def test_blank_bg_prompt_always_present():
     p = build_standard_pose_prompt("银发少女，红色长裙", style="anime")
     assert "white background" in p and "empty background" in p

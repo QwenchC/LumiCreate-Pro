@@ -229,12 +229,31 @@
             </label>
             <p class="field-hint">
               勾选后：用<strong>固定标准姿势图</strong>做 ControlNet 约束 + 该角色 appearance，
-              生成<strong>空白背景</strong>的标准姿势角色图（尺寸按姿势图比例自适应，不限竖幅）。
+              生成<strong>空白背景</strong>的标准姿势角色图（尺寸<strong>按姿势图比例自适应</strong>）。
               结果自动标为白底立绘，可标星设为该角色默认参考图。<br/>
               <span v-if="portraitGenDialog.standardPose" style="color:var(--accent)">
                 此模式忽略上方「工作流 / Prompt」（自动用角色 appearance + 空白背景约束），画风可保留。
               </span>
             </p>
+
+            <div v-if="portraitGenDialog.standardPose" style="margin-top:8px">
+              <label style="font-size:12px;color:var(--text-muted)">姿势图朝向（决定立绘比例）</label>
+              <div style="display:flex;gap:16px;margin-top:4px">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="radio" value="portrait" v-model="portraitGenDialog.poseOrientation" />
+                  竖幅姿势（适配竖屏视频）
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="radio" value="landscape" v-model="portraitGenDialog.poseOrientation" />
+                  横幅姿势（适配横屏视频）
+                </label>
+              </div>
+              <p class="field-hint" style="margin-top:4px">
+                ⚠ <strong>姿势图朝向要和最终视频朝向一致</strong>：立绘比例跟随姿势图，
+                <strong>横幅</strong>立绘用于<strong>竖幅</strong>视频会把角色压扁变形；
+                做竖屏漫剧请选<strong>竖幅姿势</strong>，做横屏视频再选横幅姿势。
+              </p>
+            </div>
           </div>
 
           <div v-if="portraitGenDialog.progress" class="form-group">
@@ -370,6 +389,7 @@ const portraitGenDialog = reactive({
   customStyle: '',    // 自定义画风文本
   whiteBg: false,     // v1.6: 纯白背景立绘（供 MSR 多图参考视频）
   standardPose: false, // v1.6.1: 标准造型（Z-Image ControlNet 固定姿势 + 空白背景）
+  poseOrientation: 'portrait', // v1.6.1: 姿势图朝向 'portrait'(竖幅)|'landscape'(横幅)
   running: false, progress: '',
 })
 
@@ -427,6 +447,7 @@ async function openPortraitGen(char) {
   } catch {}
   portraitGenDialog.whiteBg  = false
   portraitGenDialog.standardPose = false
+  portraitGenDialog.poseOrientation = 'portrait'
   portraitGenDialog.progress = ''
   portraitGenDialog.running  = false
   portraitGenDialog.show     = true
@@ -458,6 +479,7 @@ async function runPortraitGen() {
           // 只传角色真实外貌；空白背景/全身等由后端固定前缀承担（别把立绘模板 boilerplate 当外貌）
           appearance: (ch?.appearance || '').trim(),
           style,
+          orientation: dlg.poseOrientation,   // 竖幅/横幅姿势图 → 立绘比例
         }),
       })
       uploadWhiteBg  = true                       // 空白背景 → 标记白底（供 MSR 参考）

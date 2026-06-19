@@ -56,8 +56,10 @@ def load_bundled_zimage_workflow() -> Optional[dict]:
     return None
 
 
-def bundled_pose_image_path() -> Optional[Path]:
-    """固定姿势图路径：<bundled>/.. /assets/pic/character_default_pose.png。
+def bundled_pose_image_path(orientation: str = "landscape") -> Optional[Path]:
+    """固定姿势图路径（生成图按姿势图比例自适应，所以姿势图朝向 = 出图朝向）：
+      - orientation='portrait'（竖幅，1114x1896）→ character_default_pose_2.png（用于竖幅视频）
+      - 否则（横幅，1836x1024）            → character_default_pose.png（用于横幅视频）
     打包时 assets 通过 extraResources 落到 resources/assets，与 resources/workflows 同级。"""
     try:
         from services.comfyui import bundled_workflow_dir
@@ -66,7 +68,9 @@ def bundled_pose_image_path() -> Optional[Path]:
     base = bundled_workflow_dir()
     if base is None:
         return None
-    p = base.parent / "assets" / "pic" / "character_default_pose.png"
+    fname = ("character_default_pose_2.png" if str(orientation).lower() == "portrait"
+             else "character_default_pose.png")
+    p = base.parent / "assets" / "pic" / fname
     return p if p.is_file() else None
 
 
