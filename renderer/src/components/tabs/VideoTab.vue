@@ -438,9 +438,36 @@
       <div class="progress-track"><div class="progress-fill" :style="{ width: overallPct + '%' }" /></div>
     </div>
 
-    <!-- ── Scene list ── -->
-    <div class="scene-video-list" v-if="scenes.length">
-      <div v-for="scene in scenesWithData" :key="scene.id" class="scene-video-card card">
+    <!-- ── Scene master-detail（左栏列表 + 右栏当前分镜详情）── -->
+    <div class="video-md" v-if="scenes.length">
+
+      <!-- 左：分镜列表（只显示状态/审阅，不渲染视频 → 缓解多视频同页卡顿） -->
+      <div class="video-md-list">
+        <div v-for="scene in scenesWithData" :key="'vli'+scene.id"
+             class="video-md-item"
+             :class="{ active: activeVideoScene && scene.id === activeVideoScene.id }"
+             @click="activeVideoSceneId = scene.id">
+          <div class="vmd-num">{{ String(scene.index).padStart(2,'0') }}</div>
+          <div class="vmd-body">
+            <div class="vmd-desc truncate" :title="sceneFullText(scene)">{{ sceneFullText(scene) }}</div>
+            <div class="vmd-tags">
+              <span class="vmd-review" :class="{ ok: videoReviewed[scene.id] }">
+                {{ videoReviewed[scene.id] ? '✅已审阅' : '☐未审' }}
+              </span>
+              <span v-if="isMsrScene(scene)" class="vmd-mini" title="多图参考视频">🎬</span>
+              <span class="vmd-mini"
+                    :class="{ ok: videoSrcFor(scene), warn: sceneState[scene.id]==='error' }">
+                {{ videoSceneStatusIcon(scene) }}<template v-if="sceneState[scene.id]==='active'"> {{ sceneProgressPct(scene.id) }}%</template>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右：当前分镜详情（只渲染 1 个视频 + 全部配置） -->
+      <div class="video-md-detail">
+        <div v-if="!activeVideoScene" class="text-muted" style="padding:24px;text-align:center">请选择左侧分镜</div>
+        <div v-for="scene in (activeVideoScene ? [activeVideoScene] : [])" :key="scene.id" class="scene-video-card card">
         <div class="svcard-cols">
 
         <!-- ── 左：视频预览区域 ── -->
@@ -666,8 +693,9 @@
 
         </div><!-- /svcard-col-config -->
         </div><!-- /svcard-cols -->
-      </div>
-    </div>
+      </div><!-- /scene-video-card -->
+      </div><!-- /video-md-detail -->
+    </div><!-- /video-md -->
 
     <!-- ── Error banner ── -->
     <div v-if="genError" class="error-banner">
@@ -1768,6 +1796,20 @@ const readyCount = computed(() =>
   scenesWithData.value.filter(sceneReady).length
 )
 
+// v1.6.1: 左栏列表 + 右栏当前分镜详情（只渲染 1 个视频，避免几十个 <video> 同页卡顿）
+const activeVideoSceneId = ref(null)
+const activeVideoScene = computed(() => {
+  const list = scenesWithData.value
+  if (!list.length) return null
+  return list.find(s => String(s.id) === String(activeVideoSceneId.value)) || list[0]
+})
+// 左栏每个分镜的状态摘要（不渲染视频，仅图标/文字）
+function videoSceneStatusIcon(scene) {
+  if (sceneState.value[scene.id] === 'active') return '⏳'
+  if (sceneState.value[scene.id] === 'error')  return '✗'
+  return videoSrcFor(scene) ? '🎞' : '·'
+}
+
 const completedCount = computed(() =>
   Object.values(sceneState.value).filter(v => v === 'done' || v === 'error').length
 )
@@ -2622,6 +2664,36 @@ async function showMergedInFolder() {
   flex:1; overflow-y:auto; padding:0 16px 16px; display:flex; flex-direction:column; gap:10px;
 }
 .scene-video-card { padding:12px; }
+
+/* v1.6.1: 左栏列表 + 右栏详情（master-detail），只渲染当前分镜的视频 */
+.video-md { flex:1; min-height:0; display:flex; gap:12px; padding:0 16px 16px; overflow:hidden; }
+.video-md-list {
+  flex:0 0 260px; max-width:260px; overflow-y:auto; display:flex; flex-direction:column; gap:4px;
+  padding-right:4px;
+}
+.video-md-item {
+  display:flex; gap:8px; align-items:flex-start; padding:7px 9px; border-radius:6px; cursor:pointer;
+  border:1px solid transparent; background:var(--bg-tertiary, rgba(255,255,255,.03));
+}
+.video-md-item:hover { border-color:var(--border-color, #444); }
+.video-md-item.active { border-color:var(--accent, #66b2ff); background:rgba(102,178,255,.10); }
+.vmd-num { font-size:13px; font-weight:700; color:var(--accent, #66b2ff); min-width:22px; flex-shrink:0; }
+.vmd-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
+.vmd-desc { font-size:12px; line-height:1.35; }
+.vmd-tags { display:flex; gap:5px; align-items:center; flex-wrap:wrap; }
+.vmd-review {
+  font-size:10px; padding:1px 6px; border-radius:8px; border:1px solid var(--border-color, #444);
+  color:var(--color-text-muted, #999);
+}
+.vmd-review.ok { border-color:rgba(80,200,120,.6); color:#5bbf7b; background:rgba(80,200,120,.10); }
+.vmd-mini { font-size:11px; color:var(--color-text-muted, #999); }
+.vmd-mini.ok { color:#5bbf7b; }
+.vmd-mini.warn { color:#d8a24a; }
+.video-md-detail { flex:1; min-width:0; overflow-y:auto; }
+@media (max-width: 720px) {
+  .video-md { flex-direction:column; }
+  .video-md-list { flex:none; max-width:100%; max-height:160px; }
+}
 
 /* v1.6: 分镜卡左右双栏 —— 左视频预览，右分镜配置 */
 .svcard-cols { display:flex; gap:14px; align-items:flex-start; }
