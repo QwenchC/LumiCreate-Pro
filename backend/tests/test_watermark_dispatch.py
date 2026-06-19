@@ -76,6 +76,30 @@ def test_dewatermark_respects_max_longest_edge_cap(isolated_app, monkeypatch):
     assert cap["le"] == 960     # min(1920, 960)
 
 
+def test_postproc_single_flight_lock_returns_409(isolated_app, monkeypatch):
+    """同镜后期单飞锁：该 (project,scene) 已在飞时，第二个后期请求返回 409。
+    覆盖 redub 与 dewatermark 共用同一把锁（都写 video/<scene>.mp4）。"""
+    import routers.video_engine as ve
+    pid = isolated_app["make_project"]()
+    client = isolated_app["client"]
+    _seed(isolated_app, pid)
+    monkeypatch.setattr(ve, "_find_ffmpeg", lambda *a, **k: "ffmpeg.exe")
+    monkeypatch.setattr(ve, "_ffprobe_dimensions", lambda *a, **k: (640, 480))
+    # 手动占用该镜的后期锁
+    key = ve._postproc_acquire(pid, "scene_001")
+    try:
+        # 去水印请求应被 409 挡下
+        r1 = client.post("/api/video-engine/dewatermark-stream", json={
+            "project_id": pid, "scene_id": "scene_001"})
+        assert r1.status_code == 409, r1.text
+        # 变声请求（同镜）也应被同一把锁 409
+        r2 = client.post("/api/video-engine/redub-stream", json={
+            "project_id": pid, "scene_id": "scene_001", "default_model": "a.pth"})
+        assert r2.status_code == 409, r2.text
+    finally:
+        ve._postproc_inflight.discard(key)
+
+
 def test_dewatermark_missing_video_404(isolated_app):
     pid = isolated_app["make_project"]()
     client = isolated_app["client"]

@@ -453,7 +453,7 @@
                 {{ isMsrScene(scene) ? '🎬 多图参考' : '🎞 普通' }}
               </span>
               <button class="btn btn-ghost btn-xs"
-                      :disabled="running || redubState[scene.id] === 'running'"
+                      :disabled="running || redubState[scene.id] === 'running' || dewmState[scene.id] === 'running'"
                       @click="openRedub(scene)"
                       title="用 RVC 把该分镜视频的人声统一变声（音色一致性）">
                 🎙 视频后期（变声）
@@ -464,7 +464,7 @@
               <span v-else-if="redubState[scene.id] === 'done'" class="msr-ref-tag ok">✓ 已变声</span>
               <span v-else-if="redubState[scene.id] === 'error'" class="msr-ref-tag warn">✗ 后期失败</span>
               <button class="btn btn-ghost btn-xs"
-                      :disabled="running || dewmState[scene.id] === 'running'"
+                      :disabled="running || dewmState[scene.id] === 'running' || redubState[scene.id] === 'running'"
                       @click="openDewm(scene)"
                       title="用 LTX V2V 去除该分镜视频的字幕/水印（按输入最长边重绘）">
                 🧹 去水印去字幕

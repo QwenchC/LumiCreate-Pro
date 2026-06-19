@@ -1265,6 +1265,20 @@ async def list_rvc_models(rvc_root: str = ""):
     return {"models": out, "rvc_root": root, "exists": bool(root and Path(root).is_dir())}
 
 
+# v1.6: 视频后期单飞锁 —— redub / dewatermark 都【读改写】同一个 video/<scene>.mp4，
+# 同镜并发会丢更新、备份还会捕获到中间态。用 (project_id, scene_id) 维度的在飞集合互斥；
+# 第二个请求直接 409。覆盖 UI 漏点 + 直连 API / 多客户端。
+_postproc_inflight: set = set()
+
+
+def _postproc_acquire(project_id: str, scene_id: str) -> str:
+    key = f"{project_id}:{scene_id}"
+    if key in _postproc_inflight:
+        raise HTTPException(409, detail="该分镜正在进行视频后期处理（变声/去水印），请等待完成后再试")
+    _postproc_inflight.add(key)
+    return key
+
+
 class RedubRequest(BaseModel):
     project_id:     str
     scene_id:       str
@@ -1310,7 +1324,10 @@ async def redub_video_stream(req: RedubRequest):
     except Exception as e:
         raise HTTPException(500, detail=f"读取分镜视频失败: {e}")
 
+    _lock_key = _postproc_acquire(req.project_id, req.scene_id)   # 同镜后期互斥（409 if busy）
+
     async def stream():
+      try:
         terminal = False
         async for ev in generate_redub_video(
             vcfg.comfyui_url, workflow,
@@ -1359,6 +1376,8 @@ async def redub_video_stream(req: RedubRequest):
         except Exception as e:
             print(f"[redub] task_history append failed: {e}", flush=True)
         yield "data: [DONE]\n\n"
+      finally:
+        _postproc_inflight.discard(_lock_key)
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -1412,7 +1431,10 @@ async def dewatermark_video_stream(req: DewatermarkRequest):
     except Exception as e:
         raise HTTPException(500, detail=f"读取分镜视频失败: {e}")
 
+    _lock_key = _postproc_acquire(req.project_id, req.scene_id)   # 同镜后期互斥（409 if busy）
+
     async def stream():
+      try:
         terminal = False
         async for ev in generate_watermark_removal(
             vcfg.comfyui_url, workflow,
@@ -1455,6 +1477,8 @@ async def dewatermark_video_stream(req: DewatermarkRequest):
         except Exception as e:
             print(f"[dewm] task_history append failed: {e}", flush=True)
         yield "data: [DONE]\n\n"
+      finally:
+        _postproc_inflight.discard(_lock_key)
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
