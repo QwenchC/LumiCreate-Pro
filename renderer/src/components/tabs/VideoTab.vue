@@ -695,8 +695,11 @@
       <div class="merge-dialog card" style="max-width:520px">
         <h4 class="merge-dialog-title">🎙 视频后期 · RVC 变声（音色一致性）</h4>
         <p class="text-muted" style="font-size:12px;margin:4px 0 10px">
-          分镜 {{ redubDialog.sceneId }} —— 识别分段 → 逐条 RVC 变声 → 换回原画面音轨。
-          需要外部 RVC 环境 + 训练好的 .pth 模型。原片会自动备份为 .orig.mp4，可回退。
+          分镜 {{ redubDialog.sceneId }} ·
+          <span :class="redubDialog.useMsr ? 'msr-ref-tag ok' : 'msr-ref-tag'">
+            {{ redubDialog.useMsr ? '🎬 多图参考视频' : '🎞 普通视频' }}
+          </span>
+          —— 识别分段 → 逐条 RVC 变声 → 换音轨。<b>先预览满意再确认落盘</b>；确认后原片自动备份可回退。
         </p>
 
         <div class="redub-field">
@@ -731,9 +734,31 @@
 
         <div class="redub-field">
           <label>逐说话人映射（可选，留空=整片统一上面的模型）</label>
-          <textarea class="prompt-textarea" rows="3"
+          <textarea class="prompt-textarea" rows="2"
                     v-model="redubDialog.voiceMapping"
                     placeholder="role1: alice.pth&#10;role2: bob.pth"></textarea>
+        </div>
+
+        <!-- v1.6: 工作流可调项 -->
+        <div class="redub-field">
+          <label>变声参数（RedubReVoice）</label>
+          <div class="redub-params">
+            <label class="redub-param">变调
+              <input type="number" step="1" min="-12" max="12" v-model.number="redubDialog.transpose" />
+            </label>
+            <label class="redub-param">index_rate
+              <input type="number" step="0.01" min="0" max="1" v-model.number="redubDialog.indexRate" />
+            </label>
+            <label class="redub-param">protect
+              <input type="number" step="0.01" min="0" max="0.5" v-model.number="redubDialog.protect" />
+            </label>
+            <label class="redub-param">rms_mix
+              <input type="number" step="0.01" min="0" max="1" v-model.number="redubDialog.rmsMixRate" />
+            </label>
+            <label class="redub-param">mixback_gain
+              <input type="number" step="0.05" min="0" max="2" v-model.number="redubDialog.mixbackGain" />
+            </label>
+          </div>
         </div>
 
         <div v-if="redubDialog.error" class="error-banner" style="margin:6px 0">
@@ -742,16 +767,37 @@
         <div v-if="redubDialog.running" class="redub-field">
           <div class="scene-mini-bar"><div class="scene-mini-fill"
                :style="{ width: redubDialog.progressPct + '%' }" /></div>
-          <span class="text-muted" style="font-size:11px">{{ redubDialog.progressPct }}%</span>
+          <span class="text-muted" style="font-size:11px">变声处理中… {{ redubDialog.progressPct }}%（请耐心等待）</span>
+        </div>
+
+        <!-- 预览成片：满意再确认落盘 -->
+        <div v-if="redubDialog.previewUrl && !redubDialog.running" class="redub-field">
+          <label>变声预览（确认前不会改动原视频）</label>
+          <video :src="redubDialog.previewUrl" controls preload="metadata"
+                 style="width:100%;max-height:280px;border-radius:6px;background:#000" />
         </div>
 
         <div class="merge-dialog-actions">
-          <button class="btn btn-primary"
+          <!-- 未出预览：生成预览 -->
+          <button v-if="!redubDialog.previewUrl" class="btn btn-primary"
                   :disabled="redubDialog.running || !redubDialog.model"
                   @click="runRedub">
-            {{ redubDialog.running ? '处理中…' : '开始后期变声' }}
+            {{ redubDialog.running ? '处理中…' : '生成变声预览' }}
           </button>
-          <button class="btn btn-ghost" :disabled="redubDialog.running" @click="closeRedub">关闭</button>
+          <!-- 已出预览：确认 / 重新 / 取消 -->
+          <template v-else>
+            <button class="btn btn-primary" :disabled="redubDialog.running" @click="confirmRedub">
+              ✓ 确认变声（换回视频）
+            </button>
+            <button class="btn btn-secondary" :disabled="redubDialog.running" @click="runRedub">
+              ↻ 重新变声
+            </button>
+            <button class="btn btn-ghost" :disabled="redubDialog.running" @click="cancelRedub">
+              ✕ 取消变声
+            </button>
+          </template>
+          <button v-if="!redubDialog.previewUrl" class="btn btn-ghost"
+                  :disabled="redubDialog.running" @click="closeRedub">关闭</button>
         </div>
       </div>
     </div>
@@ -761,7 +807,11 @@
       <div class="merge-dialog card" style="max-width:480px">
         <h4 class="merge-dialog-title">🧹 视频去水印 / 去字幕（LTX V2V 重绘）</h4>
         <p class="text-muted" style="font-size:12px;margin:4px 0 10px">
-          分镜 {{ dewmDialog.sceneId }} —— 用 LTX IC-LoRA 去字幕+去水印重绘整段视频。
+          分镜 {{ dewmDialog.sceneId }} ·
+          <span :class="dewmDialog.useMsr ? 'msr-ref-tag ok' : 'msr-ref-tag'">
+            {{ dewmDialog.useMsr ? '🎬 多图参考视频' : '🎞 普通视频' }}
+          </span>
+          —— 用 LTX IC-LoRA 去字幕+去水印重绘整段视频。
           输出最长边默认 = 输入视频最长边；显存不足可调小。原片自动备份为 .predewm.mp4，可回退。
         </p>
         <div class="redub-field">
@@ -1035,10 +1085,13 @@ const redubProgress = ref({})   // sceneId → 0..100
 function redubProgressPct(id) { return redubProgress.value[id] || 0 }
 
 const redubDialog = ref({
-  visible: false, sceneId: '', model: '',
+  visible: false, sceneId: '', useMsr: false, model: '',
   whisperModel: 'medium', language: 'zh', voiceMapping: '',
+  // 工作流可调项（暴露给用户）
+  transpose: 0, indexRate: 0.66, protect: 0.33, rmsMixRate: 0.25, mixbackGain: 1.0,
   models: [], rvcExists: false, loadingModels: false,
   running: false, progressPct: 0, error: '',
+  previewB64: '', previewUrl: '',   // 预览成片（确认前不落盘）
 })
 
 async function reloadRvcModels() {
@@ -1059,14 +1112,29 @@ async function reloadRvcModels() {
   }
 }
 
+function _b64ToBlobUrl(b64, mime = 'video/mp4') {
+  const bin = atob(b64); const arr = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+  return URL.createObjectURL(new Blob([arr], { type: mime }))
+}
+
+function _clearRedubPreview() {
+  const d = redubDialog.value
+  if (d.previewUrl) { try { URL.revokeObjectURL(d.previewUrl) } catch {} }
+  d.previewB64 = ''; d.previewUrl = ''
+}
+
 async function openRedub(scene) {
   const sid = String(scene.id)
   const switchingScene = redubDialog.value.sceneId !== sid
   redubDialog.value.visible = true
   redubDialog.value.sceneId = sid
+  // 针对该镜【当前选择的】视频：MSR 开关启用 → 对多图参考视频变声，否则对旧/普通视频
+  redubDialog.value.useMsr = isMsrScene(scene)
   redubDialog.value.error = ''
   redubDialog.value.progressPct = 0
   redubDialog.value.running = false
+  _clearRedubPreview()
   // 切到不同分镜时清空逐说话人映射，避免把上一镜的角色映射误带过来（model 作为便利默认保留）
   if (switchingScene) redubDialog.value.voiceMapping = ''
   // 用设置里的默认回填 whisper/语言/默认模型，否则对话框里写死的 medium/zh 会盖掉后端设置
@@ -1083,23 +1151,39 @@ async function openRedub(scene) {
 
 function closeRedub() {
   if (redubDialog.value.running) return
+  _clearRedubPreview()
   redubDialog.value.visible = false
 }
 
+// 取消变声：丢弃预览、不落盘
+function cancelRedub() {
+  if (redubDialog.value.running) return
+  const sid = redubDialog.value.sceneId
+  redubState.value = { ...redubState.value, [sid]: undefined }
+  closeRedub()
+}
+
+// 生成预览（不落盘）—— 对应「重新变声」也走这里
 async function runRedub() {
   const d = redubDialog.value
   if (d.running || !d.model) return
   const sid = d.sceneId
   d.running = true; d.error = ''; d.progressPct = 0
+  _clearRedubPreview()
   redubState.value = { ...redubState.value, [sid]: 'running' }
   redubProgress.value = { ...redubProgress.value, [sid]: 0 }
   try {
     const resp = await fetch(`${API}/video-engine/redub-stream`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        project_id: props.projectId, scene_id: sid,
+        project_id: props.projectId, scene_id: sid, use_msr: !!d.useMsr,
         default_model: d.model, voice_mapping: d.voiceMapping || '',
         whisper_model: d.whisperModel || '', language: d.language || '',
+        transpose: Number(d.transpose) || 0,
+        index_rate: Number(d.indexRate),
+        protect: Number(d.protect),
+        rms_mix_rate: Number(d.rmsMixRate),
+        mixback_gain: Number(d.mixbackGain),
       }),
     })
     if (!resp.ok) {
@@ -1110,7 +1194,6 @@ async function runRedub() {
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
-    let ok = false
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -1125,25 +1208,50 @@ async function runRedub() {
           const pct = ev.max ? Math.round(ev.value / ev.max * 100) : 0
           d.progressPct = pct
           redubProgress.value = { ...redubProgress.value, [sid]: pct }
-        } else if (ev.event === 'redub_done') {
-          ok = true
+        } else if (ev.event === 'redub_preview' && ev.video) {
+          d.previewB64 = ev.video
+          d.previewUrl = _b64ToBlobUrl(ev.video)
         } else if (ev.event === 'redub_error') {
           d.error = ev.message || '后期处理失败'
         }
       }
     }
-    if (ok) {
-      redubState.value = { ...redubState.value, [sid]: 'done' }
-      // 刷新视频（音轨已换、加防缓存戳）
-      try { await _reloadAllVideos() } catch {}
-      d.visible = false
-    } else {
-      redubState.value = { ...redubState.value, [sid]: 'error' }
-      if (!d.error) d.error = '后期处理结束但未返回成片'
-    }
+    // 预览就绪 → 对话框留在「预览 + 确认/重新/取消」；尚未落盘
+    redubState.value = { ...redubState.value, [sid]: d.previewB64 ? undefined : 'error' }
+    if (!d.previewB64 && !d.error) d.error = '后期处理结束但未返回成片'
   } catch (e) {
     d.error = e.message || String(e)
     redubState.value = { ...redubState.value, [sid]: 'error' }
+  } finally {
+    d.running = false
+  }
+}
+
+// 确认变声：把预览成片落盘换回该镜【当前选择的】视频
+async function confirmRedub() {
+  const d = redubDialog.value
+  if (d.running || !d.previewB64) return
+  const sid = d.sceneId
+  d.running = true; d.error = ''
+  try {
+    const r = await fetch(`${API}/video-engine/redub-apply`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_id: props.projectId, scene_id: sid,
+        use_msr: !!d.useMsr, video: d.previewB64,
+      }),
+    })
+    if (!r.ok) {
+      let detail = 'HTTP ' + r.status
+      try { const j = await r.json(); detail = j.detail || detail } catch {}
+      throw new Error(detail)
+    }
+    redubState.value = { ...redubState.value, [sid]: 'done' }
+    try { await _reloadAllVideos() } catch {}
+    _clearRedubPreview()
+    d.visible = false
+  } catch (e) {
+    d.error = e.message || String(e)
   } finally {
     d.running = false
   }
@@ -1155,7 +1263,7 @@ const dewmProgress = ref({})
 function dewmProgressPct(id) { return dewmProgress.value[id] || 0 }
 
 const dewmDialog = ref({
-  visible: false, sceneId: '',
+  visible: false, sceneId: '', useMsr: false,
   maxLongestEdge: 0, maxSeconds: 0,
   running: false, progressPct: 0, error: '',
 })
@@ -1163,6 +1271,7 @@ const dewmDialog = ref({
 function openDewm(scene) {
   dewmDialog.value.visible = true
   dewmDialog.value.sceneId = String(scene.id)
+  dewmDialog.value.useMsr = isMsrScene(scene)   // 针对该镜当前选择的视频
   dewmDialog.value.error = ''
   dewmDialog.value.progressPct = 0
   dewmDialog.value.running = false
@@ -1184,7 +1293,7 @@ async function runDewm() {
     const resp = await fetch(`${API}/video-engine/dewatermark-stream`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        project_id: props.projectId, scene_id: sid,
+        project_id: props.projectId, scene_id: sid, use_msr: !!d.useMsr,
         max_longest_edge: Number(d.maxLongestEdge) || 0,
         max_seconds: Number(d.maxSeconds) || 0,
       }),
@@ -2535,6 +2644,10 @@ async function showMergedInFolder() {
 .video-post-actions { display:flex; align-items:center; gap:8px; margin-top:6px; }
 .redub-field { display:flex; flex-direction:column; gap:4px; margin:8px 0; }
 .redub-field > label { font-size:12px; color: var(--color-text-muted); }
+.redub-params { display:flex; flex-wrap:wrap; gap:8px; }
+.redub-param { display:flex; flex-direction:column; gap:2px; font-size:11px;
+  color: var(--color-text-muted); }
+.redub-param > input { width:78px; padding:2px 6px; font-size:12px; }
 .video-player { width:100%; max-height:320px; border-radius:6px; background:#000; }
 
 .empty-state {

@@ -1282,6 +1282,7 @@ def _postproc_acquire(project_id: str, scene_id: str) -> str:
 class RedubRequest(BaseModel):
     project_id:     str
     scene_id:       str
+    use_msr:        bool = False       # True=对该镜【多图参考】视频(.msr.mp4) 变声；False=旧/普通(.mp4)
     default_model:  str = ""          # RVC .pth（空 → 用设置里的 redub_default_model）
     voice_mapping:  str = ""          # 逐说话人映射；留空=整片统一 default_model（音色一致）
     whisper_model:  str = ""          # 空 → 设置默认
@@ -1289,11 +1290,25 @@ class RedubRequest(BaseModel):
     rvc_root:       str = ""          # 空 → 设置默认
     rvc_python:     str = ""
     device:         str = ""
+    # 工作流可调项（None = 用工作流默认）
+    transpose:      Optional[int]   = None
+    index_rate:     Optional[float] = None
+    protect:        Optional[float] = None
+    rms_mix_rate:   Optional[float] = None
+    mixback_gain:   Optional[float] = None
+
+
+def _scene_video_path(proj_dir: Path, scene_id: str, use_msr: bool) -> Path:
+    """该镜【当前选择的】视频文件：use_msr → <scene>.msr.mp4，否则 <scene>.mp4。"""
+    name = f"{scene_id}.msr.mp4" if use_msr else f"{scene_id}.mp4"
+    return proj_dir / "video" / name
 
 
 @router.post("/redub-stream")
 async def redub_video_stream(req: RedubRequest):
-    """对某分镜已生成的视频做 RVC 后期变声，SSE 回传进度；成片换回该分镜视频。"""
+    """对该镜【当前选择的】视频做 RVC 后期变声，SSE 回传进度。
+    v1.6: 改为【预览】—— 成片以 base64 回传（redub_preview），不直接写回分镜；
+    用户满意后再调 /redub-apply 落盘（对应工作流 finalize“满意后再打开”语义）。"""
     cfg  = load_settings()
     vcfg = cfg.video_engine
     icfg = cfg.image_engine
@@ -1305,9 +1320,10 @@ async def redub_video_stream(req: RedubRequest):
         raise HTTPException(404, detail="未找到视频后期变声工作流（workflows/ 缺少含 RedubFinalize 的工作流）")
 
     proj_dir = Path(cfg.projects_dir) / req.project_id
-    src_video = proj_dir / "video" / f"{req.scene_id}.mp4"
+    src_video = _scene_video_path(proj_dir, req.scene_id, req.use_msr)
     if not src_video.is_file():
-        raise HTTPException(404, detail=f"分镜 {req.scene_id} 尚无视频，无法后期变声")
+        kind = "多图参考" if req.use_msr else "普通"
+        raise HTTPException(404, detail=f"分镜 {req.scene_id} 尚无{kind}视频，无法后期变声")
 
     # 配置：请求覆盖设置默认
     default_model = req.default_model or getattr(vcfg, "redub_default_model", "")
@@ -1335,31 +1351,16 @@ async def redub_video_stream(req: RedubRequest):
             default_model=default_model, voice_mapping=req.voice_mapping,
             rvc_root=rvc_root, rvc_python=rvc_python, device=device,
             whisper_model=whisper, language=language,
+            transpose=req.transpose, index_rate=req.index_rate, protect=req.protect,
+            rms_mix_rate=req.rms_mix_rate, mixback_gain=req.mixback_gain,
             comfyui_input_dir=vcfg.comfyui_input_dir, workflow_dir=wdir or "",
             scene_id=req.scene_id,
         ):
             evt = ev.get("event")
             if evt == "completed":
                 terminal = True
-                out = {**ev, "event": "redub_done"}
-                if ev.get("video"):
-                    try:
-                        import base64 as _b64
-                        vid_dir = proj_dir / "video"
-                        vid_dir.mkdir(parents=True, exist_ok=True)
-                        # 原片先备份（仅首次），可回退
-                        orig_backup = vid_dir / f"{req.scene_id}.orig.mp4"
-                        if not orig_backup.exists():
-                            orig_backup.write_bytes(src_video.read_bytes())
-                        # 变声成片换回该分镜视频（画面不变、音轨已统一）
-                        src_video.write_bytes(_b64.b64decode(ev["video"]))
-                        out["file_path"] = f"video/{req.scene_id}.mp4"
-                        out["url"] = (f"/api/projects/{req.project_id}/video-file/{req.scene_id}")
-                        # scene_assets 仍是同一 video slot，无需改登记
-                    except Exception as e:
-                        out = {"event": "redub_error", "scene_id": req.scene_id,
-                               "message": f"后期成片落盘失败: {e}"}
-                yield _sse(out)
+                # 预览：base64 直接透传给前端试看，不写回分镜（等 /redub-apply）
+                yield _sse({**ev, "event": "redub_preview"})
             elif evt == "error":
                 terminal = True
                 yield _sse({**ev, "event": "redub_error"})
@@ -1368,11 +1369,10 @@ async def redub_video_stream(req: RedubRequest):
         if not terminal:
             yield _sse({"event": "redub_error", "scene_id": req.scene_id,
                         "message": "后期处理结束但未返回成片（ComfyUI 连接中断或 RVC 环境异常）"})
-        # task_history
         try:
             from services.task_history import append as _th_append
-            _th_append("redub", req.project_id, items=1, errors=0, status="ok",
-                       note=f"scene={req.scene_id}, model={default_model}")
+            _th_append("redub-preview", req.project_id, items=1, errors=0, status="ok",
+                       note=f"scene={req.scene_id}, msr={req.use_msr}, model={default_model}")
         except Exception as e:
             print(f"[redub] task_history append failed: {e}", flush=True)
         yield "data: [DONE]\n\n"
@@ -1381,6 +1381,48 @@ async def redub_video_stream(req: RedubRequest):
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+class RedubApplyRequest(BaseModel):
+    project_id: str
+    scene_id:   str
+    use_msr:    bool = False
+    video:      str          # 预览成片的 base64 mp4（来自 redub_preview）
+
+
+@router.post("/redub-apply")
+async def redub_apply(req: RedubApplyRequest):
+    """确认变声：把预览成片写回该镜【当前选择的】视频（原片先备份，可回退）。"""
+    if not req.video:
+        raise HTTPException(400, detail="缺少预览成片数据")
+    cfg = load_settings()
+    proj_dir = Path(cfg.projects_dir) / req.project_id
+    target = _scene_video_path(proj_dir, req.scene_id, req.use_msr)
+    key = _postproc_acquire(req.project_id, req.scene_id)
+    try:
+        import base64 as _b64
+        vid_dir = proj_dir / "video"
+        vid_dir.mkdir(parents=True, exist_ok=True)
+        # 原片备份（仅首次）：MSR→.msr.orig.mp4，旧→.orig.mp4
+        backup = vid_dir / (f"{req.scene_id}.msr.orig.mp4" if req.use_msr
+                            else f"{req.scene_id}.orig.mp4")
+        if target.exists() and not backup.exists():
+            backup.write_bytes(target.read_bytes())
+        target.write_bytes(_b64.b64decode(req.video))
+    except Exception as e:
+        raise HTTPException(500, detail=f"变声成片落盘失败: {e}")
+    finally:
+        _postproc_inflight.discard(key)
+    try:
+        from services.task_history import append as _th_append
+        _th_append("redub-apply", req.project_id, items=1, errors=0, status="ok",
+                   note=f"scene={req.scene_id}, msr={req.use_msr}")
+    except Exception:
+        pass
+    url = f"/api/projects/{req.project_id}/video-file/{req.scene_id}"
+    if req.use_msr:
+        url += "?kind=msr"
+    return {"ok": True, "file_path": f"video/{target.name}", "url": url}
 
 
 # ── v1.6: 视频去水印 / 去字幕（LTX-2.3 V2V，按输入最长边设输出分辨率）──────────
@@ -1393,13 +1435,14 @@ async def redub_video_stream(req: RedubRequest):
 class DewatermarkRequest(BaseModel):
     project_id:       str
     scene_id:         str
+    use_msr:          bool = False  # True=对该镜【多图参考】视频去水印；False=旧/普通
     max_longest_edge: int = 0    # 0 = 用视频原生最长边；>0 = 上限（低显存调小，如 960/832/768）
     max_seconds:      int = 0    # 0 = 用工作流默认（MAX SECONDS）
 
 
 @router.post("/dewatermark-stream")
 async def dewatermark_video_stream(req: DewatermarkRequest):
-    """对某分镜已生成的视频做去水印/去字幕，SSE 回传进度；成片换回该分镜视频。"""
+    """对该镜【当前选择的】视频做去水印/去字幕，SSE 回传进度；成片换回该分镜视频。"""
     cfg  = load_settings()
     vcfg = cfg.video_engine
     icfg = cfg.image_engine
@@ -1412,9 +1455,10 @@ async def dewatermark_video_stream(req: DewatermarkRequest):
         raise HTTPException(404, detail="未找到去水印/去字幕工作流（workflows/ 缺少对应 V2V 工作流）")
 
     proj_dir = Path(cfg.projects_dir) / req.project_id
-    src_video = proj_dir / "video" / f"{req.scene_id}.mp4"
+    src_video = _scene_video_path(proj_dir, req.scene_id, req.use_msr)
     if not src_video.is_file():
-        raise HTTPException(404, detail=f"分镜 {req.scene_id} 尚无视频，无法去水印")
+        kind = "多图参考" if req.use_msr else "普通"
+        raise HTTPException(404, detail=f"分镜 {req.scene_id} 尚无{kind}视频，无法去水印")
 
     # 输出最长边 = 输入视频最长边（探测）；用户设了上限则取 min（不放大）
     ffmpeg = _find_ffmpeg(vcfg.comfyui_input_dir, wdir)
@@ -1452,12 +1496,14 @@ async def dewatermark_video_stream(req: DewatermarkRequest):
                         import base64 as _b64
                         vid_dir = proj_dir / "video"
                         vid_dir.mkdir(parents=True, exist_ok=True)
-                        backup = vid_dir / f"{req.scene_id}.predewm.mp4"
+                        backup = vid_dir / (f"{req.scene_id}.msr.predewm.mp4" if req.use_msr
+                                            else f"{req.scene_id}.predewm.mp4")
                         if not backup.exists():
                             backup.write_bytes(src_video.read_bytes())
                         src_video.write_bytes(_b64.b64decode(ev["video"]))
-                        out["file_path"] = f"video/{req.scene_id}.mp4"
-                        out["url"] = f"/api/projects/{req.project_id}/video-file/{req.scene_id}"
+                        out["file_path"] = f"video/{src_video.name}"
+                        out["url"] = (f"/api/projects/{req.project_id}/video-file/{req.scene_id}"
+                                      + ("?kind=msr" if req.use_msr else ""))
                     except Exception as e:
                         out = {"event": "dewm_error", "scene_id": req.scene_id,
                                "message": f"去水印成片落盘失败: {e}"}

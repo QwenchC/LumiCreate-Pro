@@ -36,10 +36,13 @@ _REVOICE_W = {
     # 8 = filter_radius, 9 = edge_crossfade_ms
     "index_rate":    5,
     "protect":       6,
+    "rms_mix_rate":  7,
+    # 8 = filter_radius, 9 = edge_crossfade_ms
     "rvc_root":      10,
     "rvc_python":    11,
     "device":        12,
-    # 13 = regen_seed, 14 = mixback_gain
+    # 13 = regen_seed
+    "mixback_gain":  14,
 }
 
 
@@ -109,6 +112,8 @@ def patch_redub_workflow(
     transpose: Optional[int] = None,
     index_rate: Optional[float] = None,
     protect: Optional[float] = None,
+    rms_mix_rate: Optional[float] = None,
+    mixback_gain: Optional[float] = None,
 ) -> dict:
     """返回 patch 后的 litegraph workflow 深拷贝。
 
@@ -148,6 +153,10 @@ def patch_redub_workflow(
             _set_widget(n, _REVOICE_W["index_rate"], float(index_rate))
         if protect is not None:
             _set_widget(n, _REVOICE_W["protect"], float(protect))
+        if rms_mix_rate is not None:
+            _set_widget(n, _REVOICE_W["rms_mix_rate"], float(rms_mix_rate))
+        if mixback_gain is not None:
+            _set_widget(n, _REVOICE_W["mixback_gain"], float(mixback_gain))
 
     # 4) RedubFinalize ← video_path(0) / filename_prefix(1) / finalize(2)=True / ffmpeg(3)
     for n in _nodes_by_type(wf, "RedubFinalize"):
@@ -268,6 +277,11 @@ async def generate_redub_video(
     device: str = "",
     whisper_model: str = "",
     language: str = "",
+    transpose: Optional[int] = None,
+    index_rate: Optional[float] = None,
+    protect: Optional[float] = None,
+    rms_mix_rate: Optional[float] = None,
+    mixback_gain: Optional[float] = None,
     comfyui_input_dir: str = "",
     workflow_dir: str = "",
     scene_id: str = "",
@@ -309,6 +323,8 @@ async def generate_redub_video(
         default_model=default_model, voice_mapping=voice_mapping,
         rvc_root=rvc_root, rvc_python=rvc_python, device=device,
         whisper_model=whisper_model, language=language,
+        transpose=transpose, index_rate=index_rate, protect=protect,
+        rms_mix_rate=rms_mix_rate, mixback_gain=mixback_gain,
         filename_prefix=out_prefix,
     )
     try:
