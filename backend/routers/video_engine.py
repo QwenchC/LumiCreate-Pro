@@ -1340,6 +1340,9 @@ async def redub_video_stream(req: RedubRequest):
     except Exception as e:
         raise HTTPException(500, detail=f"读取分镜视频失败: {e}")
 
+    import hashlib as _hashlib
+    src_fp = _hashlib.sha256(video_bytes).hexdigest()   # 源指纹：确认时校验目标未被改
+
     _lock_key = _postproc_acquire(req.project_id, req.scene_id)   # 同镜后期互斥（409 if busy）
 
     async def stream():
@@ -1359,8 +1362,9 @@ async def redub_video_stream(req: RedubRequest):
             evt = ev.get("event")
             if evt == "completed":
                 terminal = True
-                # 预览：base64 直接透传给前端试看，不写回分镜（等 /redub-apply）
-                yield _sse({**ev, "event": "redub_preview"})
+                # 预览：base64 直接透传给前端试看，不写回分镜（等 /redub-apply）；
+                # 带上源指纹，确认时校验目标未被其它后期改动
+                yield _sse({**ev, "event": "redub_preview", "src_fp": src_fp})
             elif evt == "error":
                 terminal = True
                 yield _sse({**ev, "event": "redub_error"})
@@ -1388,6 +1392,7 @@ class RedubApplyRequest(BaseModel):
     scene_id:   str
     use_msr:    bool = False
     video:      str          # 预览成片的 base64 mp4（来自 redub_preview）
+    src_fp:     str = ""      # 预览时的源指纹；非空且与当前目标不符 → 409（目标已被改）
 
 
 @router.post("/redub-apply")
@@ -1400,7 +1405,12 @@ async def redub_apply(req: RedubApplyRequest):
     target = _scene_video_path(proj_dir, req.scene_id, req.use_msr)
     key = _postproc_acquire(req.project_id, req.scene_id)
     try:
-        import base64 as _b64
+        import base64 as _b64, hashlib as _hashlib
+        # 校验源指纹：预览生成后若目标被其它后期操作改过，拒绝落盘（避免用陈旧源覆盖新结果）
+        if req.src_fp and target.exists():
+            cur_fp = _hashlib.sha256(target.read_bytes()).hexdigest()
+            if cur_fp != req.src_fp:
+                raise HTTPException(409, detail="源视频在预览后已被改动，请重新生成变声预览")
         vid_dir = proj_dir / "video"
         vid_dir.mkdir(parents=True, exist_ok=True)
         # 原片备份（仅首次）：MSR→.msr.orig.mp4，旧→.orig.mp4
@@ -1409,6 +1419,8 @@ async def redub_apply(req: RedubApplyRequest):
         if target.exists() and not backup.exists():
             backup.write_bytes(target.read_bytes())
         target.write_bytes(_b64.b64decode(req.video))
+    except HTTPException:
+        raise                       # 409/其它 HTTP 错误原样抛出（别被下面吞成 500）
     except Exception as e:
         raise HTTPException(500, detail=f"变声成片落盘失败: {e}")
     finally:

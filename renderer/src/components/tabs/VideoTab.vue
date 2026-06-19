@@ -812,7 +812,8 @@
             {{ dewmDialog.useMsr ? '🎬 多图参考视频' : '🎞 普通视频' }}
           </span>
           —— 用 LTX IC-LoRA 去字幕+去水印重绘整段视频。
-          输出最长边默认 = 输入视频最长边；显存不足可调小。原片自动备份为 .predewm.mp4，可回退。
+          输出最长边默认 = 输入视频最长边；显存不足可调小。原片自动备份为
+          {{ dewmDialog.useMsr ? '.msr.predewm.mp4' : '.predewm.mp4' }}，可回退。
         </p>
         <div class="redub-field">
           <label>输出最长边像素上限（0 = 用输入视频原生最长边）</label>
@@ -1091,7 +1092,7 @@ const redubDialog = ref({
   transpose: 0, indexRate: 0.66, protect: 0.33, rmsMixRate: 0.25, mixbackGain: 1.0,
   models: [], rvcExists: false, loadingModels: false,
   running: false, progressPct: 0, error: '',
-  previewB64: '', previewUrl: '',   // 预览成片（确认前不落盘）
+  previewB64: '', previewUrl: '', previewSrcFp: '',   // 预览成片（确认前不落盘）
 })
 
 async function reloadRvcModels() {
@@ -1121,7 +1122,7 @@ function _b64ToBlobUrl(b64, mime = 'video/mp4') {
 function _clearRedubPreview() {
   const d = redubDialog.value
   if (d.previewUrl) { try { URL.revokeObjectURL(d.previewUrl) } catch {} }
-  d.previewB64 = ''; d.previewUrl = ''
+  d.previewB64 = ''; d.previewUrl = ''; d.previewSrcFp = ''
 }
 
 async function openRedub(scene) {
@@ -1210,6 +1211,7 @@ async function runRedub() {
           redubProgress.value = { ...redubProgress.value, [sid]: pct }
         } else if (ev.event === 'redub_preview' && ev.video) {
           d.previewB64 = ev.video
+          d.previewSrcFp = ev.src_fp || ''
           d.previewUrl = _b64ToBlobUrl(ev.video)
         } else if (ev.event === 'redub_error') {
           d.error = ev.message || '后期处理失败'
@@ -1238,7 +1240,7 @@ async function confirmRedub() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_id: props.projectId, scene_id: sid,
-        use_msr: !!d.useMsr, video: d.previewB64,
+        use_msr: !!d.useMsr, video: d.previewB64, src_fp: d.previewSrcFp || '',
       }),
     })
     if (!r.ok) {
@@ -1330,10 +1332,8 @@ async function runDewm() {
     }
     if (ok) {
       dewmState.value = { ...dewmState.value, [sid]: 'done' }
-      try {
-        const { data } = await axios.get(`${API}/projects/${props.projectId}/videos`)
-        sceneVideos.value = _toVideoSrcMap(data)
-      } catch {}
+      // 刷新【两个】索引（旧 + MSR）—— 去水印可能作用在 .msr.mp4，只刷旧索引会让 MSR 镜预览滞留旧帧
+      try { await _reloadAllVideos() } catch {}
       d.visible = false
     } else {
       dewmState.value = { ...dewmState.value, [sid]: 'error' }
@@ -1892,7 +1892,7 @@ async function loadData() {
 }
 
 onMounted(loadData)
-onUnmounted(() => { clearTimeout(_promptSaveTimer); _savePrompts() })
+onUnmounted(() => { clearTimeout(_promptSaveTimer); _savePrompts(); _clearRedubPreview() })
 
 // When this project's tab becomes active again (after being in the background),
 // refresh the saved video list so any videos that finished while hidden show up.

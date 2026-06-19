@@ -48,6 +48,11 @@ def test_redub_preview_returns_base64_without_replacing(isolated_app, monkeypatc
     joined = "\n".join(_drain_sse(r.text))
     assert "redub_preview" in joined
     assert base64.b64encode(b"REDUBBED").decode() in joined   # base64 透传给前端预览
+    # 预览事件带源指纹（= 源视频 sha256），供确认时校验
+    import hashlib, json as _json
+    fp = hashlib.sha256(b"ORIGINAL_MP4").hexdigest()
+    assert any(_json.loads(e).get("src_fp") == fp
+               for e in _drain_sse(r.text) if e.startswith("{") and "redub_preview" in e)
     # 配置项透传
     assert captured["mixback_gain"] == 0.8 and captured["index_rate"] == 0.5
     # 分镜视频【未被改动】（预览不落盘）
@@ -68,6 +73,36 @@ def test_redub_apply_writes_and_backs_up(isolated_app):
     vdir = pdir / "video"
     assert (vdir / "scene_001.mp4").read_bytes() == b"FINAL"
     assert (vdir / "scene_001.orig.mp4").read_bytes() == b"ORIGINAL_MP4"
+
+
+def test_redub_apply_409_when_source_changed(isolated_app):
+    """源指纹不符（预览后目标被改过）→ 409，不覆盖。"""
+    import hashlib
+    pid = isolated_app["make_project"]()
+    client = isolated_app["client"]
+    pdir = _seed_scene_video(isolated_app, pid, data=b"NEW_STATE")
+    stale_fp = hashlib.sha256(b"OLD_STATE").hexdigest()   # 预览时的旧源指纹
+    r = client.post("/api/video-engine/redub-apply", json={
+        "project_id": pid, "scene_id": "scene_001", "use_msr": False,
+        "video": base64.b64encode(b"REDUB").decode(), "src_fp": stale_fp,
+    })
+    assert r.status_code == 409, r.text
+    # 目标未被覆盖
+    assert (pdir / "video" / "scene_001.mp4").read_bytes() == b"NEW_STATE"
+
+
+def test_redub_apply_ok_when_fingerprint_matches(isolated_app):
+    import hashlib
+    pid = isolated_app["make_project"]()
+    client = isolated_app["client"]
+    pdir = _seed_scene_video(isolated_app, pid, data=b"SRC")
+    good_fp = hashlib.sha256(b"SRC").hexdigest()
+    r = client.post("/api/video-engine/redub-apply", json={
+        "project_id": pid, "scene_id": "scene_001", "use_msr": False,
+        "video": base64.b64encode(b"DONE").decode(), "src_fp": good_fp,
+    })
+    assert r.status_code == 200, r.text
+    assert (pdir / "video" / "scene_001.mp4").read_bytes() == b"DONE"
 
 
 def test_redub_apply_msr_targets_msr_file(isolated_app):
