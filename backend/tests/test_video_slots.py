@@ -109,6 +109,49 @@ def test_merge_picks_per_scene_source(isolated_app, monkeypatch):
     assert "scene_002.seedance.mp4" in joined     # 选了 Seedance
     assert "scene_003.msr.mp4" in joined          # 选了 MSR
     assert "scene_001.mp4 " not in joined + " "   # 没用 ltx 版本
+    # 跨引擎尺寸不一 → filter_complex 必须把每路画面统一缩放+letterbox、音频统一重采样，
+    # 否则 concat 报错（回归保护：审查发现的关键 bug）
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    assert fc.count("force_original_aspect_ratio=decrease") >= 3   # 每镜各一份缩放
+    assert "pad=" in fc and "setsar=1" in fc
+    assert "aresample=48000" in fc                                  # 音频归一
+
+
+def test_merge_audioless_input_gets_silence(isolated_app, monkeypatch):
+    """无音轨的镜（如 Seedance 关音频 / i2v）合并时补静音 anullsrc，避免 [i:a] 映射失败。"""
+    import routers.video_engine as ve
+    pid = isolated_app["make_project"]()
+    client = isolated_app["client"]
+    pdir = isolated_app["tmp_path"] / pid
+    vdir = pdir / "video"; vdir.mkdir(parents=True, exist_ok=True)
+    (vdir / "scene_001.seedance.mp4").write_bytes(b"fake")
+    (pdir / "videos_seedance.json").write_text(json.dumps(
+        {"scene_001": "scene_001.seedance.mp4"}), encoding="utf-8")
+
+    monkeypatch.setattr(ve, "_find_ffmpeg", lambda *a, **k: "ffmpeg.exe")
+    monkeypatch.setattr(ve, "_ffprobe_dimensions", lambda *a, **k: (1280, 720))
+    captured = []
+
+    def _fake_run(cmd, *a, **k):
+        s = " ".join(str(x) for x in cmd)
+        if "-show_entries" in s:
+            if "a:0" in s:   # 音频流探测 → 无音轨
+                return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+            return SimpleNamespace(returncode=0, stdout=b"4.0\n", stderr=b"")
+        captured.append(cmd)
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    import services.exec_pool
+    async def _rb(fn, *a, **k): return fn(*a, **k)
+    monkeypatch.setattr(services.exec_pool, "run_blocking", _rb)
+
+    r = client.post("/api/video-engine/merge-project-video", json={
+        "project_id": pid, "scene_order": ["scene_001"], "transition": "cut",
+        "bgm_volume_db": -100, "scene_sources": {"scene_001": "seedance"},
+    })
+    assert r.status_code == 200, r.text
+    fc = captured[-1][captured[-1].index("-filter_complex") + 1]
+    assert "anullsrc" in fc      # 补了静音轨
 
 
 def test_merge_falls_back_to_msr_scene_ids(isolated_app, monkeypatch):

@@ -659,6 +659,9 @@ class MergeVideoRequest(BaseModel):
     # v1.6.2 多引擎：每镜【合并来源】映射 {scene_id: 'ltx'|'msr'|'slideshow'|'seedance'}。
     # 优先于 msr_scene_ids；未列出的分镜回退到 msr_scene_ids/ltx。
     scene_sources: dict[str, str] = {}
+    # v1.6.2: 合并输出画布尺寸 "WxH"（跨引擎尺寸不一时统一缩放+letterbox 到此）；
+    # 空 → 取各镜最大宽高。前端传项目分辨率。
+    target_resolution: str = ""
 
 
 class MergeVideoResult(BaseModel):
@@ -855,6 +858,8 @@ async def merge_project_video(req: MergeVideoRequest):
     # （有的 mp4 容器时长报的是画面长度，必须显式拿音频流，否则补不够 → 残留累积错位）
     durations: list[float] = []   # 每镜的对齐目标长度（≈ 音频长度）
     v_secs: list[float] = []      # 每镜画面流时长
+    has_audio: list[bool] = []    # v1.6.2: 每镜是否有音轨（Seedance/i2v 可能无）
+    dims: list[tuple] = []        # v1.6.2: 每镜画面尺寸（跨引擎可能不同）
     for p in ordered_files:
         cont = await _probe(p) or 0.0
         vd   = await _probe(p, "-select_streams", "v:0")
@@ -862,6 +867,8 @@ async def merge_project_video(req: MergeVideoRequest):
         target = max(ad, cont) or vd or 4.0
         durations.append(target)
         v_secs.append(vd)
+        has_audio.append(ad > 0.001)
+        dims.append(_ffprobe_dimensions(ffmpeg, p))
 
     # v1.5.1 关键修复（逐镜实测根因）：AI 生成的分镜视频帧是按"非标准帧率"(常 ~23.7fps)
     # 生成的，却被标成 24fps 播放 → 每镜画面比其音频【快约 1%】(短几十~一百毫秒)。单镜
@@ -873,15 +880,45 @@ async def merge_project_video(req: MergeVideoRequest):
         for i in range(n)
     ]
 
+    # v1.6.2 跨引擎混合：不同引擎产出的画面【尺寸/SAR】与音频【采样率/声道】可能各不相同
+    # （LTX 竖屏 720×1280、图片放映 1920×1080、Seedance 自适应…），而 concat/xfade 要求所有
+    # 输入参数一致，否则 ffmpeg 直接报错。这里把每镜【画面统一缩放+letterbox 到同一画布】、
+    # 【音频统一重采样到 48k 立体声】、无音轨的镜补静音 → 异构来源也能拼。
+    def _even(x: int) -> int:
+        x = int(x)
+        return max(2, x - (x % 2))
+
+    tw = th = 0
+    if getattr(req, "target_resolution", ""):
+        try:
+            tw, th = (int(v) for v in str(req.target_resolution).lower().split("x"))
+        except Exception:
+            tw = th = 0
+    if tw <= 0 or th <= 0:                       # 未指定 → 取各镜最大宽高作画布（不裁切）
+        ws = [d[0] for d in dims if d and d[0] > 0]
+        hs = [d[1] for d in dims if d and d[1] > 0]
+        tw = max(ws) if ws else 720
+        th = max(hs) if hs else 1280
+    TW, TH = _even(tw), _even(th)
+    _vnorm = (f"scale={TW}:{TH}:force_original_aspect_ratio=decrease,"
+              f"pad={TW}:{TH}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p")
+    _AFMT = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"
+
     fc_parts: list[str] = []
+    a_lab: list[str] = []        # 每镜归一后的音频标签
     for i in range(n):
-        if abs(ratios[i] - 1.0) > 0.001:
-            fc_parts.append(f"[{i}:v]setpts=PTS*{ratios[i]:.6f},settb=AVTB[vp{i}]")
-        else:
-            fc_parts.append(f"[{i}:v]settb=AVTB[vp{i}]")
+        pre = f"setpts=PTS*{ratios[i]:.6f}," if abs(ratios[i] - 1.0) > 0.001 else ""
+        fc_parts.append(f"[{i}:v]{pre}{_vnorm},settb=AVTB[vp{i}]")
+        if has_audio[i]:
+            fc_parts.append(f"[{i}:a]{_AFMT}[na{i}]")
+        else:                    # 无音轨 → 补等长静音，避免 [i:a] 映射失败
+            fc_parts.append(
+                f"anullsrc=channel_layout=stereo:sample_rate=48000,"
+                f"atrim=0:{durations[i]:.3f},asetpts=PTS-STARTPTS[na{i}]")
+        a_lab.append(f"[na{i}]")
 
     last_v_label = "[vp0]"
-    last_a_label = "[0:a]"
+    last_a_label = a_lab[0]
     td = max(0.05, req.transition_duration_ms / 1000.0)
     if use_xfade:
         cur_offset = 0.0
@@ -894,14 +931,14 @@ async def merge_project_video(req: MergeVideoRequest):
             )
             # 音频也跟着 crossfade，保持衔接平顺
             fc_parts.append(
-                f"{last_a_label}[{i+1}:a]acrossfade=d={td}{a_out}"
+                f"{last_a_label}{a_lab[i+1]}acrossfade=d={td}{a_out}"
             )
             last_v_label = v_out
             last_a_label = a_out
     else:
         # 无过渡但仍走 filter_complex（因为有 BGM）；用 concat filter（画面已逐镜补齐）
         v_chain = "".join(f"[vp{i}]" for i in range(n))
-        a_chain = "".join(f"[{i}:a]" for i in range(n))
+        a_chain = "".join(a_lab[i] for i in range(n))
         fc_parts.append(f"{v_chain}concat=n={n}:v=1:a=0[vcat]")
         fc_parts.append(f"{a_chain}concat=n={n}:v=0:a=1[acat]")
         last_v_label = "[vcat]"

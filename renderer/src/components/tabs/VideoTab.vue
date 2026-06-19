@@ -542,13 +542,17 @@
           <span class="svcard-status" :class="sceneStatusClass(scene.id)">
             {{ sceneStatusLabel(scene.id) }}
           </span>
-          <!-- Per-scene regen button -->
+        </div>
+
+        <!-- v1.6.2: 单镜生成按【当前引擎】分派 + 醒目按钮 + 引擎注释 -->
+        <div class="gen-one-row">
           <button
-            class="btn btn-ghost btn-xs"
-            :disabled="running || !sceneReady(scene)"
+            class="btn btn-primary gen-one-btn"
+            :disabled="!canGenOne(scene)"
             @click="generateOne(scene)"
-            title="单独生成此分镜"
-          >↺</button>
+            :title="'用「'+genEngineLabel(scene)+'」单独生成此分镜'"
+          >↺ 生成本镜</button>
+          <span class="gen-engine-note">将使用「<b>{{ genEngineLabel(scene) }}</b>」引擎生成视频</span>
         </div>
 
         <!-- Readiness indicators (随工作流类型动态显隐) -->
@@ -1759,18 +1763,22 @@ const slideshowMotion       = ref('none')   // v1.4.6: 画面动态
 const slideshowRunning      = ref(false)
 const slideshowResult       = ref(null)
 
-async function runSlideshow() {
+async function runSlideshow(sceneIds = null) {
   if (slideshowRunning.value || !scenes.value.length) return
   slideshowRunning.value = true
   slideshowResult.value  = null
   try {
     const [w, h] = String(resolution.value || '1920x1080').split('x').map(Number)
+    // sceneIds 给定 → 只渲染这些镜（单镜 ↺ / 继续生成）；否则全部
+    const order = (sceneIds && sceneIds.length)
+      ? sceneIds.map(String)
+      : scenes.value.map(s => String(s.id))
     const r = await fetch(`${API}/video-engine/render-slideshow`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
         project_id:          props.projectId,
-        scene_order:         scenes.value.map(s => String(s.id)),
+        scene_order:         order,
         width:               w || 1920,
         height:              h || 1080,
         fps:                 fps.value || 25,
@@ -2013,6 +2021,8 @@ watch(() => tabsStore.activeId, async (newId) => {
 let currentReader = null
 
 async function startGeneration() {
+  // v1.6.2: 图片放映模式 → 整批走 slideshow 渲染（不要走 ComfyUI generate-stream）
+  if (videoMode.value === 'slideshow') { await runSlideshow(); return }
   if (!selectedWorkflow.value) return
 
   const existingCount = scenesWithData.value.filter(s => hasVideoFor(s)).length
@@ -2039,6 +2049,13 @@ async function startGeneration() {
 }
 
 async function resumeGeneration() {
+  // v1.6.2: 图片放映模式 → 只补渲染尚无 slideshow 视频的分镜
+  if (videoMode.value === 'slideshow') {
+    const missing = scenesWithData.value
+      .filter(s => !(slotsFor(s).slideshow)).map(s => String(s.id))
+    await runSlideshow(missing.length ? missing : null)
+    return
+  }
   if (!selectedWorkflow.value) return
   running.value     = true
   genFinished.value = false
@@ -2064,12 +2081,31 @@ async function resumeGeneration() {
   await _runGeneration(readyScenes)
 }
 
+// v1.6.2: 单镜生成按【当前引擎】分派 —— 图片放映走 slideshow 渲染，否则走 generate-stream
+//（此前单镜 ↺ 在图片放映模式下错误地走了 ComfyUI/LTX）
 async function generateOne(scene) {
+  if (videoMode.value === 'slideshow') {
+    if (slideshowRunning.value) return
+    await runSlideshow([String(scene.id)])
+    return
+  }
   if (running.value || !sceneReady(scene)) return
   running.value = true
   stopFlag.value = false
   sceneState.value = { ...sceneState.value, [scene.id]: 'pending' }
   await _runGeneration([scene])
+}
+
+// 该镜「开始生成」将使用的引擎名（用于按钮旁注释）
+function genEngineLabel(scene) {
+  if (videoMode.value === 'slideshow') return '图片放映'
+  if (videoMode.value === 'volcengine') return 'Seedance 云端'
+  return isMsrScene(scene) ? '多图参考(MSR)' : 'AI 视频(LTX)'
+}
+// 单镜生成是否可用（图片放映只需首帧图，其余按 sceneReady）
+function canGenOne(scene) {
+  if (videoMode.value === 'slideshow') return !slideshowRunning.value && !!scene.hasStart
+  return !running.value && sceneReady(scene)
 }
 
 function _buildPromptFallback(scene) {
@@ -2479,6 +2515,8 @@ async function mergeVideos() {
       project_id: props.projectId,
       scene_order,
       scene_sources,
+      target_resolution: resolution.value || '',   // 跨引擎尺寸不一 → 统一到此画布
+
       // D3: 镜间过渡
       transition: mergeTransition.value,
       transition_duration_ms: mergeTransitionMs.value,
@@ -2770,6 +2808,11 @@ async function showMergedInFolder() {
 }
 
 .svcard-header { display:flex; align-items:flex-start; gap:8px; }
+/* v1.6.2: 单镜生成行（醒目按钮 + 引擎注释） */
+.gen-one-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:4px 0 8px; }
+.gen-one-btn { font-weight:700; padding:5px 14px; box-shadow:0 1px 6px rgba(102,178,255,.35); }
+.gen-engine-note { font-size:12px; color:var(--color-text-muted,#999); }
+.gen-engine-note b { color:var(--accent,#66b2ff); }
 .svcard-desc {
   flex:1; min-width:0; font-size:13px; font-weight:500;
   white-space:pre-wrap; word-break:break-all; cursor:default;
