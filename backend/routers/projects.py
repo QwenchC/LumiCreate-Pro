@@ -927,15 +927,15 @@ async def load_videos_msr(project_id: str):
 
 
 def _resolve_scene_video_filename(project_id: str, scene_id: str,
-                                  kind: str = "old") -> Optional[str]:
-    """按 索引json → scene_assets → 约定文件名 解析某分镜的视频文件名。
-    kind='old'（旧/普通视频）或 'msr'（多图参考视频）—— 双模分别存盘、互不覆盖。"""
+                                  kind: str = "ltx") -> Optional[str]:
+    """按 索引json → scene_assets → 约定文件名 解析某分镜【某引擎槽】的视频文件名。
+    kind ∈ ltx/msr/slideshow/seedance（'old'/'' 归一为 ltx）—— 各槽分别存盘、互不覆盖。"""
+    from services.video_slots import (norm_kind, slot_index_name, slot_asset,
+                                      slot_filename)
+    k = norm_kind(kind)
     proj_dir = _project_dir(project_id)
     vid_dir = proj_dir / "video"
-    is_msr = kind == "msr"
-    idx_name = "videos_msr.json" if is_msr else "videos.json"
-    asset_kind = "video_msr" if is_msr else "video"
-    meta_path = proj_dir / idx_name
+    meta_path = proj_dir / slot_index_name(k)
     if meta_path.exists():
         try:
             md = json.loads(meta_path.read_text(encoding="utf-8-sig"))
@@ -946,12 +946,12 @@ def _resolve_scene_video_filename(project_id: str, scene_id: str,
             pass
     try:
         from services.project_repo import list_video_assets
-        rel = list_video_assets(project_id, asset_type=asset_kind).get(scene_id)
+        rel = list_video_assets(project_id, asset_type=slot_asset(k)).get(scene_id)
         if rel and (vid_dir / Path(rel).name).is_file():
             return Path(rel).name
     except Exception:
         pass
-    cand = f"{scene_id}.msr.mp4" if is_msr else f"{scene_id}.mp4"
+    cand = slot_filename(scene_id, k)
     if (vid_dir / cand).is_file():
         return cand
     return None
@@ -960,7 +960,7 @@ def _resolve_scene_video_filename(project_id: str, scene_id: str,
 @router.get("/{project_id}/video-file/{scene_id}")
 async def get_scene_video_file(project_id: str, scene_id: str, kind: str = "old"):
     """流式返回单个分镜视频（支持 Range，<video> 可拖拽）。替代 base64 整包传输。
-    kind=msr 取多图参考视频（<scene>.msr.mp4），否则取旧/普通视频。"""
+    kind ∈ ltx/msr/slideshow/seedance（默认/'old' → ltx 普通视频）。"""
     filename = _resolve_scene_video_filename(project_id, scene_id, kind=kind)
     if not filename:
         raise HTTPException(status_code=404, detail="该分镜暂无视频")
@@ -968,6 +968,37 @@ async def get_scene_video_file(project_id: str, scene_id: str, kind: str = "old"
     if not full.is_file():
         raise HTTPException(status_code=404, detail="视频文件不存在")
     return _FileResponse(full, media_type="video/mp4", filename=full.name)
+
+
+@router.get("/{project_id}/videos-all")
+async def load_videos_all(project_id: str):
+    """v1.6.2：返回每个分镜【各引擎槽】已生成的视频流式 URL：
+    {scene_id: {kind: url}}（kind ∈ ltx/msr/slideshow/seedance，仅含已生成的槽）。
+    前端据此渲染「合并引擎来源」选择器 + 预览切换。"""
+    from services.video_slots import SLOT_KINDS, slot_index_name, slot_asset, kind_query
+    proj_dir = _project_dir(project_id)
+    vid_dir = proj_dir / "video"
+    out: dict = {}
+    for k in SLOT_KINDS:
+        md: dict = {}
+        mp = proj_dir / slot_index_name(k)
+        if mp.exists():
+            try:
+                md = json.loads(mp.read_text(encoding="utf-8-sig"))
+            except Exception:
+                md = {}
+        # 自愈：scene_assets 有登记但索引缺
+        try:
+            from services.project_repo import list_video_assets
+            for sid, rel in list_video_assets(project_id, asset_type=slot_asset(k)).items():
+                md.setdefault(sid, Path(rel).name)
+        except Exception:
+            pass
+        for sid, fn in md.items():
+            if fn and (vid_dir / fn).is_file():
+                out.setdefault(sid, {})[k] = (
+                    f"/api/projects/{project_id}/video-file/{sid}{kind_query(k)}")
+    return out
 
 
 @router.put("/{project_id}/videos")

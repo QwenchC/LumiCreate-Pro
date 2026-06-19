@@ -201,14 +201,16 @@ def test_render_slideshow_writes_videos_json_and_skips_missing(
     assert "scene_a" in result["rendered"]
     assert "scene_c" in result["rendered"]
     assert any(s["scene_id"] == "scene_b" for s in result["skipped"])
-    # videos.json 落盘
-    meta_path = proj_dir / "videos.json"
+    # v1.6.2: 图片放映走独立 slideshow 槽（videos_slideshow.json / <scene>.slideshow.mp4），
+    # 不再覆盖 LTX 的 videos.json / <scene>.mp4
+    meta_path = proj_dir / "videos_slideshow.json"
     assert meta_path.exists()
+    assert not (proj_dir / "videos.json").exists()   # 不碰 LTX 槽
     data = json.loads(meta_path.read_text(encoding="utf-8-sig"))
-    assert data.get("scene_a") == "scene_a.mp4"
-    assert data.get("scene_c") == "scene_c.mp4"
+    assert data.get("scene_a") == "scene_a.slideshow.mp4"
+    assert data.get("scene_c") == "scene_c.slideshow.mp4"
     # scene_c 的命令应当含 xfade（双帧分支）
-    cmd_c = next(c for c in calls if "scene_c.mp4" in c[-1])
+    cmd_c = next(c for c in calls if "scene_c.slideshow.mp4" in c[-1])
     assert "-filter_complex" in cmd_c
     assert "xfade=transition=fade" in cmd_c[cmd_c.index("-filter_complex") + 1]
 

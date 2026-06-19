@@ -478,9 +478,11 @@ def render_slideshow_project(
     """
     vdir = proj_dir / "video"
     vdir.mkdir(parents=True, exist_ok=True)
-    meta_path = proj_dir / "videos.json"
+    # v1.6.2: 图片放映走【独立 slideshow 槽】，不再覆盖 LTX/Seedance 的 <scene>.mp4
+    from services.video_slots import slot_filename, slot_index_name, slot_asset
+    meta_path = proj_dir / slot_index_name("slideshow")
 
-    # 读现有 videos.json（增量更新，不抹掉用户已有的 LTX 视频）
+    # 读现有 videos_slideshow.json（增量更新，不抹掉本槽其它分镜）
     try:
         existing: dict = json.loads(meta_path.read_text(encoding="utf-8-sig")) \
             if meta_path.exists() else {}
@@ -523,8 +525,8 @@ def render_slideshow_project(
         tasks.append({
             "sid": sid, "start_img": start_img, "end_img": end_img,
             "audio": audio, "dur_ms": dur_ms,
-            "out_name": f"{sid}.mp4",
-            "out_path": vdir / f"{sid}.mp4",
+            "out_name": slot_filename(sid, "slideshow"),
+            "out_path": vdir / slot_filename(sid, "slideshow"),
             "sfx_overlays": sfx_by_scene.get(sid) or [],
         })
 
@@ -588,7 +590,7 @@ def render_slideshow_project(
         from services.project_repo import record_asset
         for sid in rendered:
             record_asset(
-                project_id, sid, "video",
+                project_id, sid, slot_asset("slideshow"),
                 slot_index=0,
                 file_path=f"video/{scene_files[sid]}",
                 format="mp4", is_selected=True,

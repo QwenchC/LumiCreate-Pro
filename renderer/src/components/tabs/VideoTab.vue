@@ -454,7 +454,10 @@
               <span class="vmd-review" :class="{ ok: videoReviewed[scene.id] }">
                 {{ videoReviewed[scene.id] ? '✅已审阅' : '☐未审' }}
               </span>
-              <span v-if="isMsrScene(scene)" class="vmd-mini" title="多图参考视频">🎬</span>
+              <!-- 已生成的引擎槽：高亮的是当前合并来源 -->
+              <span v-for="k in availableSources(scene)" :key="k" class="vmd-slot"
+                    :class="{ on: k === effectiveSource(scene) }"
+                    :title="SOURCE_LABELS[k] || k">{{ (SOURCE_LABELS[k] || k).slice(0,2) }}</span>
               <span class="vmd-mini"
                     :class="{ ok: videoSrcFor(scene), warn: sceneState[scene.id]==='error' }">
                 {{ videoSceneStatusIcon(scene) }}<template v-if="sceneState[scene.id]==='active'"> {{ sceneProgressPct(scene.id) }}%</template>
@@ -474,11 +477,18 @@
         <div class="svcard-col-preview">
           <div v-if="videoSrcFor(scene)" class="video-result">
             <video :src="videoSrcFor(scene)" controls preload="metadata" class="video-player" />
-            <!-- 双模标识：当前预览的是旧/普通还是多图参考视频（随 MSR 开关切换） -->
+            <!-- v1.6.2 多引擎：合并&预览来源选择器（每镜可独立选 LTX/多图参考/放映/Seedance）-->
+            <div class="src-picker" v-if="availableSources(scene).length">
+              <span class="src-label">合并来源:</span>
+              <button v-for="k in availableSources(scene)" :key="k"
+                      class="src-chip" :class="{ on: k === effectiveSource(scene) }"
+                      @click="setSceneSource(scene.id, k)"
+                      :title="'用'+(SOURCE_LABELS[k]||k)+'生成的视频预览并参与合并'">
+                {{ SOURCE_LABELS[k] || k }}
+              </button>
+              <span v-if="availableSources(scene).length > 1" class="text-muted" style="font-size:11px">（已存 {{ availableSources(scene).length }} 个引擎版本，点选用哪个合并）</span>
+            </div>
             <div class="video-post-actions">
-              <span class="msr-ref-tag" :class="isMsrScene(scene) ? 'ok' : ''">
-                {{ isMsrScene(scene) ? '🎬 多图参考' : '🎞 普通' }}
-              </span>
               <button class="btn btn-ghost btn-xs"
                       :disabled="running || redubState[scene.id] === 'running' || dewmState[scene.id] === 'running'"
                       @click="openRedub(scene)"
@@ -1076,40 +1086,72 @@ const stopFlag        = ref(false)
 const genError        = ref('')
 const sceneState      = ref({})   // id → pending|active|done|error
 const sceneProgress   = ref({})   // id → {value, max}
-const sceneVideos     = ref({})   // id → 旧/普通视频 src（流式 URL / data URL）
-const sceneVideosMsr  = ref({})   // v1.6: id → 多图参考(MSR)视频 src（与旧视频并存）
+// v1.6.2 多引擎：每镜各引擎槽的视频 src —— { sceneId: { ltx|msr|slideshow|seedance: src } }
+const sceneVideosAll = ref({})
+// 兼容派生（个别旧引用仍用）：ltx → sceneVideos，msr → sceneVideosMsr
+const sceneVideos     = ref({})
+const sceneVideosMsr  = ref({})
 
-// v1.5.1: GET /videos 返回 {scene_id: url 路径}（不再 base64 整包）。
-// 拼成带主机名 + 防缓存戳的完整地址，让 <video> 按需流式加载。
-function _toVideoSrcMap(data) {
-  const host = API.replace(/\/api\/?$/, '')
-  const stamp = Date.now()
-  const out = {}
+// 每镜【合并&预览来源】kind（用户可改/生成后自动选），按项目持久化
+const sceneSource = ref({})
+const SOURCE_LABELS = { ltx: 'AI视频', msr: '多图参考', slideshow: '图片放映', seedance: 'Seedance' }
+function _srcStoreKey() { return `lumi_video_source_${props.projectId || ''}` }
+function _loadSceneSource() {
+  try { const r = localStorage.getItem(_srcStoreKey()); sceneSource.value = r ? (JSON.parse(r) || {}) : {} }
+  catch { sceneSource.value = {} }
+}
+function _saveSceneSource() {
+  try { localStorage.setItem(_srcStoreKey(), JSON.stringify(sceneSource.value)) } catch {}
+}
+
+function slotsFor(scene) { return sceneVideosAll.value[scene.id] || {} }
+function availableSources(scene) { return Object.keys(slotsFor(scene)) }
+// 有效来源：用户所选（且该槽有视频）→ 否则按 MSR 开关默认 → 否则任一已生成槽
+function effectiveSource(scene) {
+  const slots = slotsFor(scene)
+  const sel = sceneSource.value[scene.id]
+  if (sel && slots[sel]) return sel
+  const pref = isMsrScene(scene) ? 'msr' : 'ltx'
+  if (slots[pref]) return pref
+  return Object.keys(slots)[0] || pref
+}
+function setSceneSource(sceneId, kind) {
+  sceneSource.value = { ...sceneSource.value, [sceneId]: kind }
+  _saveSceneSource()
+}
+function videoSrcFor(scene) { return slotsFor(scene)[effectiveSource(scene)] || null }
+function hasVideoFor(scene) { return !!videoSrcFor(scene) }
+
+function _toVideoSrcMap(data) {   // 保留：个别旧调用仍用（单槽 {sid:url}）
+  const host = API.replace(/\/api\/?$/, ''); const stamp = Date.now(); const out = {}
   for (const [sid, v] of Object.entries(data || {})) {
     const s = String(v)
-    if (!s.startsWith('/')) { out[sid] = s; continue }   // data URL 等原样
-    // 已带 query(?kind=msr) 用 & 续防缓存戳，否则用 ?
-    const sep = s.includes('?') ? '&' : '?'
-    out[sid] = `${host}${s}${sep}t=${stamp}`
+    if (!s.startsWith('/')) { out[sid] = s; continue }
+    out[sid] = `${host}${s}${s.includes('?') ? '&' : '?'}t=${stamp}`
   }
   return out
 }
 
-// v1.6 双模：按该镜的 MSR 开关返回应预览/应合并的视频源 & 是否就绪
-function videoSrcFor(scene) {
-  return isMsrScene(scene) ? sceneVideosMsr.value[scene.id] : sceneVideos.value[scene.id]
-}
-function hasVideoFor(scene) { return !!videoSrcFor(scene) }
-
-// v1.6: 同时拉旧/普通视频 + MSR 视频两套索引
+// v1.6.2: 拉【各引擎槽】视频索引（/videos-all）→ {sid:{kind:src}}
 async function _reloadAllVideos() {
   if (!props.projectId) return
-  const [o, m] = await Promise.all([
-    axios.get(`${API}/projects/${props.projectId}/videos`).catch(() => ({ data: {} })),
-    axios.get(`${API}/projects/${props.projectId}/videos-msr`).catch(() => ({ data: {} })),
-  ])
-  sceneVideos.value = _toVideoSrcMap(o.data || {})
-  sceneVideosMsr.value = _toVideoSrcMap(m.data || {})
+  try {
+    const { data } = await axios.get(`${API}/projects/${props.projectId}/videos-all`)
+    const host = API.replace(/\/api\/?$/, ''); const stamp = Date.now()
+    const out = {}, o = {}, m = {}
+    for (const [sid, slots] of Object.entries(data || {})) {
+      out[sid] = {}
+      for (const [k, url] of Object.entries(slots || {})) {
+        const s = String(url)
+        out[sid][k] = s.startsWith('/') ? `${host}${s}${s.includes('?') ? '&' : '?'}t=${stamp}` : s
+      }
+      if (out[sid].ltx) o[sid] = out[sid].ltx
+      if (out[sid].msr) m[sid] = out[sid].msr
+    }
+    sceneVideosAll.value = out
+    sceneVideos.value = o
+    sceneVideosMsr.value = m
+  } catch {}
 }
 const mergeResult     = ref(null) // { output_path, output_dir } once merged
 const merging         = ref(false)
@@ -1743,8 +1785,9 @@ async function runSlideshow() {
       throw new Error(detail)
     }
     slideshowResult.value = await r.json()
-    // 刷新已有视频映射：让分镜卡片显示新出的 .mp4
+    // 刷新各引擎槽视频；并把刚渲染的分镜【合并来源】自动设为 slideshow
     try { await _reloadAllVideos() } catch {}
+    for (const sid of (slideshowResult.value.rendered || [])) setSceneSource(String(sid), 'slideshow')
   } catch (e) {
     alert('图片放映渲染失败: ' + (e.message || e))
   } finally {
@@ -1922,9 +1965,8 @@ async function loadData() {
     }
     workflows.value  = wfRes.data || []
 
-    // Saved videos（流式 URL 映射，不再整包 base64）
-    sceneVideos.value = _toVideoSrcMap(vidRes.data)
-    sceneVideosMsr.value = _toVideoSrcMap(vidMsrRes.data)
+    // Saved videos（v1.6.2 多引擎槽：/videos-all → {sid:{kind:src}}）
+    await _reloadAllVideos()
 
     // Saved video prompts
     scenePrompts.value = promptsRes.data || {}
@@ -1943,6 +1985,7 @@ async function loadData() {
     _loadMsrEnabled()
     _loadManualDurations()
     _loadVideoReviewed()   // v1.6.1: 恢复视频分镜审阅标记
+    _loadSceneSource()     // v1.6.2: 恢复每分镜合并来源选择
     for (const k of Object.keys(_whiteBgCache)) delete _whiteBgCache[k]
 
   } catch (e) {
@@ -2373,17 +2416,15 @@ function handleEvent(evt) {
     sceneProgress.value = { ...sceneProgress.value, [scene_id]: { value: evt.value, max: evt.max } }
   } else if (event === 'scene_done') {
     sceneState.value = { ...sceneState.value, [scene_id]: 'done' }
+    // v1.6.2 多引擎：后端已把成片落到对应【引擎槽】（ltx/msr/slideshow/seedance），
+    // 前端只需把该镜「合并来源」自动设为刚生成的引擎 + 即时预览（不再 PUT /videos/slot，
+    // 否则会把 seedance/slideshow 误写进 ltx 槽）。
+    const src = evt.source || (evt.msr ? 'msr' : 'ltx')
+    setSceneSource(scene_id, src)
     if (evt.video) {
-      // 即时预览：本镜刚生成的 base64 当 data URL 喂 <video>。v1.6 双模：MSR 镜写进
-      // sceneVideosMsr（后端已落盘 .msr.mp4，前端不再 PUT /videos/slot 以免误写旧 .mp4）；
-      // 普通镜写 sceneVideos 并增量落盘（保持旧行为）。
       const dataUrl = 'data:video/mp4;base64,' + evt.video
-      if (evt.msr) {
-        sceneVideosMsr.value = { ...sceneVideosMsr.value, [scene_id]: dataUrl }
-      } else {
-        sceneVideos.value = { ...sceneVideos.value, [scene_id]: dataUrl }
-        _saveOneVideo(scene_id, evt.video)   // A3: 单镜增量保存（仅旧/普通视频）
-      }
+      const cur = sceneVideosAll.value[scene_id] || {}
+      sceneVideosAll.value = { ...sceneVideosAll.value, [scene_id]: { ...cur, [src]: dataUrl } }
     }
   } else if (event === 'scene_retrying') {
     // VRAM offload detected — backend is freeing memory and retrying; keep scene active
@@ -2394,6 +2435,7 @@ function handleEvent(evt) {
     genError.value = `分镜 ${scene_id} 失败: ${evt.message}`
   } else if (event === 'batch_done') {
     genFinished.value = true
+    _reloadAllVideos()   // 用真实流式 URL 替换内存里的 data URL（释放内存）
   }
 }
 
@@ -2430,12 +2472,13 @@ async function mergeVideos() {
   genError.value = ''
   try {
     const scene_order = scenes.value.map(s => String(s.id))
-    // v1.6 双模：把启用「多图参考」的分镜 id 传给后端 → 这些镜合并时用 .msr.mp4
-    const msr_scene_ids = scenesWithData.value.filter(s => isMsrScene(s)).map(s => String(s.id))
+    // v1.6.2 多引擎：每镜把【所选合并来源】传给后端 → 跨引擎混合（ltx/msr/slideshow/seedance）
+    const scene_sources = {}
+    for (const s of scenesWithData.value) scene_sources[String(s.id)] = effectiveSource(s)
     const { data } = await axios.post(`${API}/video-engine/merge-project-video`, {
       project_id: props.projectId,
       scene_order,
-      msr_scene_ids,
+      scene_sources,
       // D3: 镜间过渡
       transition: mergeTransition.value,
       transition_duration_ms: mergeTransitionMs.value,
@@ -2689,6 +2732,21 @@ async function showMergedInFolder() {
 .vmd-mini { font-size:11px; color:var(--color-text-muted, #999); }
 .vmd-mini.ok { color:#5bbf7b; }
 .vmd-mini.warn { color:#d8a24a; }
+/* 已生成的引擎槽小标（高亮=当前合并来源） */
+.vmd-slot {
+  font-size:10px; padding:0 4px; border-radius:6px; line-height:1.5;
+  border:1px solid var(--border-color,#444); color:var(--color-text-muted,#999);
+}
+.vmd-slot.on { border-color:var(--accent,#66b2ff); color:var(--accent,#66b2ff); background:rgba(102,178,255,.12); font-weight:600; }
+/* 详情：合并来源选择器 */
+.src-picker { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:2px 0 6px; }
+.src-label { font-size:11px; color:var(--color-text-muted,#999); }
+.src-chip {
+  font-size:11px; padding:2px 9px; border-radius:12px; cursor:pointer;
+  border:1px solid var(--border-color,#444); background:transparent; color:var(--text,#ddd);
+}
+.src-chip:hover { border-color:var(--accent,#66b2ff); }
+.src-chip.on { border-color:var(--accent,#66b2ff); background:rgba(102,178,255,.16); color:var(--accent,#66b2ff); font-weight:600; }
 .video-md-detail { flex:1; min-width:0; overflow-y:auto; }
 @media (max-width: 720px) {
   .video-md { flex-direction:column; }

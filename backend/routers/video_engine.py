@@ -536,13 +536,17 @@ async def generate_video_stream(req: VideoGenerateRequest):
                         break
                     elif ev == "completed":
                         # D1: project_id 提供时由后端直接落盘 + 事件加 file_path
-                        # v1.6 双模：MSR 分镜与普通分镜【分别存盘】——
-                        #   普通 → video/<scene>.mp4 + videos.json + asset 'video'
-                        #   MSR  → video/<scene>.msr.mp4 + videos_msr.json + asset 'video_msr'
-                        # 两者并存，合并时按分镜的 MSR 开关挑选用哪一个。
+                        # v1.6.2 多引擎槽：每个生成方式【独立存盘】，互不覆盖——
+                        #   ltx → <scene>.mp4 / msr → <scene>.msr.mp4 /
+                        #   seedance → <scene>.seedance.mp4（图片放映在 render-slideshow 里走 slideshow 槽）
+                        # 合并时按分镜所选「来源」挑选用哪一个。
+                        from services.video_slots import (
+                            slot_filename, slot_index_name, slot_asset, kind_query)
+                        slot_kind = ("msr" if is_msr_scene
+                                     else "seedance" if is_volc else "ltx")
                         ev_out = {**event, "event": "scene_done",
                                   "scene_index": scene.scene_index,
-                                  "msr": is_msr_scene}
+                                  "msr": is_msr_scene, "source": slot_kind}
                         if req.project_id and event.get("video"):
                             try:
                                 import base64 as _b64
@@ -550,30 +554,27 @@ async def generate_video_stream(req: VideoGenerateRequest):
                                 from config import load_settings as _ls
                                 vid_dir = _P(_ls().projects_dir) / req.project_id / "video"
                                 vid_dir.mkdir(parents=True, exist_ok=True)
-                                filename = (f"{scene.scene_id}.msr.mp4" if is_msr_scene
-                                            else f"{scene.scene_id}.mp4")
+                                filename = slot_filename(scene.scene_id, slot_kind)
                                 (vid_dir / filename).write_bytes(
                                     _b64.b64decode(event["video"])
                                 )
                                 rel = f"video/{filename}"
-                                asset_kind = "video_msr" if is_msr_scene else "video"
                                 ev_out["file_path"] = rel
                                 ev_out["url"] = (
                                     f"/api/projects/{req.project_id}/video-file/"
-                                    f"{scene.scene_id}"
-                                    + ("?kind=msr" if is_msr_scene else "")
+                                    f"{scene.scene_id}" + kind_query(slot_kind)
                                 )
-                                # 同步 SQLite scene_assets（普通走 'video' 自动推进 → video_ready；
-                                # MSR 走独立 asset_type 'video_msr'，不干扰旧状态机）
+                                # 同步 SQLite scene_assets（ltx 走 'video' 自动推进 → video_ready；
+                                # 其它走独立 asset_type，不干扰旧状态机）
                                 from services.project_repo import record_asset
                                 record_asset(
-                                    req.project_id, scene.scene_id, asset_kind,
+                                    req.project_id, scene.scene_id, slot_asset(slot_kind),
                                     slot_index=0, file_path=rel, format="mp4",
                                     is_selected=True,
                                 )
-                                # 索引文件：普通 videos.json / MSR videos_msr.json
-                                idx_name = "videos_msr.json" if is_msr_scene else "videos.json"
-                                meta_path = _P(_ls().projects_dir) / req.project_id / idx_name
+                                # 索引文件：每槽各一份
+                                meta_path = (_P(_ls().projects_dir) / req.project_id
+                                             / slot_index_name(slot_kind))
                                 metadata: dict = {}
                                 if meta_path.exists():
                                     try:
@@ -653,9 +654,11 @@ class MergeVideoRequest(BaseModel):
     bgm_volume_db: float = -20.0             # BGM 相对原音的音量（负值越大越轻），关闭 BGM 用 -100
     bgm_fade_in_ms: int = 1000
     bgm_fade_out_ms: int = 1500
-    # v1.6 双模：启用「多图参考视频」的分镜 id 集合 —— 这些镜用 <scene>.msr.mp4，
-    # 其余用旧/普通 <scene>.mp4。前端按每镜 MSR 开关传入；不传则全用旧视频（向后兼容）。
+    # v1.6 双模：启用「多图参考视频」的分镜 id 集合（向后兼容；新前端用 scene_sources）。
     msr_scene_ids: list[str] = []
+    # v1.6.2 多引擎：每镜【合并来源】映射 {scene_id: 'ltx'|'msr'|'slideshow'|'seedance'}。
+    # 优先于 msr_scene_ids；未列出的分镜回退到 msr_scene_ids/ltx。
+    scene_sources: dict[str, str] = {}
 
 
 class MergeVideoResult(BaseModel):
@@ -741,37 +744,66 @@ async def merge_project_video(req: MergeVideoRequest):
     proj_dir = projects_dir / req.project_id
     vid_dir  = proj_dir / "video"
 
-    # v1.6 双模：旧/普通视频走 videos.json，多图参考(MSR)走 videos_msr.json；按每镜的
-    # MSR 开关（req.msr_scene_ids）分别挑选 <scene>.mp4 / <scene>.msr.mp4，合到一条片里。
-    def _load_idx(name: str) -> dict:
-        p = proj_dir / name
-        if p.exists():
-            try:
-                return json.loads(p.read_text(encoding="utf-8-sig"))
-            except Exception:
-                return {}
-        return {}
+    # v1.6.2 多引擎：每镜按【所选来源】挑对应槽的视频，合到一条片里（ffmpeg 统一重编码，
+    # 异构来源也能拼）。来源优先级：scene_sources[scene] > (msr_scene_ids → msr) > ltx。
+    from services.video_slots import (norm_kind, slot_index_name, slot_filename,
+                                      slot_asset, SLOT_KINDS, VIDEO_SLOTS, DEFAULT_SLOT)
+    _idx_cache: dict[str, dict] = {}
 
-    old_idx = _load_idx("videos.json")
-    msr_idx = _load_idx("videos_msr.json")
+    def _idx(kind: str) -> dict:
+        if kind not in _idx_cache:
+            p = proj_dir / slot_index_name(kind)
+            try:
+                _idx_cache[kind] = json.loads(p.read_text(encoding="utf-8-sig")) if p.exists() else {}
+            except Exception:
+                _idx_cache[kind] = {}
+        return _idx_cache[kind]
+
+    sources = {str(k): norm_kind(v) for k, v in (req.scene_sources or {}).items()}
     msr_set = set(str(s) for s in (req.msr_scene_ids or []))
 
-    if not old_idx and not msr_idx and not any(vid_dir.glob("*.mp4")):
+    def _scene_kind(scene_id: str) -> str:
+        if scene_id in sources:
+            return sources[scene_id]
+        return "msr" if scene_id in msr_set else DEFAULT_SLOT
+
+    def _resolve_one(scene_id: str, kind: str):
+        """返回该镜某槽的文件名（索引 → scene_assets → 约定名）；找不到回 None。"""
+        fn = _idx(kind).get(scene_id)
+        if fn and (vid_dir / fn).is_file():
+            return fn
+        try:
+            from services.project_repo import list_video_assets
+            rel = list_video_assets(req.project_id, asset_type=slot_asset(kind)).get(scene_id)
+            if rel and (vid_dir / Path(rel).name).is_file():
+                return Path(rel).name
+        except Exception:
+            pass
+        cand = slot_filename(scene_id, kind)
+        return cand if (vid_dir / cand).is_file() else None
+
+    if not any((proj_dir / slot_index_name(k)).exists() for k in SLOT_KINDS) \
+       and not any(vid_dir.glob("*.mp4")):
         raise HTTPException(status_code=400, detail="该项目尚无已保存的分镜视频")
+
+    _LABEL = {"ltx": "AI 视频", "msr": "多图参考", "slideshow": "图片放映", "seedance": "Seedance"}
 
     # Build ordered list of video files
     ordered_files: list[Path] = []
     for scene_id in req.scene_order:
-        use_msr = scene_id in msr_set
-        filename = (msr_idx.get(scene_id) if use_msr else old_idx.get(scene_id))
-        if not filename:   # 索引缺失 → 回退到约定文件名
-            cand = f"{scene_id}.msr.mp4" if use_msr else f"{scene_id}.mp4"
-            if (vid_dir / cand).is_file():
-                filename = cand
+        kind = _scene_kind(scene_id)
+        filename = _resolve_one(scene_id, kind)
+        # 回退：所选来源没有 → 任一已生成的槽（避免合并直接失败）
         if not filename:
-            label = "多图参考" if use_msr else ""
+            for alt in SLOT_KINDS:
+                if alt == kind:
+                    continue
+                filename = _resolve_one(scene_id, alt)
+                if filename:
+                    break
+        if not filename:
             raise HTTPException(status_code=400,
-                                detail=f"分镜 {scene_id} 尚无{label}视频，请先生成该分镜")
+                                detail=f"分镜 {scene_id} 尚无「{_LABEL.get(kind, kind)}」视频，请先生成该分镜")
         p = vid_dir / filename
         if not p.exists():
             raise HTTPException(status_code=400, detail=f"分镜视频文件不存在: {filename}")
