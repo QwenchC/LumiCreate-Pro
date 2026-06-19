@@ -130,10 +130,18 @@ def patch_standard_pose_workflow(
                 wvs[0] = pose_filename
             n["widgets_values"] = wvs
 
-    # 2) 正/负提示词：按 KSampler 的 positive/negative 连接定位 CLIPTextEncode
+    # 2) 正/负提示词 + 随机种子：按 KSampler 的 positive/negative 连接定位 CLIPTextEncode。
+    #    种子必须每次随机化——'randomize' 是 UI-only 控件，API 提交会发字面种子，不随机化
+    #    则每次都生成同一张（ComfyUI 还会命中缓存），无法重抽。只改 widget[0]（seed），
+    #    其余槽位（control/steps/…）保持不动以免 _litegraph_to_api 的按序消费错位。
+    import random
     for ks in wf.get("nodes", []):
         if ks.get("type") != "KSampler":
             continue
+        wvs = list(ks.get("widgets_values") or [])
+        if wvs:
+            wvs[0] = random.randint(0, 2**63 - 1)   # Z-Image 种子可超 2**31
+            ks["widgets_values"] = wvs
         pos = nodes.get(_link_src_node(wf, _input_link(ks, "positive")))
         neg = nodes.get(_link_src_node(wf, _input_link(ks, "negative")))
         if pos and pos.get("type") == "CLIPTextEncode":

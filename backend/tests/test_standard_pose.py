@@ -77,3 +77,21 @@ def test_patch_no_mutate_input():
     before = json.dumps(wf, ensure_ascii=False)
     patch_standard_pose_workflow(wf, pose_filename="p.png", positive_prompt="x")
     assert json.dumps(wf, ensure_ascii=False) == before
+
+
+def test_patch_randomizes_seed_each_call():
+    """KSampler 种子每次随机化 —— 否则每次生成同一张、无法重抽。"""
+    base = _load()
+    a = patch_standard_pose_workflow(base, pose_filename="p.png", positive_prompt="x")
+    b = patch_standard_pose_workflow(base, pose_filename="p.png", positive_prompt="x")
+
+    def _seed(wf):
+        ks = next(n for n in wf["nodes"] if n.get("type") == "KSampler")
+        return ks["widgets_values"][0]
+
+    orig = _seed(base)
+    assert _seed(a) != orig and _seed(b) != orig   # 已随机化（不再是工作流自带固定种子）
+    assert _seed(a) != _seed(b)                      # 两次不同
+    # 经 _litegraph_to_api 后种子确实进了 KSampler.inputs.seed
+    ks = next(n for n in _api(a).values() if n["class_type"] == "KSampler")
+    assert ks["inputs"]["seed"] == _seed(a)

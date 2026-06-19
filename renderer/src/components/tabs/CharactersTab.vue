@@ -455,7 +455,8 @@ async function runPortraitGen() {
       resp = await fetch(`${API}/image-engine/generate-standard-pose`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          appearance: (ch?.appearance || dlg.prompt || '').trim(),
+          // 只传角色真实外貌；空白背景/全身等由后端固定前缀承担（别把立绘模板 boilerplate 当外貌）
+          appearance: (ch?.appearance || '').trim(),
           style,
         }),
       })
@@ -501,6 +502,7 @@ async function runPortraitGen() {
     if (!resp.ok) throw new Error(await resp.text())
 
     let imageB64 = ''
+    let errMsg = ''   // 后端 error 事件的真实原因（别被 JSON.parse 的 catch 吞掉）
     const reader = resp.body.getReader(); const dec = new TextDecoder()
     let buf = ''
     while (true) {
@@ -512,19 +514,18 @@ async function runPortraitGen() {
         if (!line.startsWith('data:')) continue
         const raw = line.slice(5).trim()
         if (raw === '[DONE]') break
-        try {
-          const ev = JSON.parse(raw)
-          if (ev.event === 'progress' && ev.value && ev.max) {
-            dlg.progress = `生成中… ${ev.value}/${ev.max}`
-          } else if (ev.event === 'completed') {
-            const first = (ev.images || [])[0]
-            if (first?.data) imageB64 = first.data
-          } else if (ev.event === 'error') {
-            throw new Error(ev.message || '生成失败')
-          }
-        } catch {}
+        let ev; try { ev = JSON.parse(raw) } catch { continue }
+        if (ev.event === 'progress' && ev.value && ev.max) {
+          dlg.progress = `生成中… ${ev.value}/${ev.max}`
+        } else if (ev.event === 'completed') {
+          const first = (ev.images || [])[0]
+          if (first?.data) imageB64 = first.data
+        } else if (ev.event === 'error') {
+          errMsg = ev.message || '生成失败'
+        }
       }
     }
+    if (errMsg) throw new Error(errMsg)            // 暴露真实 ComfyUI 错误
     if (!imageB64) throw new Error('没有取到生成结果')
 
     // 2) 上传到角色立绘 endpoint
