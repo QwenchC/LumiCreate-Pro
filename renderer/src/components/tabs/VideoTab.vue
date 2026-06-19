@@ -496,6 +496,12 @@
         <div class="svcard-header">
           <span class="scene-num">{{ String(scene.index).padStart(2,'0') }}</span>
           <div class="svcard-desc">{{ sceneFullText(scene) }}</div>
+          <!-- v1.6.1: 人工审阅开关（纯标记，不影响任何生成/合并机制；可随时开关） -->
+          <button class="review-toggle" :class="{ reviewed: videoReviewed[scene.id] }"
+                  @click="toggleVideoReviewed(scene.id)"
+                  :title="videoReviewed[scene.id] ? '已审阅通过（点击改回未审阅）' : '未审阅（点击标记为已审阅通过）'">
+            {{ videoReviewed[scene.id] ? '✅ 已审阅' : '☐ 未审阅' }}
+          </button>
           <span class="svcard-status" :class="sceneStatusClass(scene.id)">
             {{ sceneStatusLabel(scene.id) }}
           </span>
@@ -1094,6 +1100,20 @@ const redubDialog = ref({
   running: false, progressPct: 0, error: '',
   previewB64: '', previewUrl: '', previewSrcFp: '',   // 预览成片（确认前不落盘）
 })
+
+// ── v1.6.1: 视频分镜人工审阅标记（纯展示，不影响任何生成/合并机制；按项目 localStorage 持久化）──
+const videoReviewed = ref({})   // sceneId → bool
+function _videoReviewedKey() { return `lumi_video_reviewed_${props.projectId || ''}` }
+function _loadVideoReviewed() {
+  try {
+    const raw = localStorage.getItem(_videoReviewedKey())
+    videoReviewed.value = raw ? (JSON.parse(raw) || {}) : {}
+  } catch { videoReviewed.value = {} }
+}
+function toggleVideoReviewed(sceneId) {
+  videoReviewed.value = { ...videoReviewed.value, [sceneId]: !videoReviewed.value[sceneId] }
+  try { localStorage.setItem(_videoReviewedKey(), JSON.stringify(videoReviewed.value)) } catch {}
+}
 
 async function reloadRvcModels() {
   redubDialog.value.loadingModels = true
@@ -1880,6 +1900,7 @@ async function loadData() {
     // v1.6: 恢复每分镜 MSR 开关 + 手动时长 + 清空白底立绘缓存（切项目时重新拉）
     _loadMsrEnabled()
     _loadManualDurations()
+    _loadVideoReviewed()   // v1.6.1: 恢复视频分镜审阅标记
     for (const k of Object.keys(_whiteBgCache)) delete _whiteBgCache[k]
 
   } catch (e) {
@@ -2624,6 +2645,13 @@ async function showMergedInFolder() {
   white-space:pre-wrap; word-break:break-all; cursor:default;
 }
 .svcard-status { font-size:12px; font-weight:600; }
+/* v1.6.1: 人工审阅开关 */
+.review-toggle {
+  flex-shrink:0; font-size:11px; padding:2px 8px; border-radius:10px; cursor:pointer;
+  border:1px solid var(--border, #444); background:transparent; color:var(--text-muted, #999);
+}
+.review-toggle.reviewed { border-color:rgba(80,200,120,.6); color:#5bbf7b;
+  background:rgba(80,200,120,.10); }
 .svcard-status.active { color:var(--accent); }
 .svcard-status.done   { color:var(--color-success,#4caf50); }
 .svcard-status.error  { color:var(--color-error,#f44336); }

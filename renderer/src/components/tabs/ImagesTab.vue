@@ -127,6 +127,7 @@
             <div class="scene-list-num">{{ String(scene.index).padStart(2,'0') }}</div>
             <div class="scene-list-desc truncate" :title="scene.description">{{ scene.description || '(无描述)' }}</div>
             <div class="scene-list-status">
+              <span v-if="imgReviewed[scene.id]" class="status-dot" title="已审阅">✅</span>
               <span v-if="sceneGenerating[scene.id]" class="status-dot dot-active">⏳</span>
               <span v-else-if="hasAnyImage(scene)" class="status-dot dot-done">✓</span>
             </div>
@@ -150,6 +151,12 @@
             @click="generateOneScene(activeScene)">
             <span v-if="sceneGenerating[activeScene.id]">⏳ 生成中…</span>
             <span v-else>▶ 重新生成此分镜</span>
+          </button>
+          <!-- v1.6.1: 人工审阅开关（纯标记，不影响任何生成机制；可随时开关） -->
+          <button class="review-toggle" :class="{ reviewed: imgReviewed[activeScene.id] }"
+                  @click="toggleImgReviewed(activeScene.id)"
+                  :title="imgReviewed[activeScene.id] ? '已审阅通过（点击改回未审阅）' : '未审阅（点击标记为已审阅通过）'">
+            {{ imgReviewed[activeScene.id] ? '✅ 已审阅' : '☐ 未审阅' }}
           </button>
           </div>
           <div class="detail-desc-block">{{ sceneFullText(activeScene) }}</div>
@@ -850,6 +857,20 @@ async function retryFailedBatch() {
 const sceneGenerating  = ref({})
 const frameSlotCounts  = ref({})
 
+// v1.6.1: 图片分镜人工审阅标记（纯展示，不影响任何生成机制；按项目 localStorage 持久化）
+const imgReviewed = ref({})   // sceneId → bool
+function _imgReviewedKey() { return `lumi_img_reviewed_${props.projectId || ''}` }
+function _loadImgReviewed() {
+  try {
+    const raw = localStorage.getItem(_imgReviewedKey())
+    imgReviewed.value = raw ? (JSON.parse(raw) || {}) : {}
+  } catch { imgReviewed.value = {} }
+}
+function toggleImgReviewed(sceneId) {
+  imgReviewed.value = { ...imgReviewed.value, [sceneId]: !imgReviewed.value[sceneId] }
+  try { localStorage.setItem(_imgReviewedKey(), JSON.stringify(imgReviewed.value)) } catch {}
+}
+
 const lightbox = ref(null)
 const lightboxTitle = computed(() => {
   if (!lightbox.value) return ''
@@ -912,6 +933,7 @@ const progressPct = computed(() =>
 async function loadData() {
   loadError.value = ''
   loadingScenes.value = true
+  _loadImgReviewed()   // v1.6.1: 恢复图片分镜审阅标记
   try {
     const [scenesRes, settingsRes, workflowsRes, imagesRes, charsRes] = await Promise.all([
       axios.get(API + '/projects/' + props.projectId + '/scenes'),
@@ -1857,6 +1879,13 @@ async function addOneMore(scene, frameType) {
 .detail-header-top {
   display: flex; align-items: center; gap: 10px;
 }
+/* v1.6.1: 人工审阅开关 */
+.review-toggle {
+  flex-shrink:0; font-size:12px; padding:3px 10px; border-radius:12px; cursor:pointer;
+  border:1px solid var(--border, #444); background:transparent; color:var(--text-muted, #999);
+}
+.review-toggle.reviewed { border-color:rgba(80,200,120,.6); color:#5bbf7b;
+  background:rgba(80,200,120,.10); }
 .detail-num  { font-size: 22px; font-weight: 800; color: var(--accent); min-width: 32px; flex-shrink: 0; }
 .detail-desc-block {
   font-size: 13px; line-height: 1.6; color: var(--text-muted);
