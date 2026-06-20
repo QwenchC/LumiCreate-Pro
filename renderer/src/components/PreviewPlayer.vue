@@ -58,7 +58,7 @@ import axios from 'axios'
 const props = defineProps({
   projectId: { type: String, required: true },
   scenes:    { type: Array,  required: true },   // [{id, ...}]
-  videosMap: { type: Object, default: () => ({}) },   // {scene_id: filename} from videos.json
+  videosMap: { type: Object, default: () => ({}) },   // {scene_id: 完整可播视频URL}（父组件按每镜有效来源算好，覆盖四引擎槽）
   resolution: { type: String, default: '720x1280' },  // 仅用于舞台比例
 })
 const emit = defineEmits(['close'])
@@ -74,8 +74,10 @@ const audioEl  = ref(null)
 let imageFallbackTimer = null
 const FALLBACK_MS = 4000
 
-function _videoUrl(sceneId) {
-  return `${API}/projects/${props.projectId}/assets/file/${sceneId}/video`
+// v1.6.2: 四引擎视频槽 asset_type（ltx 仍叫 'video'）
+const VIDEO_ASSET_TYPES = ['video', 'video_msr', 'video_slideshow', 'video_seedance']
+function _videoUrl(sceneId, assetType = 'video') {
+  return `${API}/projects/${props.projectId}/assets/file/${sceneId}/${assetType}`
 }
 function _imageUrl(sceneId) {
   return `${API}/projects/${props.projectId}/assets/file/${sceneId}/image_start`
@@ -96,8 +98,12 @@ async function buildPlaylist() {
       const sid = it.scene_id
       if (!sid) continue
       if (!inventory[sid]) inventory[sid] = {}
-      // asset_type ∈ {video, image_start, image_end, audio}
+      // asset_type ∈ {video, video_msr, video_slideshow, video_seedance, image_start, image_end, audio}
       inventory[sid][it.asset_type] = true
+      // 任一视频槽 → 记下具体 asset_type，回退时按该槽取文件（覆盖四引擎）
+      if (VIDEO_ASSET_TYPES.includes(it.asset_type) && !inventory[sid]._videoType) {
+        inventory[sid]._videoType = it.asset_type
+      }
     }
   } catch (e) {
     console.warn('[preview] failed to fetch asset inventory:', e)
@@ -107,9 +113,15 @@ async function buildPlaylist() {
   for (const s of props.scenes) {
     const sid = s.id
     const inv = inventory[sid] || {}
-    const hasVideo = !!props.videosMap[sid] || !!inv.video
-    if (hasVideo) {
-      items.push({ sceneId: sid, kind: 'video', videoSrc: _videoUrl(sid) })
+    // v1.6.2: 优先用父组件下发的「每镜有效来源」完整可播 URL —— 覆盖 ltx/msr/图片放映/seedance
+    // 四引擎槽（.mp4/.msr.mp4/.slideshow.mp4/.seedance.mp4），修复非默认引擎试播显示「无素材」。
+    const mappedVideo = props.videosMap[sid]
+    if (mappedVideo) {
+      items.push({ sceneId: sid, kind: 'video', videoSrc: mappedVideo })
+      continue
+    }
+    if (inv._videoType) {   // 回退：按实际视频槽 asset_type 取文件（ltx/msr/放映/seedance 四引擎）
+      items.push({ sceneId: sid, kind: 'video', videoSrc: _videoUrl(sid, inv._videoType) })
       continue
     }
     const hasImg   = !!inv.image_start

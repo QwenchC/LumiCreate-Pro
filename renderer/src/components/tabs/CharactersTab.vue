@@ -136,6 +136,12 @@
                       @click="openPortraitGen(char)">
                 🎨 生成立绘
               </button>
+              <button class="btn btn-secondary btn-xs"
+                      :disabled="!char.name?.trim() || char._uploadingPortrait"
+                      title="从本地选择图片作为立绘"
+                      @click="triggerPortraitUpload(char)">
+                {{ char._uploadingPortrait ? '上传中…' : '⬆ 上传立绘' }}
+              </button>
             </div>
             <div class="portraits-row" v-if="(char._portraits || []).length">
               <div v-for="p in char._portraits" :key="p.filename"
@@ -166,6 +172,9 @@
       </div>
 
       <button class="btn btn-secondary add-bottom" @click="addCharacter">＋ 添加角色</button>
+      <!-- v1.6.2: 立绘本地上传用的隐藏 file input（全局一个，点按钮时记录目标角色） -->
+      <input ref="portraitUploadInput" type="file" accept="image/*"
+             style="display:none" @change="onPortraitFilePicked" />
     </div>
 
     <!-- Status -->
@@ -424,6 +433,70 @@ async function loadCharacterPortraits(char) {
       char._portraits = (await r.json()).portraits || []
     }
   } catch {}
+}
+
+// v1.6.2: 立绘本地上传 —— 复用同一 POST .../portraits 端点（与「生成立绘」上传同路径）
+const portraitUploadInput = ref(null)
+const _portraitUploadTarget = ref(null)
+
+// 本地图片 → 转码为真正的 PNG base64（后端按 .png 落盘并以 image/png 提供，
+// 故此处统一转 PNG，保证扩展名/字节/MIME 三者一致，兼容用户选 JPG/WebP/GIF）。
+function _imageFileToPngBase64(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width  = img.naturalWidth  || img.width
+        canvas.height = img.naturalHeight || img.height
+        canvas.getContext('2d').drawImage(img, 0, 0)
+        URL.revokeObjectURL(url)
+        resolve(canvas.toDataURL('image/png').replace(/^data:[^;]+;base64,/, ''))
+      } catch (e) { URL.revokeObjectURL(url); reject(e) }
+    }
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片解码失败')) }
+    img.src = url
+  })
+}
+
+function triggerPortraitUpload(char) {
+  if (!char?.name?.trim()) { showStatus('请先填写角色名', 'warn'); return }
+  _portraitUploadTarget.value = char
+  portraitUploadInput.value?.click()
+}
+
+async function onPortraitFilePicked(ev) {
+  const f = ev.target.files?.[0]
+  ev.target.value = ''                       // 清空，允许再次选同一文件
+  const char = _portraitUploadTarget.value
+  _portraitUploadTarget.value = null
+  if (!f || !char) return
+  if (!f.type?.startsWith('image/')) { showStatus('请选择图片文件', 'warn'); return }
+  char._uploadingPortrait = true
+  try {
+    const b64 = await _imageFileToPngBase64(f)
+    const up = await fetch(
+      `${API}/projects/${props.projectId}/characters/${encodeURIComponent(char.name)}/portraits`,
+      {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: b64,
+          workflow_name: '本地上传',
+          prompt: `本地上传: ${f.name}`,
+          set_primary: false,    // 无主图时后端自动把第一张设为主图（与生成流程一致）
+          white_bg: false,
+        }),
+      },
+    )
+    if (!up.ok) throw new Error(await up.text())
+    await loadCharacterPortraits(char)
+    showStatus('✓ 立绘已上传', 'ok')
+  } catch (e) {
+    showStatus('上传失败: ' + (e.message || e), 'err')
+  } finally {
+    char._uploadingPortrait = false
+  }
 }
 
 async function openPortraitGen(char) {
@@ -996,7 +1069,7 @@ async function save() {
     // v1.5.1: 不发送 _portraits（运行期缓存）/ portraits（由专用立绘端点维护）——
     // 后端 PUT 会按角色名保留磁盘上已有的 portraits，立绘不会被角色保存抹掉。
     const payload = characters.value.map(
-      ({ _generating, _finding, _profiling, _portraits, portraits, ...c }) => c
+      ({ _generating, _finding, _profiling, _portraits, portraits, _uploadingPortrait, ...c }) => c
     )
     const res = await fetch(`${API}/projects/${props.projectId}/characters`, {
       method:  'PUT',

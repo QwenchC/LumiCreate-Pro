@@ -280,6 +280,70 @@ async def serve_track_file(track_id: int):
                         filename=full.name)
 
 
+# ── 本地音频上传入库（v1.6.2）──────────────────────────────────────────────────
+# 与「生成入库」等价的旁路：音频来源换成用户上传的 base64，落盘到全局音乐库并 INSERT tracks。
+
+ALLOWED_AUDIO_EXT = {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac"}
+MIME_BY_EXT = {
+    ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".wav": "audio/wav",
+    ".aac": "audio/aac", ".ogg": "audio/ogg", ".flac": "audio/flac",
+}
+
+
+class MusicUploadRequest(BaseModel):
+    filename:   str = ""          # 原始文件名（取后缀 + 缺省显示名）
+    data:       str = ""          # base64 音频
+    name:       str = ""          # 库内显示名（空则用文件名 stem）
+    project_id: str = ""          # 可选；系列项目经 _library_key 归并共享
+
+
+@router.post("/upload")
+async def upload_track(req: MusicUploadRequest):
+    """上传本地音频文件进入音乐库。校验后缀/大小 → 落盘 global_music_root → INSERT tracks。"""
+    ext = Path(req.filename or "").suffix.lower()
+    if ext not in ALLOWED_AUDIO_EXT:
+        raise HTTPException(
+            400, detail=f"不支持的音频格式：{ext or '(无扩展名)'}；支持 {', '.join(sorted(ALLOWED_AUDIO_EXT))}")
+    try:
+        audio_bytes = base64.b64decode(req.data or "")
+    except Exception as e:
+        raise HTTPException(400, detail=f"音频解码失败: {e}")
+    if len(audio_bytes) < _MIN_PLAYABLE_BYTES:
+        raise HTTPException(400, detail="音频为空或过小(<1KB)")
+
+    music_dir = global_music_root()
+    stem = (req.name.strip() or Path(req.filename).stem or "upload")
+    base = _safe_filename(stem)
+    target = music_dir / _safe_filename(f"{base}{ext}")
+    n = 2
+    while target.exists():
+        target = music_dir / _safe_filename(f"{base}({n}){ext}")
+        n += 1
+    target.write_bytes(audio_bytes)
+    rel = target.name
+
+    display = req.name.strip() or Path(req.filename).stem or "upload"
+    conn = get_global_music_conn()
+    cur = conn.execute(
+        "INSERT INTO tracks("
+        "  name, file_path, mime, project_id, seed, duration_secs, "
+        "  bpm, time_signature, language, key_scale, tags, lyrics, "
+        "  bytes, created_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            display, rel, MIME_BY_EXT.get(ext, "audio/mpeg"),
+            _library_key(req.project_id),
+            # seed/duration 未知留 0；其余沿用与生成 track 一致的合理默认，避免库列表/参数克隆出现空值
+            0, 0, 120, "4", "zh", "C major", "上传", "",
+            len(audio_bytes), datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    track_id = cur.lastrowid
+    conn.commit()
+    return {"ok": True, "track_id": track_id,
+            "url": f"/api/music/file/{track_id}", "filename": rel}
+
+
 # ── Generation SSE ────────────────────────────────────────────────────────────
 
 

@@ -893,6 +893,7 @@
     <PreviewPlayer v-if="previewOpen"
                    :project-id="projectId"
                    :scenes="scenes"
+                   :videos-map="previewVideosMap"
                    :resolution="resolution"
                    @close="previewOpen = false" />
 
@@ -912,7 +913,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated, watch } from 'vue'
 import axios from 'axios'
 import { useTabsStore } from '../../stores/tabs'
 import BgmMixerDialog from '../BgmMixerDialog.vue'
@@ -1125,6 +1126,19 @@ function setSceneSource(sceneId, kind) {
 }
 function videoSrcFor(scene) { return slotsFor(scene)[effectiveSource(scene)] || null }
 function hasVideoFor(scene) { return !!videoSrcFor(scene) }
+
+// v1.6.2: 试播用「每镜有效来源」完整可播 URL（覆盖 ltx/msr/图片放映/seedance 四引擎槽），
+// 修复 MSR/图片放映/Seedance 生成的分镜在试播里显示「无素材」。
+const previewVideosMap = computed(() => {
+  const m = {}
+  // 用富集后的 scenesWithData（带 hasBg）→ effectiveSource/isMsrScene 与详情页/合并来源一致，
+  // 避免 sceneSource 为空时对 MSR 镜误选 ltx 槽。
+  for (const s of scenesWithData.value) {
+    const u = videoSrcFor(s)
+    if (u) m[s.id] = u
+  }
+  return m
+})
 
 function _toVideoSrcMap(data) {   // 保留：个别旧调用仍用（单槽 {sid:url}）
   const host = API.replace(/\/api\/?$/, ''); const stamp = Date.now(); const out = {}
@@ -1806,6 +1820,7 @@ async function runSlideshow(sceneIds = null) {
 const scenePrompts    = ref({})   // scene_id → prompt string
 const promptVisible   = ref({})   // scene_id → bool (expanded)
 let _promptSaveTimer  = null
+let _promptEditSeq    = 0     // 每次用户键入提示词 +1；refreshUpstream 据此避免覆盖在键入的编辑
 // manuscript + characters for LLM video prompt
 const manuscript             = ref('')
 const dialogueMode           = ref('mixed')   // v1.6.2: 对白模式 → MSR 提示词差异化指导
@@ -2008,15 +2023,101 @@ async function loadData() {
   await reloadBgm()           // D1
 }
 
+// v1.6.2: 只刷新【上游只读数据】(分镜/每镜角色选择/首末帧·背景图/角色外观·立绘/对白模式/视频提示词)，
+// 绝不触碰正在进行的批量生成进度/队列态（running/sceneState/sceneProgress/各 *Running 标志/
+// localStorage 持久化的 msrEnabled/manualDurations/videoReviewed/sceneSource 等）。
+// 解决：KeepAlive 缓存下 VideoTab 实例常驻、loadData 只在首次挂载跑一次 → 切到角色/分镜页改完再
+// 切回视频页时读的是旧快照。改立绘后必须清 _whiteBgCache 才能重取新立绘。
+async function refreshUpstream() {
+  if (!props.projectId) return
+  // 整段刷新期间若用户键入提示词，_promptEditSeq 会变 → 末尾放弃覆盖，保护在键入的编辑
+  const seqStart = _promptEditSeq
+  // 生成提示词进行中则不动提示词；否则先把本地未保存(去抖中)的提示词编辑落盘，避免随后被覆盖丢失
+  const promptBusy = generatingAllVideoPrompts.value || msrPromptRunning.value
+    || !!generatingVideoPromptId.value || !!msrPromptingId.value
+  if (!promptBusy) {
+    clearTimeout(_promptSaveTimer)
+    try { await _savePrompts() } catch {}
+  }
+  try {
+    const [scenesRes, imgRes, audRes] = await Promise.all([
+      axios.get(`${API}/projects/${props.projectId}/scenes`),
+      axios.get(`${API}/projects/${props.projectId}/images`).catch(() => ({ data: { slots: [], selected: {} } })),
+      axios.get(`${API}/projects/${props.projectId}/audio`).catch(() => ({ data: {} })),
+    ])
+    scenes.value = scenesRes.data?.scenes || []
+
+    const imgLookup = {}
+    for (const slot of (imgRes.data?.slots || [])) {
+      const key = `${slot.scene_id}:${slot.frame_type}:${slot.slot_index}`
+      if (slot.url)  imgLookup[key] = 'http://localhost:18520' + slot.url
+      else if (slot.data) imgLookup[key] = 'data:image/png;base64,' + slot.data
+    }
+    imagesData.value = imgLookup
+    imagesSelected.value = imgRes.data?.selected || {}
+
+    const aud = audRes.data || {}
+    const stitched = {}
+    for (const [k, v] of Object.entries(aud)) {
+      if (k.startsWith('__stitched__')) stitched[k] = v
+      else if (k.startsWith('__ms_reading__')) {
+        const sceneId = k.slice('__ms_reading__'.length)
+        if (!stitched[`__stitched__${sceneId}`]) stitched[`__stitched__${sceneId}`] = v
+      }
+    }
+    audioData.value = stitched
+
+    try {
+      const msRes = await axios.get(`${API}/projects/${props.projectId}/manuscript`)
+      manuscript.value = msRes.data?.content || ''
+      dialogueMode.value = msRes.data?.config?.dialogue_mode || 'mixed'
+    } catch {}
+    try {
+      const chRes = await axios.get(`${API}/projects/${props.projectId}/characters`)
+      allCharacters.value = chRes.data?.characters || []
+    } catch {}
+
+    // 提示词：已落盘后再重取最新（生成中则保持当前，不覆盖）。
+    // 用 epoch 守卫：若重取期间用户又在输入框键入了（_promptEditSeq 变化），放弃这次覆盖，
+    // 避免用旧服务器快照冲掉正在键入的编辑（lost update）。
+    if (!promptBusy) {
+      try {
+        const pr = await axios.get(`${API}/projects/${props.projectId}/video-prompts`)
+        if (_promptEditSeq === seqStart) scenePrompts.value = pr.data || {}
+      } catch {}
+    }
+    // 改了立绘/外观 → 清白底立绘缓存，强制重取
+    for (const k of Object.keys(_whiteBgCache)) delete _whiteBgCache[k]
+  } catch (e) {
+    console.warn('[VideoTab] refreshUpstream 失败:', e?.message || e)
+  }
+}
+
+// 任一生成/批处理进行中：整体跳过上游刷新，避免替换 scenes/images 干扰进行中的队列、SSE、提示词写入
+function _anyGenBusy() {
+  return running.value || slideshowRunning.value || volcRunning.value
+    || msrPromptRunning.value || generatingAllVideoPrompts.value || !!generatingVideoPromptId.value
+}
+
 onMounted(loadData)
 onUnmounted(() => { clearTimeout(_promptSaveTimer); _savePrompts(); _clearRedubPreview() })
 
-// When this project's tab becomes active again (after being in the background),
-// refresh the saved video list so any videos that finished while hidden show up.
+// 内层 tab 切回视频页（ProjectView 的 <KeepAlive> → onActivated）：重读上游 + 视频文件。
+// 首次激活与 onMounted 重合（loadData 已读全量），跳过以免双拉。生成中不刷新以防打断/竞争。
+let _activatedOnce = false
+onActivated(async () => {
+  if (!_activatedOnce) { _activatedOnce = true; return }
+  if (!props.projectId || _anyGenBusy()) return
+  await refreshUpstream()
+  try { await _reloadAllVideos() } catch {}
+})
+
+// 跨【项目 tab】切回（App 级 v-show，不触发 onActivated）：用 activeId watch 兜底，同样刷上游。
 const tabsStore = useTabsStore()
 watch(() => tabsStore.activeId, async (newId) => {
   if (newId !== props.projectId) return
-  if (running.value || !scenes.value.length) return
+  if (_anyGenBusy()) return
+  await refreshUpstream()
   try { await _reloadAllVideos() } catch {}
 })
 
@@ -2295,6 +2396,7 @@ function togglePrompt(sceneId) {
 }
 
 function onPromptInput(sceneId, value) {
+  _promptEditSeq++
   scenePrompts.value = { ...scenePrompts.value, [sceneId]: value }
   _scheduleSavePrompts()
 }

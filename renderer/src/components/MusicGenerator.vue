@@ -108,7 +108,14 @@
                 title="清理文件丢失或损坏的条目（小于 1KB 视为损坏）">
           {{ cleaning ? '⏳' : '🧹' }} 清理失效
         </button>
+        <button class="btn btn-ghost btn-xs" :disabled="uploading" @click="triggerUpload"
+                title="导入本地音频文件到音乐库">
+          {{ uploading ? '⏳ 上传中…' : '⬆ 上传音频' }}
+        </button>
         <button class="btn btn-ghost btn-xs" @click="loadTracks">↻ 刷新</button>
+        <input ref="uploadInput" type="file"
+               accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac"
+               style="display:none" @change="onUploadFile" />
       </div>
 
       <div v-if="!tracks.length" class="mg-empty">尚无音乐</div>
@@ -195,6 +202,44 @@ const props = defineProps({
   scope:     { type: String, default: 'global' },
   projectId: { type: String, default: '' },
 })
+
+// v1.6.2: 本地音频上传入库
+const uploadInput = ref(null)
+const uploading   = ref(false)
+function triggerUpload() { uploadInput.value?.click() }
+async function onUploadFile(e) {
+  const file = e.target.files?.[0]
+  e.target.value = ''                  // 清空，允许再次选同一文件
+  if (!file) return
+  uploading.value = true
+  try {
+    const b64 = await new Promise((res, rej) => {
+      const r = new FileReader()
+      r.onload  = () => res(String(r.result || '').split(',')[1] || '')
+      r.onerror = () => rej(r.error || new Error('读取失败'))
+      r.readAsDataURL(file)
+    })
+    const r = await fetch(`${API}/music/upload`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: file.name,
+        data: b64,
+        name: file.name.replace(/\.[^.]+$/, ''),
+        project_id: props.scope === 'project' ? props.projectId : '',
+      }),
+    })
+    if (!r.ok) {
+      let detail = 'HTTP ' + r.status
+      try { detail = (await r.json()).detail || detail } catch {}
+      throw new Error(detail)
+    }
+    await loadTracks()
+  } catch (err) {
+    alert('上传失败：' + (err.message || err))
+  } finally {
+    uploading.value = false
+  }
+}
 
 const KEY_OPTIONS = [
   'C major', 'C minor', 'C# major', 'C# minor',
