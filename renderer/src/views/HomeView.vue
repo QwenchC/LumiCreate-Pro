@@ -160,6 +160,10 @@
             <option value="created_desc">最新创建</option>
             <option value="name">按名字</option>
           </select>
+          <label class="series-toggle" :title="showSeriesProjects ? '正在显示系列连载项目，点击隐藏' : '系列连载项目已隐藏，点击显示'">
+            <input type="checkbox" v-model="showSeriesProjects" />
+            <span>📚 系列连载项目</span>
+          </label>
           <button class="btn btn-primary" @click="showCreateDialog = true">
             + 新建项目
           </button>
@@ -281,6 +285,31 @@
           <div class="dialog-actions">
             <button class="btn btn-danger" @click="doDelete">删除</button>
             <button class="btn btn-ghost" @click="deleteTarget = null">取消</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- v1.6.2: 删除系列【中间集】策略二选一 -->
+    <Teleport to="body">
+      <div v-if="seriesDel.show" class="overlay" @click.self="!seriesDel.busy && (seriesDel.show = false)">
+        <div class="dialog card" style="width:480px">
+          <h3 class="dialog-title">删除「第{{ seriesDel.no }}集：{{ seriesDel.name }}」</h3>
+          <p class="text-muted" style="font-size:13px;line-height:1.6;margin-bottom:12px">
+            这是<strong>中间集</strong>。删除后，后续各集的集号如何处理？
+          </p>
+          <div class="del-choices">
+            <button class="del-choice" :disabled="seriesDel.busy" @click="confirmSeriesDel('shift')">
+              <b>① 删除并顺移</b>
+              <span>后续各集集号 -1，保持连续编号（第{{ seriesDel.no + 1 }}集 → 第{{ seriesDel.no }}集 …）</span>
+            </button>
+            <button class="del-choice" :disabled="seriesDel.busy" @click="confirmSeriesDel('blank')">
+              <b>② 保留空白集</b>
+              <span>第{{ seriesDel.no }}集留空占位，后续集号不变（适合之后重录补回此集）</span>
+            </button>
+          </div>
+          <div class="dialog-actions">
+            <button class="btn btn-ghost" :disabled="seriesDel.busy" @click="seriesDel.show = false">取消</button>
           </div>
         </div>
       </div>
@@ -571,7 +600,9 @@ function toggleFolderExpand(folderId) {
 }
 
 function projectsInFolder(folderId) {
-  return store.projects.filter(p => (p.folder_id || 'default') === folderId)
+  return store.projects.filter(p =>
+    (p.folder_id || 'default') === folderId &&
+    (showSeriesProjects.value || !p.series_id))   // 开关关闭时侧栏也不列系列项目
 }
 
 // ── Delete folder ──────────────────────────────────────────────────────────────
@@ -661,9 +692,15 @@ const renameName = ref('')
 
 const sortMode = ref('updated_desc')   // updated_desc | name | created_desc
 
+// v1.6.2: 是否在主界面项目页显示「系列连载项目」（默认隐藏，避免一大堆挤占）
+const showSeriesProjects = ref(localStorage.getItem('lumi-show-series-projects') === 'true')
+watch(showSeriesProjects, v => localStorage.setItem('lumi-show-series-projects', String(v)))
+
 const filteredProjects = computed(() => {
   const q = (searchQuery.value || '').trim().toLowerCase()
   let list = store.projects.filter(p => {
+    // 系列连载项目：开关关闭时不在主项目页显示；但「全局搜索」(q 非空)仍可搜到
+    if (!q && !showSeriesProjects.value && p.series_id) return false
     const fId = p.folder_id || 'default'
     // 搜索非空时跨文件夹搜（点击侧栏文件夹仍想缩小范围 → 留个开关：仍按文件夹过滤）
     if (!q && fId !== activeFolder.value) return false
@@ -722,14 +759,70 @@ function toggleMenu(id) {
   activeMenu.value = activeMenu.value === id ? null : id
 }
 
-function confirmDelete(proj) {
+async function confirmDelete(proj) {
   activeMenu.value = null
+  // v1.6.2: 系列分集走集数感知删除（与 SeriesView 一致：中间集需选 顺移/留空白）
+  if (proj.series_id) {
+    await askDeleteSeriesProject(proj)
+    return
+  }
   deleteTarget.value = proj
 }
 
 async function doDelete() {
-  await store.deleteProject(deleteTarget.value.id)
+  const id = deleteTarget.value.id
+  await store.deleteProject(id)
+  try { tabsStore.closeTab(id) } catch {}   // 关掉指向已删项目的标签，避免悬挂
   deleteTarget.value = null
+}
+
+// ── v1.6.2: 系列分集删除（集数感知，复用后端 delete-episode）─────────────────────
+const seriesDel = ref({ show: false, no: 0, name: '', projectId: '', seriesId: '', busy: false })
+
+async function askDeleteSeriesProject(proj) {
+  // 拉取系列集数（顺带回填）以精确判断是否最后一集（store 里旧项目 episode_no 可能尚未回填）
+  let max = 0, no = proj.episode_no || 0
+  try {
+    const r = await fetch(`http://127.0.0.1:18520/api/series/${proj.series_id}/projects`)
+    const data = await r.json()
+    max = data.max_no || 0
+    const me = (data.episodes || []).find(e => e.project_id === proj.id)
+    if (me) no = me.no
+  } catch {}
+  if (max === 0 || no >= max) {
+    // 最后一集（或拿不到集数信息）：直接删，无空缺
+    if (!confirm(`删除「${no ? '第' + no + '集：' : ''}${proj.name}」？此操作不可撤销。`)) return
+    const ok = await doDeleteSeriesEpisode(proj.series_id, proj.id, 'blank')
+    if (!ok) alert('删除失败，请重试')
+    return
+  }
+  // 中间集：弹 顺移/留空白 二选一
+  seriesDel.value = { show: true, no, name: proj.name,
+                      projectId: proj.id, seriesId: proj.series_id, busy: false }
+}
+
+async function confirmSeriesDel(strategy) {
+  seriesDel.value.busy = true
+  const ok = await doDeleteSeriesEpisode(seriesDel.value.seriesId, seriesDel.value.projectId, strategy)
+  seriesDel.value.busy = false
+  if (ok) seriesDel.value.show = false
+  else alert('删除失败，请重试')
+}
+
+async function doDeleteSeriesEpisode(seriesId, projectId, strategy) {
+  try {
+    const r = await fetch(`http://127.0.0.1:18520/api/series/${seriesId}/delete-episode`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId, strategy }),
+    })
+    if (!r.ok) throw new Error(await r.text())
+    try { tabsStore.closeTab(projectId) } catch {}
+    await store.fetchProjects()
+    return true
+  } catch (e) {
+    console.warn('删除系列分集失败:', e?.message || e)
+    return false
+  }
 }
 
 async function createProject() {
@@ -1036,6 +1129,17 @@ onUnmounted(() => {
 .toolbar-title { font-size: 18px; font-weight: 700; }
 .toolbar-actions { display: flex; gap: 10px; align-items: center; }
 .search-input { width: 220px; }
+.series-toggle { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--color-text-muted); cursor: pointer; user-select: none; white-space: nowrap; }
+.series-toggle input { cursor: pointer; }
+.series-toggle:hover { color: var(--color-text); }
+
+/* v1.6.2: 删除系列中间集策略选择 */
+.del-choices { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.del-choice { display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface-2); color: var(--color-text); cursor: pointer; }
+.del-choice:hover:not(:disabled) { border-color: var(--color-accent); }
+.del-choice:disabled { opacity: 0.5; cursor: default; }
+.del-choice b { font-size: 13px; }
+.del-choice span { font-size: 11px; color: var(--color-text-muted); }
 
 /* Grid */
 .project-grid {

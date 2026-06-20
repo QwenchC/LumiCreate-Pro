@@ -38,6 +38,8 @@ class ProjectMeta(BaseModel):
     # v1.6.2: 系列连载 —— 归属的系列 id（空=独立项目）；创建时勾选的章节 id
     series_id: str = ""
     chapter_ids: list[str] = []
+    # v1.6.2: 系列内集数（1-based；0=未分配/独立项目）。删中间集可 -1 平移或保留空位成"空白集"
+    episode_no: int = 0
 
 
 class CreateProjectRequest(BaseModel):
@@ -91,6 +93,52 @@ def _write_meta(meta: ProjectMeta) -> None:
     (proj_dir / "project.json").write_text(meta.model_dump_json(indent=2), encoding="utf-8")
 
 
+def _patch_meta_fields(project_id: str, updates: dict) -> None:
+    """局部更新 project.json（保留未知字段，不经模型校验）。
+    用于系列集数 episode_no 的平移/回填，避免 _write_meta 经模型 round-trip 丢字段。"""
+    mf = _project_dir(project_id) / "project.json"
+    if not mf.exists():
+        return
+    try:
+        data = json.loads(mf.read_text(encoding="utf-8-sig"))
+        data.update(updates)
+        mf.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[_patch_meta_fields {project_id}] {e}", flush=True)
+
+
+def _iter_series_metas(series_id: str):
+    """产出归属某系列的所有 project.json（dict）。"""
+    if not series_id:
+        return
+    root = _projects_root()
+    if not root.exists():
+        return
+    for e in root.iterdir():
+        mf = e / "project.json"
+        if not mf.is_file():
+            continue
+        try:
+            m = json.loads(mf.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        if m.get("series_id") == series_id:
+            yield m
+
+
+def _next_episode_no(series_id: str) -> int:
+    """新集编号 = 当前系列内最大 episode_no + 1（始终追加到最后；空白集保留为占位）。"""
+    if not series_id:
+        return 0
+    mx = 0
+    for m in _iter_series_metas(series_id):
+        try:
+            mx = max(mx, int(m.get("episode_no") or 0))
+        except Exception:
+            pass
+    return mx + 1
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=List[ProjectMeta])
@@ -120,7 +168,8 @@ async def create_project(req: CreateProjectRequest):
     meta = ProjectMeta(id=project_id, name=req.name, description=req.description,
                        created_at=now, updated_at=now, folder_id=req.folder_id,
                        series_id=req.series_id or "",
-                       chapter_ids=list(req.chapter_ids or []))
+                       chapter_ids=list(req.chapter_ids or []),
+                       episode_no=_next_episode_no(req.series_id or ""))
     _write_meta(meta)
     # Create subdirectories
     for sub in ("images", "audio", "video", "cache"):

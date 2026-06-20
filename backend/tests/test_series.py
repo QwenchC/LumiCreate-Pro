@@ -198,3 +198,143 @@ def test_standalone_project_uses_own_characters(isolated_app):
     p = client.post("/api/projects", json={"name": "独立"}).json()["id"]
     client.put(f"/api/projects/{p}/characters", json={"characters": [{"name": "独角"}]})
     assert [c["name"] for c in client.get(f"/api/projects/{p}/characters").json()["characters"]] == ["独角"]
+
+
+# ── v1.6.2 fix: 集数（episode_no）+ 删集策略（shift/blank）─────────────────────────
+
+def _mk_eps(client, sid, names):
+    """在系列里按序建若干集，返回 project_id 列表。"""
+    return [client.post("/api/projects",
+                        json={"name": n, "series_id": sid}).json()["id"] for n in names]
+
+
+def test_series_episode_numbering_and_order(isolated_app):
+    """新建集自动 1,2,3…；series/projects 返回按集数升序的完整 episodes（无空白）。"""
+    client = isolated_app["client"]
+    sid = client.post("/api/series", json={"name": "集数"}).json()["id"]
+    ids = _mk_eps(client, sid, ["甲", "乙", "丙"])
+    eps = client.get(f"/api/series/{sid}/projects").json()
+    assert eps["max_no"] == 3
+    assert [e["no"] for e in eps["episodes"]] == [1, 2, 3]
+    assert [e["project_id"] for e in eps["episodes"]] == ids
+    assert all(not e["blank"] for e in eps["episodes"])
+    # 项目 meta 也持久化了 episode_no
+    assert client.get(f"/api/projects/{ids[0]}").json()["episode_no"] == 1
+    assert client.get(f"/api/projects/{ids[2]}").json()["episode_no"] == 3
+
+
+def test_delete_episode_shift_renumbers(isolated_app):
+    """删中间集 + shift：后续集 -1，编号保持连续。"""
+    client = isolated_app["client"]
+    sid = client.post("/api/series", json={"name": "shift"}).json()["id"]
+    ids = _mk_eps(client, sid, ["甲", "乙", "丙"])
+    r = client.post(f"/api/series/{sid}/delete-episode",
+                    json={"project_id": ids[1], "strategy": "shift"})
+    assert r.status_code == 200, r.text
+    eps = r.json()
+    assert eps["max_no"] == 2
+    assert [e["no"] for e in eps["episodes"]] == [1, 2]
+    assert [e["project_id"] for e in eps["episodes"]] == [ids[0], ids[2]]
+    assert all(not e["blank"] for e in eps["episodes"])
+    # 原第3集（丙）现在是第2集
+    assert client.get(f"/api/projects/{ids[2]}").json()["episode_no"] == 2
+
+
+def test_delete_episode_blank_keeps_gap_and_new_appends(isolated_app):
+    """删中间集 + blank：保留空白集占位，后续不变；之后新建集追加到 max+1（不填空白）。"""
+    client = isolated_app["client"]
+    sid = client.post("/api/series", json={"name": "blank"}).json()["id"]
+    ids = _mk_eps(client, sid, ["甲", "乙", "丙"])
+    r = client.post(f"/api/series/{sid}/delete-episode",
+                    json={"project_id": ids[1], "strategy": "blank"})
+    eps = r.json()
+    assert eps["max_no"] == 3
+    assert [(e["no"], e["blank"]) for e in eps["episodes"]] == [(1, False), (2, True), (3, False)]
+    # 第3集（丙）仍是 3
+    assert client.get(f"/api/projects/{ids[2]}").json()["episode_no"] == 3
+    # 新建集 → 第4集（追加，不回填空白 2）
+    new = client.post("/api/projects", json={"name": "丁", "series_id": sid}).json()["id"]
+    assert client.get(f"/api/projects/{new}").json()["episode_no"] == 4
+    eps2 = client.get(f"/api/series/{sid}/projects").json()
+    assert [(e["no"], e["blank"]) for e in eps2["episodes"]] == \
+        [(1, False), (2, True), (3, False), (4, False)]
+
+
+def test_delete_last_episode_no_gap(isolated_app):
+    """删最后一集：直接缩短，不产生空白集。"""
+    client = isolated_app["client"]
+    sid = client.post("/api/series", json={"name": "last"}).json()["id"]
+    ids = _mk_eps(client, sid, ["甲", "乙", "丙"])
+    r = client.post(f"/api/series/{sid}/delete-episode",
+                    json={"project_id": ids[2], "strategy": "blank"})
+    eps = r.json()
+    assert eps["max_no"] == 2
+    assert [e["no"] for e in eps["episodes"]] == [1, 2]
+    assert all(not e["blank"] for e in eps["episodes"])
+
+
+def test_delete_blank_slot_removes_gap(isolated_app):
+    """删空白集占位：消除空缺，后续集 -1。"""
+    client = isolated_app["client"]
+    sid = client.post("/api/series", json={"name": "rmblank"}).json()["id"]
+    ids = _mk_eps(client, sid, ["甲", "乙", "丙"])
+    client.post(f"/api/series/{sid}/delete-episode",
+                json={"project_id": ids[1], "strategy": "blank"})   # 空白集在 2
+    r = client.post(f"/api/series/{sid}/delete-blank", json={"episode_no": 2})
+    assert r.status_code == 200, r.text
+    eps = r.json()
+    assert eps["max_no"] == 2
+    assert [e["project_id"] for e in eps["episodes"]] == [ids[0], ids[2]]
+    assert client.get(f"/api/projects/{ids[2]}").json()["episode_no"] == 2
+    # 占用集不是空白集 → 拒绝
+    assert client.post(f"/api/series/{sid}/delete-blank",
+                       json={"episode_no": 1}).status_code == 400
+
+
+def test_shift_delete_densifies_and_removes_preexisting_blank(isolated_app):
+    """shift = 保持连续编号：删中间集时把全系列重排为 1..N，连此前遗留的空白集一并消除。"""
+    client = isolated_app["client"]
+    sid = client.post("/api/series", json={"name": "致密"}).json()["id"]
+    ids = _mk_eps(client, sid, ["甲", "乙", "丙", "丁"])     # 1,2,3,4
+    # 先 blank 删乙 → 空白集在 2： 甲(1),[2空],丙(3),丁(4)
+    client.post(f"/api/series/{sid}/delete-episode",
+                json={"project_id": ids[1], "strategy": "blank"})
+    # 再 shift 删丙 → 期望整体重排连续：甲(1),丁(2)，无任何空白
+    r = client.post(f"/api/series/{sid}/delete-episode",
+                    json={"project_id": ids[2], "strategy": "shift"})
+    eps = r.json()
+    assert eps["max_no"] == 2
+    assert all(not e["blank"] for e in eps["episodes"])
+    assert [e["project_id"] for e in eps["episodes"]] == [ids[0], ids[3]]
+    assert client.get(f"/api/projects/{ids[3]}").json()["episode_no"] == 2
+
+
+def test_delete_blank_rejects_nonpositive_episode_no(isolated_app):
+    """delete-blank 的 episode_no 必须 >=1：传 0/负数被拒，且不腐蚀任何集号（CRITICAL 回归）。"""
+    client = isolated_app["client"]
+    sid = client.post("/api/series", json={"name": "防腐蚀"}).json()["id"]
+    ids = _mk_eps(client, sid, ["甲", "乙", "丙"])
+    assert client.post(f"/api/series/{sid}/delete-blank",
+                       json={"episode_no": 0}).status_code == 422
+    assert client.post(f"/api/series/{sid}/delete-blank",
+                       json={"episode_no": -1}).status_code == 422
+    # 集号完好无损
+    assert client.get(f"/api/projects/{ids[0]}").json()["episode_no"] == 1
+    assert client.get(f"/api/projects/{ids[1]}").json()["episode_no"] == 2
+    assert client.get(f"/api/projects/{ids[2]}").json()["episode_no"] == 3
+
+
+def test_chapter_usage_includes_episode_no(isolated_app):
+    """章节 used_by 带 episode_no + project_name，供「第n集：项目名」显示。"""
+    client = isolated_app["client"]
+    sid = client.post("/api/series", json={"name": "章节集"}).json()["id"]
+    c1 = client.post(f"/api/series/{sid}/chapters",
+                     json={"title": "序", "content": "内容X"}).json()["id"]
+    _mk_eps(client, sid, ["甲"])                       # 第1集（不引用章节）
+    p2 = client.post("/api/projects", json={
+        "name": "乙", "series_id": sid, "chapter_ids": [c1]}).json()["id"]   # 第2集引用 c1
+    chs = client.get(f"/api/series/{sid}/chapters").json()["chapters"]
+    used = next(c for c in chs if c["id"] == c1)["used_by"]
+    assert len(used) == 1
+    assert used[0]["episode_no"] == 2 and used[0]["project_name"] == "乙"
+    assert used[0]["project_id"] == p2

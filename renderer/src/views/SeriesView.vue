@@ -31,8 +31,8 @@
             <input class="chapter-title" v-model="ch.title" @click.stop
                    @change="saveChapter(ch)" placeholder="章节标题" />
             <span v-if="ch.used_by && ch.used_by.length" class="chapter-used"
-                  :title="'已用于：' + ch.used_by.map(u => u.project_name).join('、')">
-              已用于 {{ ch.used_by.map(u => u.project_name).join('、') }}
+                  :title="'已用于：' + ch.used_by.map(u => epLabel(u)).join('、')">
+              已用于 {{ ch.used_by.map(u => epLabel(u)).join('、') }}
             </span>
             <span class="chapter-len text-muted">{{ (ch.content || '').length }} 字</span>
             <button class="btn btn-ghost btn-xs" @click.stop="delChapter(ch)" title="删除章节">✕</button>
@@ -44,20 +44,37 @@
         </div>
       </section>
 
-      <!-- 右：本系列项目（集数） -->
+      <!-- 右：本系列项目 -->
       <section class="series-col projects-col">
-        <div class="col-head"><h3>🎦 本系列项目（集数）</h3></div>
-        <div v-if="!projects.length" class="empty-hint">还没有项目。点右上「＋ 新建本系列项目」创建第一集。</div>
-        <div v-for="p in projects" :key="p.id" class="proj-card" @click="openProject(p)">
-          <span class="sidebar-project-icon">🎦</span>
-          <span class="proj-name truncate">{{ p.name }}</span>
-          <span class="proj-time text-muted">{{ fmtTime(p.updated_at) }}</span>
+        <div class="col-head">
+          <h3>🎦 本系列项目</h3>
+          <button class="btn btn-secondary btn-xs" @click="sortAsc = !sortAsc"
+                  :title="sortAsc ? '当前正序（第1集在上），点击切换逆序' : '当前逆序（最新集在上），点击切换正序'">
+            {{ sortAsc ? '↑ 正序' : '↓ 逆序' }}
+          </button>
+        </div>
+        <div v-if="!episodes.length" class="empty-hint">还没有项目。点右上「＋ 新建本系列项目」创建第一集。</div>
+        <div v-for="e in displayedEpisodes" :key="e.no" class="proj-card"
+             :class="{ 'proj-blank': e.blank, 'proj-clickable': !e.blank }"
+             @click="openEpisode(e)">
+          <span class="ep-no">第{{ e.no }}集</span>
+          <template v-if="!e.blank">
+            <span class="proj-name truncate">：{{ e.project_name }}</span>
+            <span class="proj-time text-muted">{{ fmtTime(e.updated_at) }}</span>
+            <button class="btn btn-ghost btn-xs ep-del" @click.stop="askDeleteEpisode(e)"
+                    title="删除此集">✕</button>
+          </template>
+          <template v-else>
+            <span class="proj-name proj-blank-label">：（空白集 · 占位）</span>
+            <button class="btn btn-ghost btn-xs ep-del" @click.stop="removeBlank(e)"
+                    title="删除空白集（后续集 -1）">✕</button>
+          </template>
         </div>
       </section>
     </div>
 
     <!-- 新建本系列项目对话框 -->
-    <div v-if="newDialog.show" class="overlay" @click.self="newDialog.show = false">
+    <div v-if="newDialog.show" class="overlay" @click.self="!newDialog.creating && (newDialog.show = false)">
       <div class="dialog card" style="width:560px;max-width:calc(100vw - 40px)">
         <h3 class="dialog-title">＋ 新建本系列项目</h3>
         <div class="form-group">
@@ -74,8 +91,8 @@
             <span class="cp-title truncate">{{ ch.title || '(未命名章节)' }}</span>
             <span class="cp-len text-muted">{{ (ch.content || '').length }}字</span>
             <span v-if="ch.used_by && ch.used_by.length" class="cp-used"
-                  title="已被其它项目用过，避免重复选用">
-              ⚠ 已用于 {{ ch.used_by.map(u => u.project_name).join('、') }}
+                  title="已被其它集用过，避免重复选用">
+              ⚠ 已用于 {{ ch.used_by.map(u => epLabel(u)).join('、') }}
             </span>
           </div>
           <p class="field-hint">勾选的章节会按顺序拼接导入到该项目「文案创建」。已用于其它项目的章节标黄提示，避免误选。</p>
@@ -90,11 +107,35 @@
         </div>
       </div>
     </div>
+
+    <!-- 删除中间集：策略二选一对话框 -->
+    <div v-if="delDialog.show" class="overlay" @click.self="!delDialog.busy && (delDialog.show = false)">
+      <div class="dialog card" style="width:480px;max-width:calc(100vw - 40px)">
+        <h3 class="dialog-title">删除「第{{ delDialog.no }}集：{{ delDialog.name }}」</h3>
+        <p class="text-muted" style="font-size:13px;line-height:1.6;margin-bottom:12px">
+          这是<strong>中间集</strong>。删除后，后续各集的集号如何处理？
+        </p>
+        <div class="del-choices">
+          <button class="del-choice" :disabled="delDialog.busy" @click="confirmDeleteEpisode('shift')">
+            <b>① 删除并顺移</b>
+            <span>后续各集集号 -1，保持连续编号（第{{ delDialog.no + 1 }}集 → 第{{ delDialog.no }}集 …）</span>
+          </button>
+          <button class="del-choice" :disabled="delDialog.busy" @click="confirmDeleteEpisode('blank')">
+            <b>② 保留空白集</b>
+            <span>第{{ delDialog.no }}集留空占位，后续集号不变（适合之后重录补回此集）</span>
+          </button>
+        </div>
+        <div v-if="delDialog.error" class="error-banner">⚠ {{ delDialog.error }}</div>
+        <div class="dialog-actions">
+          <button class="btn btn-ghost" :disabled="delDialog.busy" @click="delDialog.show = false">取消</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { useTabsStore } from '../stores/tabs'
@@ -108,9 +149,19 @@ const projectStore = useProjectStore()
 
 const series   = reactive({ id: '', name: '', emoji: '📚' })
 const chapters = ref([])
-const projects = ref([])
+const episodes = ref([])          // 完整集序列（含空白集），来自后端 series/projects
+const maxNo    = ref(0)
+const sortAsc  = ref(true)        // true=正序(第1集在上)，false=逆序
 const editingId = ref(null)
 const newDialog = reactive({ show: false, name: '', picked: [], creating: false, error: '' })
+const delDialog = reactive({ show: false, no: 0, name: '', projectId: '', busy: false, error: '' })
+
+const displayedEpisodes = computed(() =>
+  sortAsc.value ? episodes.value : [...episodes.value].reverse())
+
+function epLabel(u) {
+  return u && u.episode_no ? `第${u.episode_no}集：${u.project_name}` : (u?.project_name || '')
+}
 
 const sid = () => route.params.id
 
@@ -132,7 +183,8 @@ async function load() {
   } catch (e) { console.warn('加载章节失败:', e?.message || e) }
   try {
     const pr = await axios.get(`${API}/series/${sid()}/projects`)
-    projects.value = pr.data.projects || []
+    episodes.value = pr.data.episodes || []
+    maxNo.value = pr.data.max_no || 0
   } catch (e) { console.warn('加载系列项目失败:', e?.message || e) }
 }
 
@@ -163,7 +215,7 @@ async function reloadChapters() {
 }
 
 function openNewProject() {
-  newDialog.name = `第 ${projects.value.length + 1} 集`
+  newDialog.name = `第 ${maxNo.value + 1} 集`
   newDialog.picked = []
   newDialog.error = ''
   newDialog.show = true
@@ -191,9 +243,63 @@ async function createSeriesProject() {
   }
 }
 
-function openProject(p) { tabsStore.openTab(p.id, p.name) }
+function openEpisode(e) {
+  if (e.blank || !e.project_id) return
+  tabsStore.openTab(e.project_id, e.project_name)
+}
+
+function askDeleteEpisode(e) {
+  if (e.blank) return
+  // 最后一集（最大集号）：直接删，无空缺，不需要选择策略
+  if (e.no >= maxNo.value) {
+    if (!confirm(`删除「第${e.no}集：${e.project_name}」？此操作不可撤销。`)) return
+    doDeleteEpisode(e.project_id, 'blank').then(ok => {
+      if (!ok) alert('删除失败，请重试（后端或网络错误）')
+    })
+    return
+  }
+  // 中间集：弹窗二选一
+  delDialog.no = e.no; delDialog.name = e.project_name
+  delDialog.projectId = e.project_id; delDialog.error = ''; delDialog.busy = false
+  delDialog.show = true
+}
+
+async function confirmDeleteEpisode(strategy) {
+  delDialog.busy = true; delDialog.error = ''
+  const ok = await doDeleteEpisode(delDialog.projectId, strategy)
+  delDialog.busy = false
+  if (ok) delDialog.show = false
+  else delDialog.error = '删除失败，请重试'
+}
+
+async function doDeleteEpisode(projectId, strategy) {
+  try {
+    await axios.post(`${API}/series/${sid()}/delete-episode`,
+      { project_id: projectId, strategy })
+    // 该集若已在标签打开，关掉
+    try { tabsStore.closeTab(projectId) } catch {}
+    await load()
+    try { await projectStore.fetchProjects() } catch {}
+    return true
+  } catch (e) {
+    console.warn('删除剧集失败:', e?.response?.data?.detail || e?.message || e)
+    return false
+  }
+}
+
+async function removeBlank(e) {
+  if (!confirm(`删除空白「第${e.no}集」占位？后续各集集号将 -1。`)) return
+  try {
+    await axios.post(`${API}/series/${sid()}/delete-blank`, { episode_no: e.no })
+    await load()
+    try { await projectStore.fetchProjects() } catch {}
+  } catch (err) {
+    alert('删除空白集失败: ' + (err?.response?.data?.detail || err?.message || err))
+  }
+}
+
 function goHome() { router.push('/') }
-function fmtTime(t) { try { return new Date(t).toLocaleString() } catch { return '' } }
+function fmtTime(t) { try { return t ? new Date(t).toLocaleString() : '' } catch { return '' } }
 
 watch(() => route.params.id, load)
 onMounted(load)
@@ -224,10 +330,26 @@ onMounted(load)
 .chapter-len { font-size: 11px; }
 .chapter-arrow { font-size: 10px; color: var(--text-muted, #999); }
 .chapter-content { width: 100%; box-sizing: border-box; border: none; border-top: 1px solid var(--border, #333); background: var(--bg-input, #1a1a1a); color: var(--text, #eee); padding: 8px 10px; font-size: 13px; line-height: 1.6; resize: vertical; }
-.proj-card { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--border, #333); border-radius: 8px; margin-bottom: 6px; cursor: pointer; }
-.proj-card:hover { border-color: var(--accent, #66b2ff); }
+.proj-card { display: flex; align-items: center; gap: 4px; padding: 9px 10px; border: 1px solid var(--border, #333); border-radius: 8px; margin-bottom: 6px; }
+.proj-card.proj-clickable { cursor: pointer; }
+.proj-card.proj-clickable:hover { border-color: var(--accent, #66b2ff); }
+.proj-card.proj-blank { border-style: dashed; opacity: 0.7; }
+.ep-no { font-size: 12px; font-weight: 700; color: var(--accent, #66b2ff); flex-shrink: 0; }
+.proj-card.proj-blank .ep-no { color: var(--text-muted, #999); }
 .proj-name { flex: 1; min-width: 0; font-size: 13px; }
-.proj-time { font-size: 11px; }
+.proj-blank-label { color: var(--text-muted, #999); font-style: italic; }
+.proj-time { font-size: 11px; flex-shrink: 0; }
+.ep-del { flex-shrink: 0; opacity: 0; }
+.proj-card:hover .ep-del { opacity: 0.7; }
+.ep-del:hover { opacity: 1 !important; color: var(--danger, #e5534b); }
+
+/* 删除剧集策略对话框 */
+.del-choices { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.del-choice { display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 10px 12px; border: 1px solid var(--border, #333); border-radius: 8px; background: var(--bg-input, #1a1a1a); color: var(--text, #eee); cursor: pointer; }
+.del-choice:hover:not(:disabled) { border-color: var(--accent, #66b2ff); background: rgba(102,178,255,.08); }
+.del-choice:disabled { opacity: 0.5; cursor: default; }
+.del-choice b { font-size: 13px; }
+.del-choice span { font-size: 11px; color: var(--text-muted, #999); }
 .chapter-pick { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border, #333); border-radius: 6px; margin-bottom: 5px; cursor: pointer; }
 .chapter-pick.picked { border-color: var(--accent, #66b2ff); background: rgba(102,178,255,.08); }
 .cp-title { flex: 1; min-width: 0; font-size: 13px; }
