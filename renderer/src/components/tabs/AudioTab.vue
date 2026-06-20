@@ -24,6 +24,13 @@
       </div>
     </div>
 
+    <!-- v1.6.2: 引擎提示 —— MSR / Seedance 无需在此生成音频 -->
+    <div v-if="!audioNoteDismissed" class="audio-engine-note">
+      <span>💡 提示：若该项目的视频用「<b>多图参考(MSR)</b>」或「<b>火山引擎 Seedance 2.0</b>」生成，
+        视频会自带/不依赖此处的音频，<b>无需在本页生成音频</b>。仅「LTX/i2v」「图片放映」需要在此生成台词/朗读语音。</span>
+      <button class="btn btn-ghost btn-xs" @click="dismissAudioNote">✕ 知道了</button>
+    </div>
+
     <!-- A1: 上次失败镜次提示 + 一键重试 -->
     <div v-if="lastErrorCount && !running" class="last-errors-banner">
       <span>⚠ 上次失败：{{ lastErrorCount }} 个片段（{{ lastErrorStage === 'audio' ? '音频' : lastErrorStage }}）</span>
@@ -350,6 +357,14 @@ const props = defineProps({ projectId: String })
 const emit  = defineEmits(['dirty', 'saved'])
 // ── state ──────────────────────────────────────────────────────────────────
 import { filterVoices, groupByGender } from '../../data/msedgeVoices'
+
+// v1.6.2: MSR/Seedance 无需在此生成音频的提示（可关闭，记忆）
+const audioNoteDismissed = ref(false)
+try { audioNoteDismissed.value = localStorage.getItem('lumi_audio_engine_note') === '1' } catch {}
+function dismissAudioNote() {
+  audioNoteDismissed.value = true
+  try { localStorage.setItem('lumi_audio_engine_note', '1') } catch {}
+}
 
 // settings.audio_engine.msedge_available_voices；空 = 未测过，不过滤
 const availableVoiceList = ref([])
@@ -1222,6 +1237,15 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* v1.6.2: 引擎提示条 */
+.audio-engine-note {
+  display:flex; align-items:center; gap:10px; margin:0 0 10px; padding:8px 12px;
+  font-size:12px; line-height:1.5; border-radius:6px;
+  background:rgba(102,178,255,.08); border:1px solid rgba(102,178,255,.28);
+  color:var(--text, #ddd);
+}
+.audio-engine-note b { color:var(--accent, #66b2ff); }
+.audio-engine-note > span { flex:1; }
 /* ── Reading mode ── */
 .reading-controls {
   display:flex; flex-wrap:wrap; align-items:center; gap:14px;

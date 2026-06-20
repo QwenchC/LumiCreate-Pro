@@ -16,6 +16,8 @@ from services.prompts import (
     MANUSCRIPT_SYSTEM,
     MANUSCRIPT_USER_TEMPLATE,
     SCENES_SYSTEM,
+    SMART_SCENES_SYSTEM,
+    SMART_SCENES_USER_TEMPLATE,
     SCENES_USER_TEMPLATE,
     CHARACTER_APPEARANCE_SYSTEM,
     CHARACTER_APPEARANCE_USER_TEMPLATE,
@@ -343,6 +345,125 @@ def _extract_json_array(text: str) -> Optional[list]:
         except json.JSONDecodeError:
             pass
     return None
+
+
+# ── v1.6.2: 智能分镜（导演式，分段多次续接）─────────────────────────────────────
+
+class SmartScenesRequest(BaseModel):
+    manuscript:    str
+    dialogue_mode: str = "mixed"
+    characters:    list = []
+
+
+def _split_manuscript_segments(text: str, target: int = 700) -> list:
+    """把文案按段落/句末切成 ~target 字的片段，让每段 LLM 调用都能丰富分镜、
+    不被单次输出上限逼着压缩描述。返回片段列表（至少 1 段）。"""
+    text = (text or "").strip()
+    if not text:
+        return []
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    segs: list = []
+    cur = ""
+
+    def _flush():
+        nonlocal cur
+        if cur.strip():
+            segs.append(cur.strip())
+        cur = ""
+
+    for p in paras:
+        if len(p) > target * 1.6:          # 段落本身过长 → 按句末标点二次切
+            for s in re.split(r"(?<=[。！？!?…\n])", p):
+                if cur and len(cur) + len(s) > target:
+                    _flush()
+                cur += s
+            _flush()
+        else:
+            if cur and len(cur) + len(p) > target:
+                _flush()
+            cur += ("\n" + p if cur else p)
+    _flush()
+    return segs or [text]
+
+
+@router.post("/generate-scenes-smart")
+async def generate_scenes_smart(req: SmartScenesRequest):
+    """导演式智能分镜：把文案分段、逐段续接生成电影感分镜，SSE 流式回传。
+    每段一次 LLM 调用（互带前情衔接），避免单次输出上限逼简化每镜描述。"""
+    cfg = load_settings().text_engine
+    chars = req.characters or []
+
+    lines = []
+    for c in chars:
+        if not isinstance(c, dict):
+            continue
+        name = (c.get("name") or "").strip()
+        if not name:
+            continue
+        role = (c.get("role") or "").strip()
+        lines.append(f"- {name}" + (f"（{role}）" if role else ""))
+    characters_hint = ("\n【主要角色参考】\n" + "\n".join(lines) + "\n") if lines else ""
+    mode_desc = DIALOGUE_MODE_DESC.get(req.dialogue_mode, DIALOGUE_MODE_DESC["mixed"])
+    dialogue_mode_hint = f"\n【对白模式】{mode_desc}\n"
+    known_names = [c.get("name", "") for c in chars
+                   if isinstance(c, dict) and c.get("name")]
+
+    def _detect(text: str) -> list:
+        return [n for n in known_names if n and n in text] if known_names else []
+
+    segments = _split_manuscript_segments(req.manuscript)
+
+    def _sse(obj: dict) -> str:
+        return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+    async def stream():
+        all_count = 0
+        last_desc = ""
+        for si, seg in enumerate(segments):
+            continuity = (
+                f"\n【前情衔接】前面已生成 {all_count} 个分镜，最后一镜画面是：{last_desc[:80]}。"
+                f"本段剧情紧接其后，请自然承接、不要重复已分内容。\n"
+            ) if all_count else ""
+            user_msg = SMART_SCENES_USER_TEMPLATE.format(
+                characters_hint=characters_hint, dialogue_mode_hint=dialogue_mode_hint,
+                continuity_hint=continuity, segment=seg, next_index=all_count + 1)
+            full = ""
+            try:
+                async for chunk in stream_chat(cfg, SMART_SCENES_SYSTEM, user_msg):
+                    full += chunk
+            except Exception as e:
+                yield _sse({"event": "segment_error", "segment": si + 1,
+                            "message": str(e)[:300]})
+                continue
+            raw = _extract_json_array(full) or []
+            batch = []
+            for s in raw:
+                if not isinstance(s, dict):
+                    continue
+                all_count += 1
+                desc = (s.get("description") or "").strip()
+                dlgs = s.get("dialogues") if isinstance(s.get("dialogues"), list) else []
+                scan = desc + " " + " ".join(
+                    ((d.get("text") or "") + " " + (d.get("character") or ""))
+                    for d in dlgs if isinstance(d, dict))
+                if desc:
+                    last_desc = desc
+                batch.append({
+                    "id": f"scene_{all_count:03d}", "index": all_count,
+                    "description": desc,
+                    "duration_estimate": float(s.get("duration_estimate", 6.0) or 6.0),
+                    "start_frame_prompt": s.get("start_frame_prompt", "") or "",
+                    "end_frame_prompt": s.get("end_frame_prompt", "") or "",
+                    "dialogues": dlgs,
+                    "_scene_characters": _detect(scan),
+                })
+            yield _sse({"event": "scenes", "scenes": batch, "segment": si + 1,
+                        "total_segments": len(segments), "total_scenes": all_count})
+        yield _sse({"event": "done", "total": all_count})
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ── Frame prompt generation ────────────────────────────────────────────────────

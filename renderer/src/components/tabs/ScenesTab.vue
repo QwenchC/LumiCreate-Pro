@@ -8,19 +8,19 @@
         <span class="scene-count text-muted">共 {{ scenes.length }} 个分镜</span>
       </div>
       <div class="toolbar-right">
-        <button class="btn btn-secondary btn-sm" :disabled="!manuscript || generating" @click="generateScenes">
+        <button class="btn btn-secondary btn-sm" :disabled="!manuscript || generating || smartGenerating" @click="generateScenes">
           {{ generating ? '生成中...' : '✨ 从文案自动生成分镜' }}
         </button>
-        <button class="btn btn-secondary btn-sm" :disabled="!manuscript" @click="openManualSplit">
-          ✂ 从文案手动生成分镜
+        <!-- v1.6.2: 智能分镜（导演式，多次续接，保证每镜描述完整不简化） -->
+        <button class="btn btn-primary btn-sm" :disabled="!manuscript || generating || smartGenerating"
+                @click="generateScenesSmart"
+                title="智能分镜：像导演一样理解剧情、用画面与镜头叙事、安排节奏（多次续接生成，避免为塞下全部而简化每镜描述）">
+          {{ smartGenerating ? `🎬 智能分镜 ${smartProgress}` : '🎬 智能分镜' }}
         </button>
-        <button
-          class="btn btn-secondary btn-sm"
-          :disabled="!scenes.length"
-          @click="rewriteDialoguesByMode"
-          :title="'保留所有分镜与提示词，仅按当前对白模式重新拆分每镜的台词（适合切换对白模式后同步）'"
-        >
-          ♻ 按对白模式重抽台词
+        <button v-if="smartGenerating" class="btn btn-danger btn-sm" @click="stopSmartGeneration"
+        >⏹ 中断</button>
+        <button class="btn btn-secondary btn-sm" :disabled="!manuscript || smartGenerating" @click="openManualSplit">
+          ✂ 从文案手动生成分镜
         </button>
         <button
           class="btn btn-secondary btn-sm"
@@ -49,20 +49,20 @@
           class="btn btn-danger btn-sm"
           @click="stopDetectCharacters"
         >⏹ 中断检测</button>
-        <button
-          class="btn btn-secondary btn-sm"
-          :disabled="!scenes.length || !manuscriptConfig.characters.length || taggingAll"
-          @click="tagAllSpeakers"
-          title="为所有分镜的每条台词指派说话人（AI 消解人称代词）→ 音色按说话人确定性映射"
-        >
-          {{ taggingAll ? `🎭 标注中 ${tagProgress}/${tagTotal}…` : '🎭 标注说话人' }}
-        </button>
-        <button
-          v-if="taggingAll"
-          class="btn btn-danger btn-sm"
-          @click="stopTagging"
-        >⏹ 中断标注</button>
         <button class="btn btn-secondary btn-sm" @click="addScene">+ 添加分镜</button>
+        <!-- v1.6.2: 图标按钮（省空间）—— 重抽台词 / 标注说话人，移到清空左边，hover 显文字 -->
+        <button class="btn btn-secondary btn-sm btn-icon-only"
+                :disabled="!scenes.length"
+                @click="rewriteDialoguesByMode"
+                title="按对白模式重抽台词（保留分镜与提示词，仅按当前对白模式重新拆分每镜台词）"
+        >♻</button>
+        <button class="btn btn-secondary btn-sm btn-icon-only"
+                :class="{ 'is-running': taggingAll }"
+                :disabled="!scenes.length || !manuscriptConfig.characters.length || taggingAll"
+                @click="tagAllSpeakers"
+                title="标注说话人（为每条台词指派说话人，AI 消解人称代词 → 音色按说话人确定性映射）"
+        ><template v-if="taggingAll">{{ tagProgress }}/{{ tagTotal }}</template><template v-else>🎭</template></button>
+        <button v-if="taggingAll" class="btn btn-danger btn-sm" @click="stopTagging" title="中断标注">⏹</button>
         <button
           class="btn btn-ghost btn-sm"
           :disabled="!scenes.length"
@@ -343,6 +343,9 @@ const manuscriptConfig = ref({ dialogue_mode: 'mixed', characters: [] })
 const isDirty          = ref(false)
 const saving           = ref(false)
 const generating         = ref(false)
+const smartGenerating    = ref(false)   // v1.6.2: 智能分镜进行中
+const smartProgress      = ref('')      // 智能分镜进度文本
+let   _smartAbort        = null
 const genError           = ref('')
 const expandedIdx        = ref(null)
 const generatingPrompts  = ref(false)
@@ -459,6 +462,67 @@ async function generateScenes() {
     genError.value = `分镜生成失败：${e.message}`
   } finally {
     generating.value = false
+  }
+}
+
+// v1.6.2: 智能分镜 —— 导演式、分段多次续接，SSE 渐进显示（避免单次输出上限逼简化每镜描述）
+function stopSmartGeneration() { try { _smartAbort?.abort() } catch {} }
+
+async function generateScenesSmart() {
+  if (!manuscript.value.trim() || smartGenerating.value) return
+  if (scenes.value.length &&
+      !confirm('智能分镜会重新生成全部分镜，覆盖现有分镜与提示词。确定继续？')) return
+  smartGenerating.value = true; genError.value = ''; smartProgress.value = '准备中…'
+  _smartAbort = new AbortController()
+  const acc = []
+  scenes.value = []
+  try {
+    const resp = await fetch(`${API}/text-engine/generate-scenes-smart`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      signal: _smartAbort.signal,
+      body: JSON.stringify({
+        manuscript:    manuscript.value,
+        dialogue_mode: manuscriptConfig.value.dialogue_mode,
+        characters:    manuscriptConfig.value.characters,
+      }),
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || ('HTTP ' + resp.status))
+    }
+    const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = ''
+    while (true) {
+      if (_smartAbort?.signal.aborted) { try { reader.cancel() } catch {} ; break }
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') continue
+        let ev; try { ev = JSON.parse(raw) } catch { continue }
+        if (ev.event === 'scenes') {
+          for (const s of (ev.scenes || [])) {
+            acc.push({ ...s, _scene_characters: s._scene_characters || [] })
+          }
+          scenes.value = acc.slice()       // 渐进显示已生成的分镜
+          smartProgress.value = `段 ${ev.segment}/${ev.total_segments} · ${ev.total_scenes} 镜`
+          if (expandedIdx.value === null && acc.length) expandedIdx.value = 0
+        } else if (ev.event === 'segment_error') {
+          console.warn('智能分镜某段失败：', ev.message)
+        } else if (ev.event === 'done') {
+          smartProgress.value = `完成 · ${ev.total} 镜`
+        }
+      }
+    }
+    if (acc.length) { isDirty.value = true; emit('dirty') }
+    else if (!_smartAbort?.signal.aborted) genError.value = '智能分镜未产出分镜，请检查文案或文本引擎设置'
+  } catch (e) {
+    if (e.name !== 'AbortError') genError.value = `智能分镜失败：${e.message}`
+  } finally {
+    smartGenerating.value = false
+    _smartAbort = null
   }
 }
 
@@ -1087,7 +1151,10 @@ function onGlobalSave(e) { if (e?.detail?.projectId && e.detail.projectId !== pr
   background: var(--color-surface);
 }
 .toolbar-left  { display: flex; align-items: center; gap: 10px; }
-.toolbar-right { display: flex; align-items: center; gap: 8px; }
+.toolbar-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+/* v1.6.2: 无文字图标按钮（hover 显 title） */
+.btn-icon-only { padding: 5px 9px; min-width: 34px; font-size: 15px; line-height: 1; }
+.btn-icon-only.is-running { font-size: 12px; }
 .toolbar-title { font-size: 15px; font-weight: 700; }
 .scene-count   { font-size: 12px; }
 
