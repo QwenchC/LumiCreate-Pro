@@ -1570,6 +1570,7 @@ async function _msrPromptBody(s) {
     dialogues:    s.dialogues || [],
     scene_index:  s.index,
     total_scenes: scenes.value.length,
+    dialogue_mode: dialogueMode.value,   // v1.6.2: 按对白模式差异化动作叙述
   }
 }
 
@@ -1807,6 +1808,7 @@ const promptVisible   = ref({})   // scene_id → bool (expanded)
 let _promptSaveTimer  = null
 // manuscript + characters for LLM video prompt
 const manuscript             = ref('')
+const dialogueMode           = ref('mixed')   // v1.6.2: 对白模式 → MSR 提示词差异化指导
 const allCharacters          = ref([])   // [{name, role, appearance, traits}]
 // per-scene LLM generating state
 const generatingVideoPromptId   = ref(null)   // scene.id being generated
@@ -1983,6 +1985,7 @@ async function loadData() {
     try {
       const msRes = await axios.get(`${API}/projects/${props.projectId}/manuscript`)
       manuscript.value = msRes.data?.content || ''
+      dialogueMode.value = msRes.data?.config?.dialogue_mode || 'mixed'
     } catch {}
     try {
       const chRes = await axios.get(`${API}/projects/${props.projectId}/characters`)

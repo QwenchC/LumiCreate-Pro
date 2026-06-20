@@ -43,6 +43,7 @@ from services.prompts import (
     BG_SCENE_PROMPT_USER_TEMPLATE,
     MSR_VIDEO_PROMPT_SYSTEM,
     MSR_VIDEO_PROMPT_USER_TEMPLATE,
+    MSR_VIDEO_MODE_GUIDANCE,
 )
 
 router = APIRouter()
@@ -1038,13 +1039,17 @@ def _msr_dialogues_block(dialogues: list) -> str:
 
 async def _gen_msr_prompt(characters: list, background: str, description: str,
                           dialogues: list, scene_index: int = 0,
-                          total_scenes: int = 0) -> str:
+                          total_scenes: int = 0, dialogue_mode: str = "mixed") -> str:
+    # v1.6.2: 按对白模式注入差异化「动作叙述」指导（纯旁白/纯对话/混合/纯朗读）
+    mode_guidance = MSR_VIDEO_MODE_GUIDANCE.get(
+        (dialogue_mode or "mixed"), MSR_VIDEO_MODE_GUIDANCE["mixed"])
     user_msg = MSR_VIDEO_PROMPT_USER_TEMPLATE.format(
         ref_block=_msr_ref_block(characters),
         background=(background or "").strip() or "（沿用画面描述中的环境，纯场景无人物）",
         scene_index=scene_index or 0, total_scenes=total_scenes or 0,
         description=(description or "").strip() or "（无描述）",
         dialogues_block=_msr_dialogues_block(dialogues),
+        mode_guidance=mode_guidance,
     )
     cfg = load_settings().text_engine
     full = ""
@@ -1060,13 +1065,15 @@ class MsrVideoPromptRequest(BaseModel):
     dialogues:    list = []
     scene_index:  int = 0
     total_scenes: int = 0
+    dialogue_mode: str = "mixed"  # narration|dialogue|mixed|reading → 差异化动作叙述指导
 
 
 @router.post("/generate-msr-video-prompt")
 async def generate_msr_video_prompt(req: MsrVideoPromptRequest):
     """生成 MSR 多图参考视频提示词（参考图N + 动作叙述格式）。返回 {prompt}。"""
     p = await _gen_msr_prompt(req.characters, req.background, req.description,
-                              req.dialogues, req.scene_index, req.total_scenes)
+                              req.dialogues, req.scene_index, req.total_scenes,
+                              req.dialogue_mode)
     return {"prompt": p}
 
 
@@ -1074,6 +1081,7 @@ class MsrVideoPromptsBatchRequest(BaseModel):
     scenes:       list[dict] = []    # [{scene_id, characters, background, description, dialogues, scene_index}]
     total_scenes: int = 0
     concurrency:  int = 0
+    dialogue_mode: str = "mixed"     # 项目级对白模式（每镜可被 scene 内 dialogue_mode 覆盖）
 
 
 @router.post("/generate-msr-video-prompts-batch")
@@ -1087,6 +1095,7 @@ async def generate_msr_video_prompts_batch(req: MsrVideoPromptsBatchRequest):
                 s.get("characters") or [], s.get("background", ""),
                 s.get("description", ""), s.get("dialogues") or [],
                 s.get("scene_index", 0), req.total_scenes,
+                s.get("dialogue_mode") or req.dialogue_mode,
             )
             return {"scene_id": s.get("scene_id", ""), "prompt": p}
 

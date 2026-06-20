@@ -132,3 +132,51 @@ def test_msr_video_prompts_batch(isolated_app, monkeypatch):
     evs = _drain_sse(r.text)
     res = [e for e in evs if e.get("event") == "result"]
     assert res and res[0]["scene_id"] == "s1" and "参考图1" in res[0]["prompt"]
+
+
+# ── v1.6.2: MSR 提示词按对白模式差异化 ────────────────────────────────────────
+
+def test_msr_prompt_injects_per_mode_guidance(isolated_app, monkeypatch):
+    """每种对白模式 → MSR 用户提示词注入对应的「动作叙述」指导块。"""
+    import routers.text_engine as te
+    captured = {}
+
+    async def _fake_stream(cfg, system, user):
+        captured["user"] = user
+        yield "参考图1：RN，男人，x\n参考图2（场景）：街道\n\n动作叙述。"
+
+    monkeypatch.setattr(te, "stream_chat", _fake_stream)
+    client = isolated_app["client"]
+    cases = [("narration", "纯旁白"), ("dialogue", "纯对话"),
+             ("reading", "纯朗读"), ("mixed", "混合")]
+    for mode, marker in cases:
+        r = client.post("/api/text-engine/generate-msr-video-prompt", json={
+            "characters": [{"name": "RN", "appearance": "x"}], "background": "街道",
+            "description": "d", "dialogues": [], "dialogue_mode": mode,
+        })
+        assert r.status_code == 200, r.text
+        assert marker in captured["user"], (mode, captured["user"][-300:])
+    # 未知/缺省 → 回退混合
+    r = client.post("/api/text-engine/generate-msr-video-prompt", json={
+        "characters": [{"name": "RN", "appearance": "x"}], "description": "d"})
+    assert r.status_code == 200
+    assert "混合" in captured["user"]
+
+
+def test_msr_batch_threads_dialogue_mode(isolated_app, monkeypatch):
+    import routers.text_engine as te
+    seen = []
+
+    async def _fake_stream(cfg, system, user):
+        seen.append(user)
+        yield "参考图1（场景）：街\n\n动作。"
+
+    monkeypatch.setattr(te, "stream_chat", _fake_stream)
+    client = isolated_app["client"]
+    r = client.post("/api/text-engine/generate-msr-video-prompts-batch", json={
+        "scenes": [{"scene_id": "s1", "characters": [], "background": "街",
+                    "description": "d", "dialogues": []}],
+        "dialogue_mode": "reading", "total_scenes": 1,
+    })
+    assert r.status_code == 200, r.text
+    assert any("纯朗读" in u for u in seen)
