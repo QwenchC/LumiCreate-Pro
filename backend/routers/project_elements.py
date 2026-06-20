@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 from pathlib import Path
 from typing import Optional
@@ -52,8 +53,21 @@ class ElementCopy(BaseModel):
     target_folder_id: Optional[int] = None
 
 
+def _series_id_for(pid: str) -> str:
+    """项目归属的系列 id（空串表示独立项目）。"""
+    try:
+        f = Path(load_settings().projects_dir) / pid / "project.json"
+        if f.exists():
+            return (json.loads(f.read_text(encoding="utf-8-sig")).get("series_id") or "")
+    except Exception:
+        pass
+    return ""
+
+
 def _scope_for(pid: str) -> str:
-    return f"project:{pid}"
+    # v1.6.2: 系列项目共用系列级元素库；独立项目仍用项目级
+    sid = _series_id_for(pid)
+    return f"series:{sid}" if sid else f"project:{pid}"
 
 
 def _verify_project(pid: str) -> None:
@@ -178,10 +192,11 @@ async def copy_element(project_id: str, element_id: int, req: ElementCopy):
 @router.get("/file/{element_id}")
 async def serve_element_file(project_id: str, element_id: int):
     _verify_project(project_id)
-    elem = repo.get_element(_scope_for(project_id), element_id)
+    scope = _scope_for(project_id)
+    elem = repo.get_element(scope, element_id)
     if elem is None:
         raise HTTPException(status_code=404, detail="element not found")
-    proot = Path(load_settings().projects_dir) / project_id / "elements"
+    proot = repo.scope_root(scope)   # 项目级或系列级（v1.6.2）由 scope 决定
     full = proot / elem["file_path"]
     if not full.is_file():
         raise HTTPException(status_code=404, detail="file missing on disk")

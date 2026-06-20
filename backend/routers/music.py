@@ -44,6 +44,23 @@ def _safe_filename(name: str) -> str:
     return out or "track"
 
 
+def _library_key(project_id: str) -> str:
+    """v1.6.2: 音乐库归属键。系列项目 → 'series:{sid}'（各集共用一份音乐库）；
+    独立项目 → 原样 project_id。空 project_id 原样返回（仅入全局库）。"""
+    pid = (project_id or "").strip()
+    if not pid:
+        return ""
+    try:
+        f = Path(load_settings().projects_dir) / pid / "project.json"
+        if f.exists():
+            sid = json.loads(f.read_text(encoding="utf-8-sig")).get("series_id") or ""
+            if sid:
+                return f"series:{sid}"
+    except Exception:
+        pass
+    return pid
+
+
 # ── Schemas ────────────────────────────────────────────────────────────────────
 
 
@@ -126,10 +143,11 @@ async def list_tracks(project_id: str = "", limit: int = 200):
     conn = get_global_music_conn()
     limit = max(1, min(int(limit), 1000))
     if project_id:
+        key = _library_key(project_id)
         rows = conn.execute(
             "SELECT * FROM tracks WHERE project_id = ? "
             "ORDER BY created_at DESC LIMIT ?",
-            (project_id, limit),
+            (key, limit),
         ).fetchall()
     else:
         rows = conn.execute(
@@ -339,7 +357,7 @@ async def music_generate_stream(req: MusicGenerateRequest):
                             req.name.strip() or track_label,
                             rel,
                             event.get("mime") or "audio/mpeg",
-                            req.project_id,
+                            _library_key(req.project_id),
                             int(seed_used or 0),
                             int(req.duration_seconds),
                             int(req.bpm),

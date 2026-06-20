@@ -109,6 +109,8 @@ def isolated_app(tmp_path, monkeypatch):
         "services.db", "services.project_repo", "services.project_migrate",
         "services.task_runner", "services.task_repo",
         "services.engine_adapter", "services.comfyui_precheck",
+        "services.elements_repo",    # v1.6.2 系列级元素库隔离
+        "routers.project_elements", "routers.elements",   # v1.6.2 元素 scope 解析隔离
         "routers.projects", "routers.image_engine", "routers.video_engine",
         "routers.audio_engine", "routers.subtitle_engine",
         "routers.orchestrator", "routers.task_history", "routers.templates",

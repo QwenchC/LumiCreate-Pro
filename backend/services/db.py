@@ -476,6 +476,45 @@ def global_elements_root() -> Path:
     return p
 
 
+# ── 系列连载（v1.6.2）：系列级元素库 ──────────────────────────────────────────────
+# 同一系列下的项目【共用一份元素库】。存储在 <projects_dir>/_series/<sid>/ 内，
+# 与项目级元素库（<project>/elements/）结构相同，只是 scope 解析到系列目录。
+# schema 复用全局元素库（element_folders + elements）。
+
+def _series_elements_path(sid: str) -> Path:
+    return Path(load_settings().projects_dir) / "_series" / sid / "elements.sqlite"
+
+
+def get_series_elements_conn(sid: str) -> sqlite3.Connection:
+    """系列级元素库连接（同进程单例，按 sid 缓存）。"""
+    key = f"__series_elements__:{sid}"
+    with _CONN_LOCK:
+        c = _CONNS.get(key)
+        if c is not None:
+            return c
+        c = _make_conn(_series_elements_path(sid))
+        _ensure_global_schema(c)   # element_folders + elements（与全局元素库同 schema）
+        _CONNS[key] = c
+        return c
+
+
+def series_elements_root(sid: str) -> Path:
+    """系列级元素的文件存储根目录。"""
+    p = Path(load_settings().projects_dir) / "_series" / sid / "elements"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def close_series_conns(sid: str) -> None:
+    """关闭某系列缓存的连接（删除系列前调用，避免 Windows 文件占用）。"""
+    key = f"__series_elements__:{sid}"
+    with _CONN_LOCK:
+        c = _CONNS.pop(key, None)
+    if c is not None:
+        try: c.close()
+        except Exception: pass
+
+
 @contextmanager
 def global_elements_db() -> Iterator[sqlite3.Connection]:
     conn = get_global_elements_conn()

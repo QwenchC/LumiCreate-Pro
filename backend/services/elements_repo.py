@@ -24,6 +24,7 @@ from typing import Optional
 from services.db import (
     get_global_elements_conn, global_elements_db, global_elements_root,
     project_db, get_conn as _get_project_conn,
+    get_series_elements_conn, series_elements_root,
 )
 from config import load_settings
 
@@ -42,7 +43,16 @@ def _resolve_scope(scope: str) -> tuple[sqlite3.Connection, Path, str]:
         proot = Path(load_settings().projects_dir) / pid / "elements"
         proot.mkdir(parents=True, exist_ok=True)
         return conn, proot, scope
+    if scope.startswith("series:"):
+        # v1.6.2: 系列级元素库（同系列各集共用）
+        sid = scope[len("series:"):]
+        return get_series_elements_conn(sid), series_elements_root(sid), scope
     raise ValueError(f"unknown scope: {scope}")
+
+
+def scope_root(scope: str) -> Path:
+    """返回某 scope 的元素文件根目录（供文件服务端点用，避免重复推算路径）。"""
+    return _resolve_scope(scope)[1]
 
 
 def _commit_scope(scope: str) -> None:
@@ -60,6 +70,11 @@ def _commit_scope(scope: str) -> None:
     elif scope.startswith("project:"):
         try:
             _get_project_conn(scope[len("project:"):]).commit()
+        except Exception:
+            pass
+    elif scope.startswith("series:"):
+        try:
+            get_series_elements_conn(scope[len("series:"):]).commit()
         except Exception:
             pass
 

@@ -165,6 +165,12 @@ async def delete_series(sid: str):
         if meta.get("series_id") == sid:
             raise HTTPException(
                 409, detail="该系列下仍有项目，请先移出/删除这些项目再删除系列")
+    # 先关闭系列级元素库连接，避免 Windows 上文件被占用导致删除失败
+    try:
+        from services.db import close_series_conns
+        close_series_conns(sid)
+    except Exception:
+        pass
     shutil.rmtree(_series_dir(sid), ignore_errors=True)
 
 

@@ -100,6 +100,65 @@ def test_series_shares_portraits_across_projects(isolated_app):
         f"/api/projects/{b}/characters/小明/portraits/file/{fn}").status_code == 200
 
 
+def test_series_shares_elements_across_projects(isolated_app):
+    """同系列共用【项目级元素库】：A 上传元素，B 立即在自己的元素库里看到。"""
+    import base64
+    client = isolated_app["client"]
+    sid = client.post("/api/series", json={"name": "连载元素"}).json()["id"]
+    a = client.post("/api/projects", json={"name": "A集", "series_id": sid}).json()["id"]
+    b = client.post("/api/projects", json={"name": "B集", "series_id": sid}).json()["id"]
+
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 64).decode()
+    up = client.post(f"/api/projects/{a}/elements/", json={
+        "name": "道具A", "filename": "propA.png", "mime": "image/png", "data": png})
+    assert up.status_code == 200, up.text
+
+    # B 在自己的元素库里看到同一元素（共享系列库）
+    items = client.get(f"/api/projects/{b}/elements/?recursive=true").json()["elements"]
+    assert any(e["name"] == "道具A" for e in items)
+    # 文件本体也可由 B 取回
+    eid = next(e["id"] for e in items if e["name"] == "道具A")
+    assert client.get(f"/api/projects/{b}/elements/file/{eid}").status_code == 200
+
+
+def test_standalone_project_elements_not_shared(isolated_app):
+    """独立项目元素库不受系列共享影响（仍各自独立）。"""
+    import base64
+    client = isolated_app["client"]
+    p1 = client.post("/api/projects", json={"name": "独A"}).json()["id"]
+    p2 = client.post("/api/projects", json={"name": "独B"}).json()["id"]
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 64).decode()
+    client.post(f"/api/projects/{p1}/elements/", json={
+        "name": "私有道具", "filename": "x.png", "mime": "image/png", "data": png})
+    items2 = client.get(f"/api/projects/{p2}/elements/?recursive=true").json()["elements"]
+    assert not any(e["name"] == "私有道具" for e in items2)
+
+
+def test_series_shares_music_library_across_projects(isolated_app):
+    """同系列共用【音乐库】：以系列键入库的曲目，A/B 两集都列得到；独立项目列不到。"""
+    from services.db import get_global_music_conn, global_music_root
+    client = isolated_app["client"]
+    sid = client.post("/api/series", json={"name": "连载音乐"}).json()["id"]
+    a = client.post("/api/projects", json={"name": "A集", "series_id": sid}).json()["id"]
+    b = client.post("/api/projects", json={"name": "B集", "series_id": sid}).json()["id"]
+    solo = client.post("/api/projects", json={"name": "独立"}).json()["id"]
+
+    # 直接以系列键写入一首曲目（生成走 ComfyUI，单测里直接入库验证列举过滤）
+    (global_music_root() / "song.mp3").write_bytes(b"\x00" * 2048)
+    conn = get_global_music_conn()
+    conn.execute(
+        "INSERT INTO tracks(name, file_path, project_id, bytes, created_at) "
+        "VALUES(?,?,?,?,?)",
+        ("片头曲", "song.mp3", f"series:{sid}", 2048, "2024-01-01T00:00:00Z"))
+    conn.commit()
+
+    names_a = [t["name"] for t in client.get(f"/api/music/tracks?project_id={a}").json()["tracks"]]
+    names_b = [t["name"] for t in client.get(f"/api/music/tracks?project_id={b}").json()["tracks"]]
+    names_solo = [t["name"] for t in client.get(f"/api/music/tracks?project_id={solo}").json()["tracks"]]
+    assert "片头曲" in names_a and "片头曲" in names_b
+    assert "片头曲" not in names_solo
+
+
 def test_series_delete_blocked_when_projects_exist(isolated_app):
     client = isolated_app["client"]
     sid = client.post("/api/series", json={"name": "连载C"}).json()["id"]
