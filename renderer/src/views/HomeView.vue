@@ -50,6 +50,30 @@
               </div>
             </div>
           </div>
+
+          <!-- v1.6.2: 系列连载（后端实体，点击进专属页：章节文案 + 共享角色） -->
+          <div class="series-section">
+            <div class="series-section-title">
+              📚 系列连载
+              <span class="series-section-hint">共用角色/立绘</span>
+            </div>
+            <div
+              v-for="s in seriesList"
+              :key="s.id"
+              class="folder-item series-item"
+              :title="s.name + '（系列连载 · 点击进入）'"
+              @click="openSeries(s)"
+            >
+              <span class="folder-emoji">{{ s.emoji || '📚' }}</span>
+              <span class="folder-name truncate">{{ s.name }}</span>
+              <span class="series-tag">连载</span>
+              <div class="folder-actions" @click.stop>
+                <button class="folder-action-btn danger" title="删除系列（需先清空其项目）"
+                        @click.stop="confirmDeleteSeries(s)">✕</button>
+              </div>
+            </div>
+            <div v-if="!seriesList.length" class="sidebar-project-empty">还没有连载系列</div>
+          </div>
         </template>
         <!-- Collapsed: emoji icons only -->
         <template v-else>
@@ -62,11 +86,19 @@
               :title="folder.name"
               @click="activeFolder = folder.id"
             >{{ folder.emoji }}</div>
+            <div v-if="seriesList.length" class="collapsed-divider"></div>
+            <div
+              v-for="s in seriesList"
+              :key="s.id"
+              class="folder-icon-pill series-pill"
+              :title="s.name + '（系列连载）'"
+              @click="openSeries(s)"
+            >{{ s.emoji || '📚' }}</div>
           </div>
         </template>
       </nav>
       <button v-if="!sidebarCollapsed" class="add-folder-btn" @click="openCreateFolderDialog">
-        + 新建文件夹
+        + 新建文件夹 / 系列连载
       </button>
 
       <!-- B3: 模板区 -->
@@ -259,6 +291,21 @@
       <div v-if="showFolderDialog" class="overlay" @click.self="closeFolderDialog">
         <div class="dialog card">
           <h3 class="dialog-title">{{ showFolderDialog === 'create' ? '新建文件夹' : '重命名文件夹' }}</h3>
+          <div v-if="showFolderDialog === 'create'" class="form-group">
+            <label>类型</label>
+            <div class="ftype-picker">
+              <button class="ftype-btn" :class="{ selected: folderType === 'normal' }"
+                      @click="folderType = 'normal'">
+                📁 普通文件夹
+                <span class="ftype-desc">仅用于归类项目</span>
+              </button>
+              <button class="ftype-btn" :class="{ selected: folderType === 'series' }"
+                      @click="folderType = 'series'; folderEmoji = (folderEmoji==='📁' ? '📚' : folderEmoji)">
+                📚 系列连载
+                <span class="ftype-desc">各集共用角色/立绘 + 章节文案</span>
+              </button>
+            </div>
+          </div>
           <div class="form-group">
             <label>图标</label>
             <div class="emoji-picker">
@@ -272,12 +319,18 @@
             </div>
           </div>
           <div class="form-group">
-            <label>文件夹名称 <span class="required">*</span></label>
-            <input v-model="folderName" class="input" placeholder="例：短视频项目" @keyup.enter="submitFolderDialog" />
+            <label>{{ folderType === 'series' && showFolderDialog === 'create' ? '系列名称' : '文件夹名称' }} <span class="required">*</span></label>
+            <input v-model="folderName" class="input"
+                   :placeholder="folderType === 'series' && showFolderDialog === 'create' ? '例：我的连载剧 第一季' : '例：短视频项目'"
+                   @keyup.enter="submitFolderDialog" />
+            <p v-if="folderType === 'series' && showFolderDialog === 'create'" class="field-hint"
+               style="margin-top:6px;font-size:11px;color:var(--color-text-muted);opacity:0.8">
+              创建后将进入「系列专属页」：在那里管理章节文案、新建各集项目；同系列各集自动共用角色与立绘。
+            </p>
           </div>
           <div class="dialog-actions">
-            <button class="btn btn-primary" :disabled="!folderName.trim()" @click="submitFolderDialog">
-              {{ showFolderDialog === 'create' ? '创建' : '保存' }}
+            <button class="btn btn-primary" :disabled="!folderName.trim() || creatingSeries" @click="submitFolderDialog">
+              {{ creatingSeries ? '创建中…' : (showFolderDialog === 'create' ? '创建' : '保存') }}
             </button>
             <button class="btn btn-ghost" @click="closeFolderDialog">取消</button>
           </div>
@@ -432,11 +485,14 @@ const currentFolder = computed(() =>
 const showFolderDialog = ref(null) // 'create' | 'rename'
 const folderName = ref('')
 const folderEmoji = ref('📁')
+const folderType = ref('normal')   // v1.6.2: 'normal' | 'series'
+const creatingSeries = ref(false)
 const renameFolderTarget = ref(null)
 
 function openCreateFolderDialog() {
   folderName.value = ''
   folderEmoji.value = '📁'
+  folderType.value = 'normal'
   renameFolderTarget.value = null
   showFolderDialog.value = 'create'
 }
@@ -452,11 +508,34 @@ function closeFolderDialog() {
   showFolderDialog.value = null
   folderName.value = ''
   folderEmoji.value = '📁'
+  folderType.value = 'normal'
   renameFolderTarget.value = null
 }
 
-function submitFolderDialog() {
+async function submitFolderDialog() {
   if (!folderName.value.trim()) return
+  // v1.6.2: 系列连载 → 创建后端系列实体，进入专属页
+  if (showFolderDialog.value === 'create' && folderType.value === 'series') {
+    if (creatingSeries.value) return
+    creatingSeries.value = true
+    try {
+      const r = await fetch('http://127.0.0.1:18520/api/series', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: folderName.value.trim(), emoji: folderEmoji.value || '📚' }),
+      })
+      if (!r.ok) throw new Error(await r.text())
+      const s = await r.json()
+      await loadSeries()
+      closeFolderDialog()
+      router.push(`/series/${s.id}`)
+    } catch (e) {
+      alert('创建系列失败: ' + (e?.message || e))
+    } finally {
+      creatingSeries.value = false
+    }
+    return
+  }
   if (showFolderDialog.value === 'create') {
     const newFolder = {
       id: `folder_${Date.now()}`,
@@ -510,6 +589,33 @@ async function doDeleteFolder() {
   saveFolders()
   if (activeFolder.value === folderId) activeFolder.value = 'default'
   deleteFolderTarget.value = null
+}
+
+// ── v1.6.2: 系列连载 ──────────────────────────────────────────────────────────────
+
+const seriesList = ref([])
+
+async function loadSeries() {
+  try {
+    const r = await fetch('http://127.0.0.1:18520/api/series')
+    if (r.ok) seriesList.value = await r.json()
+  } catch {}
+}
+
+function openSeries(s) {
+  router.push(`/series/${s.id}`)
+}
+
+async function confirmDeleteSeries(s) {
+  if (!confirm(`删除系列「${s.name}」？\n（仅当该系列下没有项目时可删除；共享角色池也会一并清除）`)) return
+  try {
+    const r = await fetch(`http://127.0.0.1:18520/api/series/${s.id}`, { method: 'DELETE' })
+    if (r.status === 409) { alert('该系列下仍有项目，请先删除/移出这些项目再删除系列。'); return }
+    if (!r.ok && r.status !== 204) throw new Error(await r.text())
+    await loadSeries()
+  } catch (e) {
+    alert('删除系列失败: ' + (e?.message || e))
+  }
 }
 
 // ── Project state ──────────────────────────────────────────────────────────────
@@ -710,6 +816,7 @@ onMounted(async () => {
   await store.fetchProjects()
   syncFoldersFromProjects()
   await reloadTemplates()
+  await loadSeries()
   document.addEventListener('click', onDocClick)
   window.addEventListener('keydown', onHomeKey)
   window.electronAPI?.onMenuNewProject(() => { showCreateDialog.value = true })
@@ -857,6 +964,36 @@ onUnmounted(() => {
 }
 .folder-action-btn:hover { background: var(--color-border); color: var(--color-text); }
 .folder-action-btn.danger:hover { background: var(--color-error); color: #fff; }
+
+/* v1.6.2: 系列连载区 */
+.series-section { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--color-border); }
+.series-section-title {
+  font-size: 11px; color: var(--color-text-muted); padding: 2px 10px 6px;
+  display: flex; align-items: baseline; gap: 6px;
+  text-transform: none; letter-spacing: 0.3px;
+}
+.series-section-hint { font-size: 10px; opacity: 0.6; }
+.series-item .folder-emoji { font-size: 15px; }
+.series-tag {
+  font-size: 10px; padding: 1px 6px; border-radius: 9px; flex-shrink: 0;
+  background: rgba(178,102,255,.15); color: #b794f4;
+}
+.series-item:hover .series-tag { background: rgba(178,102,255,.25); }
+.series-pill { box-shadow: inset 2px 0 0 #b794f4; }
+.collapsed-divider { width: 24px; height: 1px; background: var(--color-border); margin: 6px 0; }
+
+/* v1.6.2: 文件夹类型选择 */
+.ftype-picker { display: flex; gap: 8px; }
+.ftype-btn {
+  flex: 1; display: flex; flex-direction: column; gap: 3px;
+  padding: 10px 8px; border-radius: var(--radius);
+  border: 2px solid var(--color-border); background: var(--color-surface-2);
+  cursor: pointer; font-size: 13px; color: var(--color-text); text-align: left;
+  transition: border-color var(--transition), background var(--transition);
+}
+.ftype-btn:hover { border-color: var(--color-accent); }
+.ftype-btn.selected { border-color: var(--color-accent); background: var(--color-surface); }
+.ftype-desc { font-size: 10px; color: var(--color-text-muted); }
 
 /* Add folder button */
 .add-folder-btn {

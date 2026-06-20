@@ -73,6 +73,33 @@ def test_series_shares_characters_across_projects(isolated_app):
     assert chars_b[0]["appearance"] == "银发"
 
 
+def test_series_shares_portraits_across_projects(isolated_app):
+    """同系列共用【立绘】：A 给角色加立绘，B 立即在同一角色下看到该立绘并可取回文件。"""
+    import base64
+    client = isolated_app["client"]
+    sid = client.post("/api/series", json={"name": "连载立绘"}).json()["id"]
+    a = client.post("/api/projects", json={"name": "A集", "series_id": sid}).json()["id"]
+    b = client.post("/api/projects", json={"name": "B集", "series_id": sid}).json()["id"]
+
+    # A 建角色 + 传一张立绘（1x1 PNG）
+    client.put(f"/api/projects/{a}/characters", json={"characters": [{"name": "小明"}]})
+    png = base64.b64encode(bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+        "890000000a49444154789c6360000002000100ffff03000006000557bfabd400"
+        "00000049454e44ae426082")).decode()
+    up = client.post(f"/api/projects/{a}/characters/小明/portraits",
+                     json={"data": png, "set_primary": True})
+    assert up.status_code == 200, up.text
+    fn = up.json()["filename"]
+
+    # B 在同一角色下看到该立绘（共享池）
+    plist = client.get(f"/api/projects/{b}/characters/小明/portraits").json()["portraits"]
+    assert [p["filename"] for p in plist] == [fn]
+    # B 也能取回立绘文件本体
+    assert client.get(
+        f"/api/projects/{b}/characters/小明/portraits/file/{fn}").status_code == 200
+
+
 def test_series_delete_blocked_when_projects_exist(isolated_app):
     client = isolated_app["client"]
     sid = client.post("/api/series", json={"name": "连载C"}).json()["id"]
