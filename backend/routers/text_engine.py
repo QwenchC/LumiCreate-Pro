@@ -691,8 +691,9 @@ def _describe_ref(ref: dict, *, project_id: str = "") -> dict:
         appearance = ""
         if pid and char_name:
             try:
-                from routers.projects import _project_dir
-                cj_path = _project_dir(pid) / "characters.json"
+                # v1.6.2: 系列项目 characters.json 在系列共享目录 → 用 _character_base
+                from routers.projects import _character_base
+                cj_path = _character_base(pid) / "characters.json"
                 if cj_path.exists():
                     cj = json.loads(cj_path.read_text(encoding="utf-8-sig"))
                     for c in cj.get("characters") or []:

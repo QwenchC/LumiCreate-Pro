@@ -100,6 +100,31 @@ def test_series_shares_portraits_across_projects(isolated_app):
         f"/api/projects/{b}/characters/小明/portraits/file/{fn}").status_code == 200
 
 
+def test_series_portrait_i2i_ref_resolves_to_shared_dir(isolated_app):
+    """回归：系列各集做 i2i 立绘参考时，引用解析须指向系列共享目录（不再 404）。
+    （image_engine._resolve_ref_paths 早期硬编码项目目录，系列项目会 404。）"""
+    import base64
+    from pathlib import Path
+    from routers.image_engine import _resolve_ref_paths
+    client = isolated_app["client"]
+    sid = client.post("/api/series", json={"name": "连载参考"}).json()["id"]
+    a = client.post("/api/projects", json={"name": "A集", "series_id": sid}).json()["id"]
+    b = client.post("/api/projects", json={"name": "B集", "series_id": sid}).json()["id"]
+    client.put(f"/api/projects/{a}/characters", json={"characters": [{"name": "小红"}]})
+    png = base64.b64encode(bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+        "890000000a49444154789c6360000002000100ffff03000006000557bfabd400"
+        "00000049454e44ae426082")).decode()
+    fn = client.post(f"/api/projects/{a}/characters/小红/portraits",
+                     json={"data": png, "set_primary": True}).json()["filename"]
+    # B 集用同角色立绘做参考：解析成功且指向系列共享目录
+    paths = _resolve_ref_paths([{"kind": "portrait", "project_id": b,
+                                  "char_name": "小红", "filename": fn}])
+    assert len(paths) == 1
+    assert "_series" in paths[0].replace("\\", "/")
+    assert Path(paths[0]).is_file()
+
+
 def test_series_shares_elements_across_projects(isolated_app):
     """同系列共用【项目级元素库】：A 上传元素，B 立即在自己的元素库里看到。"""
     import base64

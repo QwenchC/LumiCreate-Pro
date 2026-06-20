@@ -236,9 +236,11 @@ def _resolve_ref_paths(refs: list) -> list[str]:
             fn = r.get("filename") or ""
             if not (pid and cn and fn):
                 raise HTTPException(400, detail=f"portrait ref 缺字段: {r}")
-            from routers.projects import _safe_character_dirname
+            # v1.6.2: 系列项目立绘存于系列共享目录 → 经 _character_base 重定向，
+            # 否则系列各集做 i2i 立绘参考会 404（共享角色一致性的核心路径）。
+            from routers.projects import _safe_character_dirname, _character_base
             safe_cn = _safe_character_dirname(cn)
-            p = _P(s.projects_dir) / pid / "characters" / safe_cn / fn
+            p = _character_base(pid) / "characters" / safe_cn / fn
             if not p.is_file():
                 raise HTTPException(404, detail=f"角色立绘文件不存在: {p}")
             out.append(str(p))

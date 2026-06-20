@@ -98,11 +98,13 @@ import { ref, reactive, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { useTabsStore } from '../stores/tabs'
+import { useProjectStore } from '../stores/projects'
 
 const API = 'http://127.0.0.1:18520/api'
 const route = useRoute()
 const router = useRouter()
 const tabsStore = useTabsStore()
+const projectStore = useProjectStore()
 
 const series   = reactive({ id: '', name: '', emoji: '📚' })
 const chapters = ref([])
@@ -113,19 +115,25 @@ const newDialog = reactive({ show: false, name: '', picked: [], creating: false,
 const sid = () => route.params.id
 
 async function load() {
+  // 系列元数据：仅当确实 404（系列不存在）才回首页；瞬时错误（后端重启/5xx/网络）
+  // 保留当前页，避免把用户误踢出存在的系列。
+  let s
   try {
-    const [s, ch, pr] = await Promise.all([
-      axios.get(`${API}/series/${sid()}`),
-      axios.get(`${API}/series/${sid()}/chapters`).catch(() => ({ data: { chapters: [] } })),
-      axios.get(`${API}/series/${sid()}/projects`).catch(() => ({ data: { projects: [] } })),
-    ])
-    series.id = s.data.id; series.name = s.data.name; series.emoji = s.data.emoji
-    chapters.value = ch.data.chapters || []
-    projects.value = pr.data.projects || []
+    s = await axios.get(`${API}/series/${sid()}`)
   } catch (e) {
-    // 系列不存在 → 回首页
-    router.replace('/')
+    if (e?.response?.status === 404) { router.replace('/'); return }
+    console.warn('加载系列失败（保留当前页，稍后重试）:', e?.message || e)
+    return
   }
+  series.id = s.data.id; series.name = s.data.name; series.emoji = s.data.emoji
+  try {
+    const ch = await axios.get(`${API}/series/${sid()}/chapters`)
+    chapters.value = ch.data.chapters || []
+  } catch (e) { console.warn('加载章节失败:', e?.message || e) }
+  try {
+    const pr = await axios.get(`${API}/series/${sid()}/projects`)
+    projects.value = pr.data.projects || []
+  } catch (e) { console.warn('加载系列项目失败:', e?.message || e) }
 }
 
 async function saveSeriesName() {
@@ -174,6 +182,7 @@ async function createSeriesProject() {
     })
     newDialog.show = false
     await load()            // 刷新本系列项目列表 + 章节 used_by 标注
+    try { await projectStore.fetchProjects() } catch {}  // 让主页项目列表也即时包含新集
     tabsStore.openTab(data.id, data.name)
   } catch (e) {
     newDialog.error = e?.response?.data?.detail || e.message || '创建失败'

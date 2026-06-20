@@ -528,6 +528,7 @@ async function submitFolderDialog() {
       const s = await r.json()
       await loadSeries()
       closeFolderDialog()
+      tabsStore.activeId = null   // 确保 RouterView 显示新系列专属页
       router.push(`/series/${s.id}`)
     } catch (e) {
       alert('创建系列失败: ' + (e?.message || e))
@@ -603,6 +604,7 @@ async function loadSeries() {
 }
 
 function openSeries(s) {
+  tabsStore.activeId = null   // 与 App.vue 一致：先停用项目标签，RouterView 才会显示系列页
   router.push(`/series/${s.id}`)
 }
 
