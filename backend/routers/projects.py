@@ -35,12 +35,17 @@ class ProjectMeta(BaseModel):
     progress: ProjectProgress = ProjectProgress()
     has_final_video: bool = False
     folder_id: str = "default"
+    # v1.6.2: 系列连载 —— 归属的系列 id（空=独立项目）；创建时勾选的章节 id
+    series_id: str = ""
+    chapter_ids: list[str] = []
 
 
 class CreateProjectRequest(BaseModel):
     name: str
     description: str = ""
     folder_id: str = "default"
+    series_id: str = ""             # v1.6.2: 归入某系列 → 共用角色/元素/音乐
+    chapter_ids: list[str] = []     # v1.6.2: 从系列文案章节勾选导入
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -51,6 +56,26 @@ def _projects_root() -> Path:
 
 def _project_dir(project_id: str) -> Path:
     return _projects_root() / project_id
+
+
+def _series_dir_for(series_id: str) -> Path:
+    return _projects_root() / "_series" / series_id
+
+
+def _character_base(project_id: str) -> Path:
+    """v1.6.2: 角色/立绘的存储根。项目归属系列 → 用系列共享池（实时共享，所有集数一致）；
+    否则用项目自己的目录。其余项目资源（分镜/图片/音频/视频）仍各项目独立。"""
+    try:
+        meta_file = _project_dir(project_id) / "project.json"
+        if meta_file.exists():
+            sid = json.loads(meta_file.read_text(encoding="utf-8-sig")).get("series_id") or ""
+            if sid:
+                d = _series_dir_for(sid)
+                if d.exists():
+                    return d
+    except Exception:
+        pass
+    return _project_dir(project_id)
 
 
 def _read_meta(project_id: str) -> ProjectMeta:
@@ -93,11 +118,31 @@ async def create_project(req: CreateProjectRequest):
     now = datetime.now(timezone.utc).isoformat()
     project_id = f"proj_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
     meta = ProjectMeta(id=project_id, name=req.name, description=req.description,
-                       created_at=now, updated_at=now, folder_id=req.folder_id)
+                       created_at=now, updated_at=now, folder_id=req.folder_id,
+                       series_id=req.series_id or "",
+                       chapter_ids=list(req.chapter_ids or []))
     _write_meta(meta)
     # Create subdirectories
     for sub in ("images", "audio", "video", "cache"):
         (_project_dir(project_id) / sub).mkdir(parents=True, exist_ok=True)
+
+    # v1.6.2: 归入系列 + 勾选章节 → 把章节文案导入本项目 manuscript.md（按章节顺序拼接）
+    if req.series_id and req.chapter_ids:
+        try:
+            ch_path = _series_dir_for(req.series_id) / "chapters.json"
+            chapters = json.loads(ch_path.read_text(encoding="utf-8-sig")) if ch_path.exists() else []
+            by_id = {c.get("id"): c for c in chapters if isinstance(c, dict)}
+            parts = []
+            for cid in req.chapter_ids:                 # 保持用户勾选/章节顺序
+                c = by_id.get(cid)
+                if c and (c.get("content") or "").strip():
+                    title = (c.get("title") or "").strip()
+                    parts.append((f"# {title}\n\n" if title else "") + c["content"].strip())
+            if parts:
+                (_project_dir(project_id) / "manuscript.md").write_text(
+                    "\n\n".join(parts), encoding="utf-8")
+        except Exception as e:
+            print(f"[create_project] chapter import failed: {e}", flush=True)
     return meta
 
 
@@ -1163,7 +1208,7 @@ class CharactersData(BaseModel):
 @router.get("/{project_id}/characters")
 async def get_characters(project_id: str):
     _read_meta(project_id)
-    path = _project_dir(project_id) / "characters.json"
+    path = _character_base(project_id) / "characters.json"
     if not path.exists():
         # Fall back to characters stored in manuscript_config
         cfg_path = _project_dir(project_id) / "manuscript_config.json"
@@ -1233,11 +1278,11 @@ def _safe_character_dirname(name: str) -> str:
 
 
 def _characters_dir(project_id: str, char_name: str) -> Path:
-    return _project_dir(project_id) / "characters" / _safe_character_dirname(char_name)
+    return _character_base(project_id) / "characters" / _safe_character_dirname(char_name)
 
 
 def _load_characters_list(project_id: str) -> list[dict]:
-    path = _project_dir(project_id) / "characters.json"
+    path = _character_base(project_id) / "characters.json"
     if not path.exists():
         return []
     try:
@@ -1248,7 +1293,7 @@ def _load_characters_list(project_id: str) -> list[dict]:
 
 
 def _save_characters_list(project_id: str, chars: list[dict]) -> None:
-    (_project_dir(project_id) / "characters.json").write_text(
+    (_character_base(project_id) / "characters.json").write_text(
         json.dumps({"characters": chars}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )

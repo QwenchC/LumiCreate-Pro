@@ -116,6 +116,7 @@ def isolated_app(tmp_path, monkeypatch):
         "routers.sfx_engine",   # v1.4.8
         "routers.prompts_engine",   # v1.4.9
         "routers.settings",         # v1.4.11+ 文本平台 CRUD
+        "routers.series",           # v1.6.2 系列连载
     ):
         import sys as _sys
         mod = _sys.modules.get(modname)
