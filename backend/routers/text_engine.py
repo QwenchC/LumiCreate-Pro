@@ -21,6 +21,8 @@ from services.prompts import (
     SCENES_USER_TEMPLATE,
     CHARACTER_APPEARANCE_SYSTEM,
     CHARACTER_APPEARANCE_USER_TEMPLATE,
+    DERIVE_APPEARANCE_SYSTEM,
+    DERIVE_APPEARANCE_USER_TEMPLATE,
     SUGGEST_CHARS_SYSTEM,
     SUGGEST_CHARS_USER_TEMPLATE,
     CHARACTER_PROFILE_SYSTEM,
@@ -688,6 +690,8 @@ def _describe_ref(ref: dict, *, project_id: str = "") -> dict:
     if kind == "portrait":
         char_name = ref.get("char_name") or ""
         pid = ref.get("project_id") or project_id
+        app_id = (ref.get("appearance_id") or "").strip()
+        filename = ref.get("filename") or ""
         appearance = ""
         if pid and char_name:
             try:
@@ -697,9 +701,23 @@ def _describe_ref(ref: dict, *, project_id: str = "") -> dict:
                 if cj_path.exists():
                     cj = json.loads(cj_path.read_text(encoding="utf-8-sig"))
                     for c in cj.get("characters") or []:
-                        if (c.get("name") or "").strip() == char_name:
-                            appearance = (c.get("appearance") or "").strip()
-                            break
+                        if (c.get("name") or "").strip() != char_name:
+                            continue
+                        apps = c.get("appearances") or []
+                        # v1.6.3: ref 未带 appearance_id 时，按 filename 反查该立绘所属外观
+                        if not app_id and filename:
+                            for p in (c.get("portraits") or []):
+                                if p.get("filename") == filename:
+                                    app_id = (p.get("appearance_id") or "").strip()
+                                    break
+                        chosen = None
+                        if app_id:
+                            chosen = next((a for a in apps if a.get("id") == app_id), None)
+                        if chosen is None:
+                            chosen = next((a for a in apps if a.get("is_default")), None)
+                        appearance = ((chosen or {}).get("text") or "").strip() \
+                            or (c.get("appearance") or "").strip()
+                        break
             except Exception:
                 pass
         return {
@@ -721,7 +739,7 @@ def _describe_ref(ref: dict, *, project_id: str = "") -> dict:
                 meta_prompt = (meta.get("prompt") if isinstance(meta, dict) else "") or ""
         except Exception:
             pass
-        desc = meta_prompt or f"reference element '{name}'" if name else "reference image"
+        desc = meta_prompt or (f"reference element '{name}'" if name else "reference image")
         return {
             "role": "element",
             "label": name or "element",
@@ -862,6 +880,41 @@ async def generate_character_appearance(req: GenerateCharacterAppearanceRequest)
     return StreamingResponse(
         sse_stream(),
         media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+class DeriveAppearanceRequest(BaseModel):
+    name:            str = ""
+    base_appearance: str = ""   # 常态外观提示词（身份基线）
+    variation:       str = ""   # 变体说明（与常态的不同点）
+
+
+@router.post("/derive-appearance")
+async def derive_appearance(req: DeriveAppearanceRequest):
+    """v1.6.3: 据「常态外观」+「变体说明」派生该角色某个变体外观的完整提示词，
+    尽量保留常态里的身份特征，按变体说明替换/新增服装姿态状态。SSE 流式。"""
+    if not req.variation.strip():
+        raise HTTPException(status_code=400, detail="请填写变体说明（这个外观与常态的不同点）")
+
+    user_msg = DERIVE_APPEARANCE_USER_TEMPLATE.format(
+        name=req.name.strip() or "（未命名）",
+        base_appearance=req.base_appearance.strip() or "（未提供常态外观，请据变体说明独立生成）",
+        variation=req.variation.strip(),
+    )
+    cfg = load_settings().text_engine
+
+    async def sse_stream():
+        try:
+            async for chunk in stream_chat(cfg, DERIVE_APPEARANCE_SYSTEM, user_msg):
+                yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        sse_stream(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 

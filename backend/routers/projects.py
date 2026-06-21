@@ -1264,12 +1264,16 @@ async def get_characters(project_id: str):
         if cfg_path.exists():
             cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
             chars = cfg.get("characters", [])
-            # Migrate: add empty appearance field if missing
+            # Migrate: add empty appearance field if missing + 多外观结构（v1.6.3）
             for c in chars:
                 c.setdefault("appearance", "")
+                _normalize_character(c)
             return {"characters": chars}
         return {"characters": []}
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    for c in (data.get("characters") or []):
+        _normalize_character(c)        # v1.6.3: 旧项目按需迁出多外观结构
+    return data
 
 
 @router.put("/{project_id}/characters")
@@ -1297,6 +1301,7 @@ async def save_characters(project_id: str, data: CharactersData):
             # 客户端没带 portraits → 保留磁盘上已有的（立绘不丢）
             if name in old_portraits:
                 c["portraits"] = old_portraits[name]
+        _normalize_character(c)         # v1.6.3: 规整多外观 + 同步 appearance=默认外观 + portraits 补 appearance_id
         merged.append(c)
     _save_characters_list(project_id, merged)
     return {"ok": True, "count": len(merged)}
@@ -1336,7 +1341,10 @@ def _load_characters_list(project_id: str) -> list[dict]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
-        return list(data.get("characters") or [])
+        chars = list(data.get("characters") or [])
+        for c in chars:
+            _normalize_character(c)
+        return chars
     except Exception:
         return []
 
@@ -1355,12 +1363,56 @@ def _find_character(chars: list[dict], name: str) -> Optional[dict]:
     return None
 
 
+def _normalize_character(c: dict) -> dict:
+    """v1.6.3: 把「单一 appearance」规整为「多外观」结构（幂等，读时调用，写时也调）。
+    - 确保 c['appearances'] = [{id, name, text, is_default}] 且恰有一个默认外观；
+      旧项目从单字段 appearance 迁出一个「常态」默认外观。
+    - 旧 portraits 缺 appearance_id 的归到默认外观。
+    - 同步 c['appearance'] = 默认外观 text（向后兼容所有读 appearance 的旧消费端 / 默认 fallback）。
+    """
+    if not isinstance(c, dict):
+        return c
+    apps = c.get("appearances")
+    if isinstance(apps, list):
+        # 防御：丢弃非 dict 的脏元素（外部/导入/损坏的 characters.json 可能混入 str/None 等）
+        apps = [a for a in apps if isinstance(a, dict)]
+    if not isinstance(apps, list) or not apps:
+        apps = [{
+            "id": "default", "name": "常态",
+            "text": (c.get("appearance") or "").strip(), "is_default": True,
+        }]
+        c["appearances"] = apps
+    else:
+        c["appearances"] = apps   # 回写已清洗（去脏元素）的列表
+        seen_default = False
+        for a in apps:
+            if not (a.get("id") or "").strip():
+                a["id"] = f"ap_{uuid.uuid4().hex[:8]}"
+            a.setdefault("name", "外观")
+            a.setdefault("text", "")
+            if a.get("is_default"):
+                if seen_default:
+                    a["is_default"] = False   # 只保留第一个默认
+                else:
+                    seen_default = True
+        if not seen_default:
+            apps[0]["is_default"] = True
+    default_app = next((a for a in apps if a.get("is_default")), apps[0])
+    default_id = default_app.get("id") or "default"
+    c["appearance"] = default_app.get("text") or ""
+    for p in (c.get("portraits") or []):
+        if isinstance(p, dict) and not (p.get("appearance_id") or "").strip():
+            p["appearance_id"] = default_id
+    return c
+
+
 class PortraitUploadRequest(BaseModel):
     data:          str             # base64 PNG (前端已生成的图)
     workflow_name: str = ""        # 来源工作流（记录用）
     prompt:        str = ""        # 生成时的 prompt（记录用）
-    set_primary:   bool = False    # 上传后立刻设为主立绘
+    set_primary:   bool = False    # 上传后立刻设为主立绘（仅在该外观内）
     white_bg:      bool = False     # v1.6: 纯白背景立绘（供 MSR 多图参考视频用）
+    appearance_id: str = "default"  # v1.6.3: 该立绘归属的外观（is_primary 按外观各自独立）
 
 
 from fastapi.responses import FileResponse  # noqa: E402
@@ -1393,8 +1445,12 @@ async def add_character_portrait(project_id: str, char_name: str,
         char = {"name": char_name, "role": "", "traits": "",
                 "appearance": "", "negative": "", "voice": "", "portraits": []}
         chars.append(char)
+    _normalize_character(char)               # 确保有 appearances + 默认外观
 
     char.setdefault("portraits", [])
+    app_id = (req.appearance_id or "default").strip() or "default"
+    # 该外观内的立绘子集（is_primary 在每个外观内各自独立）
+    same_app = [p for p in char["portraits"] if (p.get("appearance_id") or "default") == app_id]
     now = datetime.now(timezone.utc).isoformat()
     new_entry = {
         "filename":      filename,
@@ -1403,13 +1459,14 @@ async def add_character_portrait(project_id: str, char_name: str,
         "created_at":    now,
         "is_primary":    bool(req.set_primary),
         "white_bg":      bool(req.white_bg),   # v1.6: 纯白背景立绘标记
+        "appearance_id": app_id,                # v1.6.3
     }
-    # 若设主，把别的清掉
+    # 若设主，把【同外观】其它清掉
     if req.set_primary:
-        for p in char["portraits"]:
+        for p in same_app:
             p["is_primary"] = False
-    elif not any(p.get("is_primary") for p in char["portraits"]):
-        # 没有任何主图时第一张自动设主
+    elif not any(p.get("is_primary") for p in same_app):
+        # 该外观还没有主图 → 第一张自动设主
         new_entry["is_primary"] = True
     char["portraits"].append(new_entry)
     _save_characters_list(project_id, chars)
@@ -1420,6 +1477,7 @@ async def add_character_portrait(project_id: str, char_name: str,
         "file_path": rel,
         "url":       f"/api/projects/{project_id}/characters/{char_name}/portraits/file/{filename}",
         "is_primary": new_entry["is_primary"],
+        "appearance_id": app_id,
         "created_at": now,
     }
 
@@ -1460,11 +1518,14 @@ async def delete_character_portrait(project_id: str, char_name: str, filename: s
     char = _find_character(chars, char_name)
     if char is not None:
         before = char.get("portraits") or []
+        deleted = next((p for p in before if p.get("filename") == filename), None)
         after  = [p for p in before if p.get("filename") != filename]
-        # 若刚删的是主图且还剩别的，把剩下第一张提升为主图
-        if any(p.get("filename") == filename and p.get("is_primary") for p in before):
-            if after and not any(p.get("is_primary") for p in after):
-                after[0]["is_primary"] = True
+        # 若刚删的是主图，把【同外观】剩下的第一张提升为主图
+        if deleted and deleted.get("is_primary"):
+            app_id = deleted.get("appearance_id") or "default"
+            same_app = [p for p in after if (p.get("appearance_id") or "default") == app_id]
+            if same_app and not any(p.get("is_primary") for p in same_app):
+                same_app[0]["is_primary"] = True
         char["portraits"] = after
         _save_characters_list(project_id, chars)
 
@@ -1477,17 +1538,17 @@ async def set_primary_portrait(project_id: str, char_name: str, filename: str):
     char = _find_character(chars, char_name)
     if char is None or not (char.get("portraits") or []):
         raise HTTPException(status_code=404, detail="character or portraits not found")
-    found = False
-    for p in char["portraits"]:
-        if p.get("filename") == filename:
-            p["is_primary"] = True
-            found = True
-        else:
-            p["is_primary"] = False
-    if not found:
+    target = next((p for p in char["portraits"] if p.get("filename") == filename), None)
+    if target is None:
         raise HTTPException(status_code=404, detail="portrait not found")
+    # 设主仅在该立绘所属【外观】内生效（每外观各自有一张主图）
+    app_id = target.get("appearance_id") or "default"
+    for p in char["portraits"]:
+        if (p.get("appearance_id") or "default") != app_id:
+            continue
+        p["is_primary"] = (p.get("filename") == filename)
     _save_characters_list(project_id, chars)
-    return {"ok": True}
+    return {"ok": True, "appearance_id": app_id}
 
 
 @router.get("/{project_id}/characters/{char_name}/portraits/file/{filename}")

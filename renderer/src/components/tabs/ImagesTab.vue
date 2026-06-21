@@ -430,6 +430,20 @@
           <p v-if="!(activeScene._scene_characters || []).length" class="char-select-fallback text-muted">
             未选择角色时，生成提示词将不包含角色外观描述
           </p>
+          <!-- v1.6.3: 每角色外观（此分镜用哪个形象；仅在该角色有多个外观时出现） -->
+          <div v-if="sceneCharsWithLooks(activeScene).length" class="char-looks">
+            <span class="char-looks-title text-muted">🎭 本镜形象</span>
+            <div v-for="c in sceneCharsWithLooks(activeScene)" :key="c.name" class="char-look-row">
+              <span class="char-look-name truncate">{{ c.name }}</span>
+              <select class="input select-compact char-look-select"
+                      :value="effAppId(activeScene, c.name)"
+                      @change="setSceneLook(activeScene, c.name, $event.target.value)">
+                <option v-for="a in c.appearances" :key="a.id" :value="a.id">
+                  {{ a.name || '外观' }}{{ a.is_default ? '（常态）' : '' }}
+                </option>
+              </select>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -611,6 +625,56 @@ function toggleSceneChar(scene, charName) {
   emit('dirty')
 }
 
+// ── v1.6.3: 每分镜每角色「外观」选择 ──────────────────────────────────────────────
+function _charByName(name) { return (characters.value || []).find(c => c.name === name) }
+function _appsOf(c) { return (c && Array.isArray(c.appearances) && c.appearances.length) ? c.appearances : null }
+function _defAppId(c) {
+  const apps = _appsOf(c); if (!apps) return 'default'
+  return (apps.find(a => a.is_default) || apps[0]).id
+}
+function sceneLook(scene, charName) {
+  return (scene && scene._scene_character_looks && scene._scene_character_looks[charName]) || ''
+}
+function setSceneLook(scene, charName, appId) {
+  if (!scene._scene_character_looks) scene._scene_character_looks = {}
+  const def = _defAppId(_charByName(charName))
+  if (!appId || appId === def) delete scene._scene_character_looks[charName]   // 默认不落键，保持精简
+  else scene._scene_character_looks[charName] = appId
+  emit('dirty')
+  saveScenes()    // v1.6.3: 立即落盘（同 onRefPicked），否则切走再切回 onActivated 重拉会覆盖丢失
+}
+function effAppId(scene, charName) {
+  const c = _charByName(charName)
+  const apps = _appsOf(c)
+  const sel = sceneLook(scene, charName)
+  if (sel && apps && apps.some(a => a.id === sel)) return sel
+  return _defAppId(c)
+}
+function appTextFor(c, appId) {
+  const apps = _appsOf(c)
+  if (apps) {
+    const a = apps.find(x => x.id === appId) || apps.find(x => x.is_default) || apps[0]
+    if (a) return (a.text || '').trim()
+  }
+  return (c?.appearance || '').trim()
+}
+// 该分镜该角色的有效外观文本
+function sceneCharText(scene, c) { return appTextFor(c, effAppId(scene, c.name)) }
+// 出镜且 >1 外观的角色（用于显示外观下拉）
+function sceneCharsWithLooks(scene) {
+  const names = scene?._scene_characters || []
+  return (characters.value || []).filter(c => names.includes(c.name) && (_appsOf(c) || []).length > 1)
+}
+// 发给后端的角色对象：appearance 换成所选外观文本，并带 appearance_id
+function sceneCharsForBackend(scene) {
+  const names = scene?._scene_characters || []
+  return (characters.value || []).filter(c => names.includes(c.name)).map(c => {
+    const appId = effAppId(scene, c.name)
+    return { name: c.name, role: c.role || '', traits: c.traits || '',
+             appearance: appTextFor(c, appId), appearance_id: appId }
+  })
+}
+
 async function suggestChars(scene) {
   if (!scene || suggestingChars.value) return
   suggestingChars.value = true
@@ -676,7 +740,7 @@ function openIdeogramBuilder(scene, frameType) {
   ideogramSceneHint.value = scene.description || ''
   const names = scene._scene_characters || []
   ideogramSceneChars.value = names.length
-    ? characters.value.filter(c => names.includes(c.name))
+    ? sceneCharsForBackend(scene)        // v1.6.3: 带该分镜所选外观文本
     : []
   ideogramBuilderOpen.value = true
 }
@@ -1082,12 +1146,15 @@ onActivated(async () => {
       if (old) {
         ns._selected_start = old._selected_start ?? 0
         ns._selected_end   = old._selected_end   ?? 0
+        // v1.6.3 防御：服务器快照若尚不含本地刚选的「本镜形象」，保留内存值，避免被旧快照覆盖
+        if (old._scene_character_looks && !ns._scene_character_looks)
+          ns._scene_character_looks = old._scene_character_looks
       }
     }
     scenes.value = fresh
   } catch {}
 })
-function _onGlobalSave(e) { if (e?.detail?.projectId && e.detail.projectId !== props.projectId) return; saveImages() }
+function _onGlobalSave(e) { if (e?.detail?.projectId && e.detail.projectId !== props.projectId) return; saveImages(); saveScenes() }
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
   window.removeEventListener('lumi:save-project', _onGlobalSave)
@@ -1124,8 +1191,8 @@ async function generateSceneSlots(scene, { skipExisting = false } = {}) {
     selectedNames.length === 0 ? false : selectedNames.includes(c.name)
   )
   const charPrefix = sceneChars
-    .filter(c => c.appearance)
-    .map(c => c.appearance.trim())
+    .map(c => sceneCharText(scene, c))     // v1.6.3: 该分镜所选外观的文本
+    .filter(Boolean)
     .join(', ')
 
   const _buildPrompt = (rawPrompt) => {
@@ -1346,8 +1413,9 @@ function _buildFramePrompt(scene, frameType, rawPrompt) {
   }
   const selectedNames = scene._scene_characters || []
   const charPrefix = characters.value
-    .filter(c => selectedNames.includes(c.name) && c.appearance)
-    .map(c => c.appearance.trim()).join(', ')
+    .filter(c => selectedNames.includes(c.name))
+    .map(c => sceneCharText(scene, c))     // v1.6.3: 该分镜所选外观
+    .filter(Boolean).join(', ')
   return [effectiveStyle.value, charPrefix, rawPrompt].filter(Boolean).join(', ')
 }
 
@@ -1509,9 +1577,7 @@ async function regenPromptOnly(scene, frameType) {
   regenPromptingId.value = key
   try {
     const isBg = frameType === 'bg'
-    const selected = scene._scene_characters || []
-    const allChars = characters.value || []
-    const chars = isBg ? [] : allChars.filter(c => selected.includes(c.name))
+    const chars = isBg ? [] : sceneCharsForBackend(scene)   // v1.6.3: 带所选外观文本 + appearance_id
 
     // v1.6: 背景图走【专用无角色端点】—— LLM 被强约束只描述空场景、彻底排除人物
     if (isBg) {
@@ -1871,6 +1937,12 @@ async function addOneMore(scene, frameType) {
   color: var(--color-accent, var(--accent)); font-weight: 600;
 }
 .char-select-fallback { font-size: 11px; margin: 0; }
+/* v1.6.3: 每分镜每角色外观选择 */
+.char-looks { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--color-border, var(--border)); display: flex; flex-direction: column; gap: 4px; }
+.char-looks-title { font-size: 11px; }
+.char-look-row { display: flex; align-items: center; gap: 8px; }
+.char-look-name { font-size: 12px; min-width: 64px; flex-shrink: 0; }
+.char-look-select { flex: 1; max-width: 240px; height: 26px; font-size: 12px; }
 .detail-header {
   display: flex; flex-direction: column; gap: 8px;
   padding: 10px 14px; background: var(--bg-input);

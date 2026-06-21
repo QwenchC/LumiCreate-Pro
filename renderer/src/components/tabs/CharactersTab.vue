@@ -73,25 +73,56 @@
           </div>
           <div class="form-group">
             <div class="label-row">
-              <label class="label-em">✨ 外观描述（英文，注入图片提示词）</label>
-              <button
-                class="btn btn-secondary btn-xs gen-appearance-btn"
-                :disabled="!!char._generating"
-                @click="generateAppearance(i)"
-                title="使用AI根据角色信息生成外观描述"
-              >
-                <span v-if="char._generating">⏳ 生成中…</span>
-                <span v-else>✨ AI 生成</span>
-              </button>
+              <label class="label-em">✨ 外观形象（每个外观一组提示词 + 立绘）</label>
+              <span class="text-muted" style="font-size:11px;margin-left:auto">
+                图片/视频生成页可按分镜切换某角色用哪个外观
+              </span>
             </div>
-            <textarea
-              v-model="char.appearance"
-              class="input textarea appearance-input"
-              rows="3"
-              placeholder="e.g. tall young woman, long silver hair, red eyes, white school uniform, slender figure, delicate face"
-              @input="markDirty"
-            />
-            <p class="field-hint">⚠ 此字段将逐字插入每张图片的提示词，请用英文逗号分隔标签。</p>
+            <!-- 外观标签条 -->
+            <div class="appearance-tabs">
+              <button v-for="a in (char.appearances || [])" :key="a.id"
+                      class="appearance-tab" :class="{ active: activeAppId(char) === a.id }"
+                      @click="setActiveApp(char, a.id)"
+                      :title="a.is_default ? '默认（常态）外观' : '变体外观'">
+                <span v-if="a.is_default" class="ap-star">★</span>{{ a.name || '外观' }}
+              </button>
+              <button class="appearance-tab add" @click="addAppearance(char)"
+                      title="新增一个外观/形象（如卧床、战损、不同服装）">＋ 外观</button>
+            </div>
+            <!-- 当前外观编辑 -->
+            <div v-for="a in [activeApp(char)]" :key="a && a.id">
+              <div v-if="a" class="appearance-edit">
+                <div class="appearance-edit-head">
+                  <input class="input appearance-name-input" v-model="a.name"
+                         placeholder="外观名（常态/卧床/战损…）" @input="markDirty" />
+                  <button class="btn btn-secondary btn-xs" :disabled="a.is_default"
+                          @click="setDefaultAppearance(char, a)"
+                          :title="a.is_default ? '已是默认（常态）' : '设为默认（常态）'">
+                    {{ a.is_default ? '★ 默认' : '设为默认' }}
+                  </button>
+                  <button class="btn btn-secondary btn-xs gen-appearance-btn"
+                          :disabled="!!char._generating" @click="generateAppearance(i)"
+                          title="据角色姓名/性格 AI 生成外观描述">
+                    <span v-if="char._generating">⏳</span><span v-else>✨ AI 生成</span>
+                  </button>
+                  <button v-if="!a.is_default" class="btn btn-secondary btn-xs"
+                          @click="openDeriveDialog(char, a)"
+                          title="据「常态外观」+一句变体说明，AI 派生此外观完整提示词（保持身份一致）">
+                    ✨ 据常态生成
+                  </button>
+                  <button v-if="!a.is_default && (char.appearances || []).length > 1"
+                          class="btn btn-ghost btn-xs ap-del" @click="deleteAppearance(char, a)"
+                          title="删除此外观（含其立绘）">🗑</button>
+                </div>
+                <textarea v-model="a.text" class="input textarea appearance-input" rows="3"
+                          placeholder="e.g. tall young woman, long silver hair, red eyes, white school uniform, slender figure"
+                          @input="markDirty" />
+                <p class="field-hint">
+                  ⚠ 该外观提示词逐字插入图片/视频提示词（英文逗号分隔）。
+                  <span v-if="!a.is_default">非默认外观建议用「据常态生成」以保留角色身份一致性。</span>
+                </p>
+              </div>
+            </div>
           </div>
           <div class="form-group">
             <label>负面描述（Negative，可选）</label>
@@ -129,7 +160,7 @@
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
               <label style="margin:0">🎨 立绘</label>
               <span class="text-muted" style="font-size:11px">
-                角色一致性参考；主立绘 ★ 用作后续图生图的默认参考
+                当前外观「{{ activeApp(char) && activeApp(char).name || '常态' }}」的立绘；主图 ★ 作该外观图生图默认参考
               </span>
               <button class="btn btn-secondary btn-xs" style="margin-left:auto"
                       :disabled="!char.name?.trim()"
@@ -138,13 +169,13 @@
               </button>
               <button class="btn btn-secondary btn-xs"
                       :disabled="!char.name?.trim() || char._uploadingPortrait"
-                      title="从本地选择图片作为立绘"
+                      title="从本地选择图片作为当前外观的立绘"
                       @click="triggerPortraitUpload(char)">
                 {{ char._uploadingPortrait ? '上传中…' : '⬆ 上传立绘' }}
               </button>
             </div>
-            <div class="portraits-row" v-if="(char._portraits || []).length">
-              <div v-for="p in char._portraits" :key="p.filename"
+            <div class="portraits-row" v-if="activePortraits(char).length">
+              <div v-for="p in activePortraits(char)" :key="p.filename"
                    class="portrait-card"
                    :class="{ primary: p.is_primary }"
                    @click="openPortraitPreview(char, p)"
@@ -165,7 +196,7 @@
               </div>
             </div>
             <p v-else class="text-muted" style="font-size:11px;margin:4px 0 0">
-              暂无立绘 — 点上方"🎨 生成立绘"建立第一张
+              该外观暂无立绘 — 点上方"🎨 生成立绘"或"⬆ 上传立绘"建立第一张
             </p>
           </div>
         </div>
@@ -175,6 +206,31 @@
       <!-- v1.6.2: 立绘本地上传用的隐藏 file input（全局一个，点按钮时记录目标角色） -->
       <input ref="portraitUploadInput" type="file" accept="image/*"
              style="display:none" @change="onPortraitFilePicked" />
+
+      <!-- v1.6.3: 据常态派生变体外观 -->
+      <Teleport to="body">
+        <div v-if="deriveDialog.show" class="overlay" @click.self="!deriveDialog.running && (deriveDialog.show = false)">
+          <div class="dialog card" style="width:560px;max-width:calc(100vw - 40px)">
+            <h3 class="dialog-title">✨ 据常态生成外观「{{ deriveDialog.app && deriveDialog.app.name }}」</h3>
+            <div class="form-group">
+              <label>常态外观（身份基线，自动带入）</label>
+              <textarea class="input textarea" rows="2" :value="deriveBaseText" readonly
+                        style="opacity:.75"></textarea>
+            </div>
+            <div class="form-group">
+              <label>变体说明 <span class="required">*</span>（这个外观与常态的不同点）</label>
+              <input class="input" v-model="deriveDialog.variation" :disabled="deriveDialog.running"
+                     placeholder="如：闭眼盖被躺在床上、换睡衣 / 战损、衣衫破损带伤" @keyup.enter="runDerive" />
+              <p class="field-hint">AI 会保留常态里的身份特征（发色/五官/体型…），按说明替换/新增服装姿态状态。</p>
+            </div>
+            <div class="dialog-actions">
+              <button class="btn btn-primary" :disabled="deriveDialog.running || !deriveDialog.variation.trim()"
+                      @click="runDerive">{{ deriveDialog.running ? '生成中…' : '生成并填入' }}</button>
+              <button class="btn btn-ghost" :disabled="deriveDialog.running" @click="deriveDialog.show = false">取消</button>
+            </div>
+          </div>
+        </div>
+      </Teleport>
     </div>
 
     <!-- Status -->
@@ -361,7 +417,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { filterVoices, groupByGender } from '../../data/msedgeVoices'
 
 const props = defineProps({ projectId: String })
@@ -372,6 +428,110 @@ const API = 'http://127.0.0.1:18520/api'
 const characters = ref([])
 const isDirty  = ref(false)
 const saving   = ref(false)
+
+// ── v1.6.3: 多外观（appearances）─────────────────────────────────────────────────
+function _genAppId() { return 'ap_' + Math.random().toString(36).slice(2, 10) }
+function defaultApp(char) {
+  const apps = char?.appearances || []
+  return apps.find(a => a.is_default) || apps[0] || null
+}
+function activeApp(char) {
+  const apps = char?.appearances || []
+  return apps.find(a => a.id === char._activeAppearance) || defaultApp(char)
+}
+function activeAppId(char) { return activeApp(char)?.id || 'default' }
+function setActiveApp(char, id) { char._activeAppearance = id }
+function activePortraits(char) {
+  const aid = activeAppId(char)
+  return (char._portraits || []).filter(p => (p.appearance_id || 'default') === aid)
+}
+function _syncDefaultAppearance(char) {
+  const d = defaultApp(char)
+  char.appearance = d ? (d.text || '') : ''
+}
+function addAppearance(char) {
+  if (!Array.isArray(char.appearances)) char.appearances = []
+  const a = { id: _genAppId(), name: `外观${char.appearances.length + 1}`, text: '',
+              is_default: char.appearances.length === 0 }
+  char.appearances.push(a)
+  char._activeAppearance = a.id
+  markDirty()
+}
+function setDefaultAppearance(char, a) {
+  for (const x of (char.appearances || [])) x.is_default = (x.id === a.id)
+  _syncDefaultAppearance(char)
+  markDirty()
+}
+async function deleteAppearance(char, a) {
+  if (a.is_default) { showStatus('默认外观不可删除（可先把别的设为默认）', 'warn'); return }
+  const ps = (char._portraits || []).filter(p => (p.appearance_id || 'default') === a.id)
+  if (!confirm(`删除外观「${a.name || '未命名'}」？` + (ps.length ? `（含 ${ps.length} 张立绘）` : ''))) return
+  // 先删该外观的立绘（避免孤儿引用），再移除外观，再保存持久化
+  for (const p of ps) {
+    try {
+      await fetch(`${API}/projects/${props.projectId}/characters/${encodeURIComponent(char.name)}/portraits/${p.filename}`,
+                  { method: 'DELETE' })
+    } catch {}
+  }
+  char.appearances = (char.appearances || []).filter(x => x.id !== a.id)
+  if (char._activeAppearance === a.id) char._activeAppearance = activeAppId(char)
+  await loadCharacterPortraits(char)
+  markDirty()
+  await save()
+}
+
+// 据常态派生变体外观
+const deriveDialog = reactive({ show: false, char: null, app: null, variation: '', running: false })
+const deriveBaseText = computed(() => (deriveDialog.char ? (defaultApp(deriveDialog.char)?.text || '') : ''))
+function openDeriveDialog(char, a) {
+  deriveDialog.char = char; deriveDialog.app = a
+  deriveDialog.variation = ''; deriveDialog.running = false; deriveDialog.show = true
+}
+async function runDerive() {
+  const { char, app } = deriveDialog
+  if (!app || !deriveDialog.variation.trim() || deriveDialog.running) return
+  deriveDialog.running = true
+  try {
+    const res = await fetch(`${API}/text-engine/derive-appearance`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: char.name || '', base_appearance: deriveBaseText.value,
+        variation: deriveDialog.variation,
+      }),
+    })
+    if (!res.ok) throw new Error(await res.text())
+    let acc = ''
+    let streamErr = ''
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue
+        const raw = line.slice(5).trim()
+        if (raw === '[DONE]') break
+        let o; try { o = JSON.parse(raw) } catch { continue }   // 仅吞 JSON 解析（半包缓冲）
+        if (o.error) { streamErr = o.error; break }
+        if (o.text)  acc += o.text
+      }
+      if (streamErr) break
+    }
+    if (streamErr) { showStatus('生成失败: ' + streamErr, 'err'); return }  // 不写回、不误报成功
+    if (!acc.trim()) { showStatus('生成失败: 未取到结果', 'err'); return }
+    app.text = acc.trim()
+    _syncDefaultAppearance(char)
+    markDirty()
+    deriveDialog.show = false
+    showStatus('✓ 已据常态生成此外观', 'ok')
+  } catch (e) {
+    showStatus('生成失败: ' + (e.message || e), 'err')
+  } finally {
+    deriveDialog.running = false
+  }
+}
+
 const syncing  = ref(false)
 const statusMsg  = ref('')
 const statusType = ref('')
@@ -399,6 +559,8 @@ const portraitGenDialog = reactive({
   whiteBg: false,     // v1.6: 纯白背景立绘（供 MSR 多图参考视频）
   standardPose: false, // v1.6.1: 标准造型（Z-Image ControlNet 固定姿势 + 空白背景）
   poseOrientation: 'portrait', // v1.6.1: 姿势图朝向 'portrait'(竖幅)|'landscape'(横幅)
+  appearanceId: 'default',     // v1.6.3: 生成的立绘归属哪个外观
+  appearanceName: '常态',
   running: false, progress: '',
 })
 
@@ -462,15 +624,17 @@ function _imageFileToPngBase64(file) {
 
 function triggerPortraitUpload(char) {
   if (!char?.name?.trim()) { showStatus('请先填写角色名', 'warn'); return }
-  _portraitUploadTarget.value = char
+  // v1.6.3: 上传到「当前外观」
+  _portraitUploadTarget.value = { char, appearanceId: activeAppId(char) }
   portraitUploadInput.value?.click()
 }
 
 async function onPortraitFilePicked(ev) {
   const f = ev.target.files?.[0]
   ev.target.value = ''                       // 清空，允许再次选同一文件
-  const char = _portraitUploadTarget.value
+  const tgt = _portraitUploadTarget.value
   _portraitUploadTarget.value = null
+  const char = tgt?.char
   if (!f || !char) return
   if (!f.type?.startsWith('image/')) { showStatus('请选择图片文件', 'warn'); return }
   char._uploadingPortrait = true
@@ -484,8 +648,9 @@ async function onPortraitFilePicked(ev) {
           data: b64,
           workflow_name: '本地上传',
           prompt: `本地上传: ${f.name}`,
-          set_primary: false,    // 无主图时后端自动把第一张设为主图（与生成流程一致）
+          set_primary: false,    // 该外观无主图时后端自动把第一张设为主图（与生成流程一致）
           white_bg: false,
+          appearance_id: tgt.appearanceId || 'default',   // v1.6.3
         }),
       },
     )
@@ -504,8 +669,11 @@ async function openPortraitGen(char) {
   if (!t2iWorkflows.value.length) await loadT2iWorkflows()
   portraitGenDialog.charName = char.name
   portraitGenDialog.workflowName = t2iWorkflows.value[0] || ''
-  // 默认 prompt：拼接 appearance
-  const app = (char.appearance || '').trim()
+  // v1.6.3: 生成立绘作用于「当前外观」，提示词用该外观文本
+  const curApp = activeApp(char)
+  portraitGenDialog.appearanceId = curApp?.id || 'default'
+  portraitGenDialog.appearanceName = curApp?.name || '常态'
+  const app = (curApp?.text || char.appearance || '').trim()
   const base = 'character portrait, full body, neutral pose, plain background, masterpiece, best quality'
   portraitGenDialog.prompt = app ? `${app}, ${base}` : base
   // 从全局设置带入默认画风
@@ -533,6 +701,9 @@ async function runPortraitGen() {
   dlg.progress = '提交到 ComfyUI…'
   try {
     const ch = characters.value.find(c => c.name === dlg.charName)
+    // v1.6.3: 用「目标外观」的文本（而非角色单一 appearance）
+    const _app = (ch?.appearances || []).find(a => a.id === dlg.appearanceId)
+    const appText = (_app?.text || ch?.appearance || '').trim()
     const style = dlg.stylePreset === '__custom__'
       ? (dlg.customStyle || '').trim()
       : (dlg.stylePreset || '').trim()
@@ -550,14 +721,14 @@ async function runPortraitGen() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           // 只传角色真实外貌；空白背景/全身等由后端固定前缀承担（别把立绘模板 boilerplate 当外貌）
-          appearance: (ch?.appearance || '').trim(),
+          appearance: appText,
           style,
           orientation: dlg.poseOrientation,   // 竖幅/横幅姿势图 → 立绘比例
         }),
       })
       uploadWhiteBg  = true                       // 空白背景 → 标记白底（供 MSR 参考）
       uploadWorkflow = 'Z-Image-Turbo-ControlNet'
-      uploadPrompt   = `标准造型: ${[style, (ch?.appearance || '').trim()].filter(Boolean).join(', ')}`
+      uploadPrompt   = `标准造型: ${[style, appText].filter(Boolean).join(', ')}`
     } else {
       // v1.6: 纯白背景 → 先用文本 AI 引擎优化提示词（单人/全身/纯白背景）+ 取强力背景负面词
       let promptBody = dlg.prompt.trim()
@@ -567,7 +738,7 @@ async function runPortraitGen() {
         try {
           const wr = await fetch(`${API}/text-engine/optimize-white-bg-portrait`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ appearance: ch?.appearance || '', base_prompt: promptBody }),
+            body: JSON.stringify({ appearance: appText, base_prompt: promptBody }),
           })
           if (wr.ok) {
             const j = await wr.json()
@@ -633,8 +804,9 @@ async function runPortraitGen() {
           data: imageB64,
           workflow_name: uploadWorkflow,
           prompt: uploadPrompt,
-          set_primary: false,   // 让后端按"无主图时第一张默认主"逻辑处理
+          set_primary: false,   // 让后端按"该外观无主图时第一张默认主"逻辑处理
           white_bg: uploadWhiteBg,   // v1.6: 白底立绘标记（标准造型也是空白背景，供 MSR 多图参考）
+          appearance_id: dlg.appearanceId,   // v1.6.3: 归属外观
         }),
       },
     )
@@ -660,7 +832,12 @@ async function setPrimaryPortrait(char, p) {
       `${API}/projects/${props.projectId}/characters/${encodeURIComponent(char.name)}/portraits/${p.filename}/select`,
       { method: 'PUT' },
     )
-    for (const x of (char._portraits || [])) x.is_primary = (x.filename === p.filename)
+    // v1.6.3: 设主仅在该立绘所属外观内（与后端一致），不动其它外观的主图
+    const aid = p.appearance_id || 'default'
+    for (const x of (char._portraits || [])) {
+      if ((x.appearance_id || 'default') !== aid) continue
+      x.is_primary = (x.filename === p.filename)
+    }
   } catch (e) { alert('设为主立绘失败: ' + e.message) }
 }
 
@@ -735,6 +912,7 @@ async function loadImportProjectChars() {
     importProjectDialog.sourceChars = (d.characters || []).map(c => ({
       name: c.name || '', role: c.role || '', traits: c.traits || '',
       appearance: c.appearance || '', negative: c.negative || '', voice: c.voice || '',
+      appearances: Array.isArray(c.appearances) ? c.appearances : null,   // v1.6.3
     }))
     importProjectDialog.selectedIndices = importProjectDialog.sourceChars.map((_, i) => i)
   } catch {
@@ -760,10 +938,13 @@ async function doImportFromProject() {
       const ok = confirm(`角色「${src.name}」已存在，是否用导入数据覆盖？`)
       if (!ok) continue
       const existing = existingMap.get(key)
-      Object.assign(existing, { role: src.role, traits: src.traits, appearance: src.appearance, negative: src.negative })
+      const hy = _hydrateChar(src)
+      Object.assign(existing, { role: src.role, traits: src.traits, negative: src.negative,
+                                appearances: hy.appearances, appearance: hy.appearance,
+                                _activeAppearance: hy._activeAppearance })
       overwritten++
     } else {
-      characters.value.push({ ...src, _generating: false, _finding: false, _profiling: false })
+      characters.value.push(_hydrateChar(src))
       existingMap.set(key, characters.value[characters.value.length - 1])
       added++
     }
@@ -781,7 +962,26 @@ async function doImportFromProject() {
 function emptyChar() {
   return {
     name: '', role: '', traits: '', appearance: '', negative: '', voice: '',
+    appearances: [{ id: 'default', name: '常态', text: '', is_default: true }],
+    _activeAppearance: 'default',
+    _portraits: [],
     _generating: false, _finding: false, _profiling: false
+  }
+}
+
+// 后端 char → 前端 char（保证有 appearances + 默认外观 + 活动外观）
+function _hydrateChar(c) {
+  let apps = Array.isArray(c.appearances) && c.appearances.length
+    ? c.appearances.map(a => ({ id: a.id || _genAppId(), name: a.name || '外观',
+                                text: a.text || '', is_default: !!a.is_default }))
+    : [{ id: 'default', name: '常态', text: c.appearance || '', is_default: true }]
+  if (!apps.some(a => a.is_default)) apps[0].is_default = true
+  const def = apps.find(a => a.is_default) || apps[0]
+  return {
+    name: c.name || '', role: c.role || '', traits: c.traits || '',
+    appearance: def.text || '', negative: c.negative || '', voice: c.voice || '',
+    appearances: apps, _activeAppearance: def.id,
+    _portraits: [], _generating: false, _finding: false, _profiling: false,
   }
 }
 
@@ -808,18 +1008,7 @@ onMounted(async () => {
     const res = await fetch(`${API}/projects/${props.projectId}/characters`)
     if (res.ok) {
       const d = await res.json()
-      characters.value = (d.characters || []).map(c => ({
-        name: c.name || '',
-        role: c.role || '',
-        traits: c.traits || '',
-        appearance: c.appearance || '',
-        negative: c.negative || '',
-        voice: c.voice || '',
-        _portraits: [],          // 轮 4: 立绘缓存（按需懒加载）
-        _generating: false,
-        _finding: false,
-        _profiling: false,
-      }))
+      characters.value = (d.characters || []).map(_hydrateChar)
       // 异步并发拉每个角色的立绘列表
       for (const c of characters.value) {
         loadCharacterPortraits(c)
@@ -852,8 +1041,13 @@ async function generateAppearance(i) {
     showStatus('请先填写角色姓名或性格特征', 'warn')
     return
   }
+  const a = activeApp(char)          // v1.6.3: 写入当前外观
+  if (!a) return
   char._generating = true
-  char.appearance = ''
+  const existing = a.text || ''
+  a.text = ''
+  let gotAny = false
+  let streamErr = false
   try {
     const res = await fetch(`${API}/text-engine/generate-character-appearance`, {
       method: 'POST',
@@ -862,11 +1056,12 @@ async function generateAppearance(i) {
         name:     char.name,
         role:     char.role,
         traits:   char.traits,
-        existing: char.appearance,
+        existing,
       }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
+      a.text = existing                       // 还原用户原有提示词，避免静默清空
       showStatus(`生成失败: ${err.detail || res.status}`, 'err')
       return
     }
@@ -885,15 +1080,22 @@ async function generateAppearance(i) {
         if (raw === '[DONE]') break
         try {
           const obj = JSON.parse(raw)
-          if (obj.error) { showStatus(`生成失败: ${obj.error}`, 'err'); break }
-          if (obj.text)  { char.appearance += obj.text }
+          if (obj.error) { showStatus(`生成失败: ${obj.error}`, 'err'); streamErr = true; break }
+          if (obj.text)  { a.text += obj.text; gotAny = true }
         } catch {}
       }
+      if (streamErr) break
     }
-    char.appearance = char.appearance.trim()
+    if (streamErr && !gotAny) {
+      a.text = existing                       // 流报错且未追加任何内容：还原，不误报成功
+      return
+    }
+    a.text = (a.text || '').trim()
+    _syncDefaultAppearance(char)
     markDirty()
-    showStatus('✓ 外观描述已生成', 'ok')
+    if (!streamErr) showStatus('✓ 外观描述已生成', 'ok')
   } catch (e) {
+    if (!gotAny) a.text = existing            // 网络/解析异常且无内容：还原原文
     showStatus(`生成失败: ${e.message}`, 'err')
   } finally {
     char._generating = false
@@ -1036,15 +1238,15 @@ async function importFromManuscript() {
       const key = normalizeName(name)
       if (!key || existingSet.has(key)) continue
       existingSet.add(key)
-      toAdd.push({
+      // v1.6.3: 经 _hydrateChar 补 appearances/_activeAppearance，否则外观编辑器整段不渲染
+      toAdd.push(_hydrateChar({
         name,
         role: c.role || '',
         traits: c.traits || '',
         appearance: c.appearance || '',
         negative: c.negative || '',
         voice: c.voice || '',
-        _generating: false,
-      })
+      }))
     }
 
     if (!toAdd.length) {
@@ -1069,7 +1271,8 @@ async function save() {
     // v1.5.1: 不发送 _portraits（运行期缓存）/ portraits（由专用立绘端点维护）——
     // 后端 PUT 会按角色名保留磁盘上已有的 portraits，立绘不会被角色保存抹掉。
     const payload = characters.value.map(
-      ({ _generating, _finding, _profiling, _portraits, portraits, _uploadingPortrait, ...c }) => c
+      ({ _generating, _finding, _profiling, _portraits, portraits, _uploadingPortrait,
+         _activeAppearance, ...c }) => c
     )
     const res = await fetch(`${API}/projects/${props.projectId}/characters`, {
       method:  'PUT',
@@ -1182,6 +1385,23 @@ function showStatus(msg, type = '') {
 .gen-appearance-btn { font-size: 11px; padding: 2px 8px; height: 22px; white-space: nowrap; flex-shrink: 0; }
 .label-em { color: var(--color-accent) !important; font-weight: 600; }
 .appearance-input { font-family: monospace; font-size: 12px; line-height: 1.6; }
+
+/* v1.6.3: 多外观 */
+.appearance-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.appearance-tab {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 3px 10px; font-size: 12px; border-radius: 12px;
+  border: 1px solid var(--color-border); background: var(--color-surface-2);
+  color: var(--color-text-muted); cursor: pointer; white-space: nowrap;
+}
+.appearance-tab:hover { color: var(--color-text); }
+.appearance-tab.active { border-color: var(--color-accent); color: var(--color-accent); background: var(--color-surface); }
+.appearance-tab.add { border-style: dashed; }
+.appearance-tab .ap-star { color: #e6b800; }
+.appearance-edit { border: 1px solid var(--color-border); border-radius: 8px; padding: 8px; }
+.appearance-edit-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+.appearance-name-input { flex: 1; min-width: 120px; font-size: 13px; height: 26px; }
+.appearance-edit-head .ap-del { color: var(--color-error); padding: 2px 6px; }
 .field-hint { font-size: 11px; color: var(--color-warning); margin: 0; }
 
 .add-bottom { width: 100%; justify-content: center; margin-top: 4px; }

@@ -672,6 +672,21 @@
           </div>
         </div>
 
+        <!-- v1.6.3: 每角色「本镜形象」（该角色有多个外观时出现，影响提示词与立绘参考） -->
+        <div v-if="sceneCharsWithLooks(scene).length" class="char-looks">
+          <span class="char-looks-title text-muted">🎭 本镜形象</span>
+          <div v-for="c in sceneCharsWithLooks(scene)" :key="c.name" class="char-look-row">
+            <span class="char-look-name truncate">{{ c.name }}</span>
+            <select class="input char-look-select"
+                    :value="effAppId(scene, c.name)"
+                    @change="setSceneLook(scene, c.name, $event.target.value)">
+              <option v-for="a in c.appearances" :key="a.id" :value="a.id">
+                {{ a.name || '外观' }}{{ a.is_default ? '（常态）' : '' }}
+              </option>
+            </select>
+          </div>
+        </div>
+
         <!-- v1.6: MSR 多图参考视频（仅 LTX 模式 + 该镜有背景图时可启用） -->
         <div v-if="videoMode === 'ltx' && scene.hasBg" class="msr-scene-block">
           <label class="msr-toggle">
@@ -1525,19 +1540,87 @@ function setManualDuration(sceneId, val) {
 // 角色白底立绘 b64 缓存：charName → b64（'' 表示该角色无白底立绘）
 const _whiteBgCache = {}
 
-async function _whiteBgPortraitB64(charName) {
+// ── v1.6.3: 每分镜每角色「外观」选择（与 ImagesTab 同构，用 allCharacters）─────────────
+function _charByName(name) { return (allCharacters.value || []).find(c => c.name === name) }
+function _appsOf(c) { return (c && Array.isArray(c.appearances) && c.appearances.length) ? c.appearances : null }
+function _defAppId(c) {
+  const apps = _appsOf(c); if (!apps) return 'default'
+  return (apps.find(a => a.is_default) || apps[0]).id
+}
+// 详情面板渲染的是 scenesWithData 的【拷贝】；外观选择须写回 scenes.value 源对象才持久化/可读
+function _srcScene(scene) { return (scenes.value || []).find(s => s.id === scene.id) || scene }
+function sceneLook(scene, charName) {
+  const s = _srcScene(scene)
+  return (s && s._scene_character_looks && s._scene_character_looks[charName]) || ''
+}
+function setSceneLook(scene, charName, appId) {
+  const s = _srcScene(scene)
+  if (!s._scene_character_looks) s._scene_character_looks = {}
+  const def = _defAppId(_charByName(charName))
+  if (!appId || appId === def) delete s._scene_character_looks[charName]
+  else s._scene_character_looks[charName] = appId
+  // 外观变了 → 该角色白底立绘缓存失效（按 charName 前缀清）
+  for (const k of Object.keys(_whiteBgCache)) {
+    if (k === charName || k.startsWith(charName + ' ')) delete _whiteBgCache[k]
+  }
+  emit('dirty'); _scheduleSaveScenes()
+}
+function effAppId(scene, charName) {
+  const c = _charByName(charName)
+  const apps = _appsOf(c)
+  const sel = sceneLook(scene, charName)
+  if (sel && apps && apps.some(a => a.id === sel)) return sel
+  return _defAppId(c)
+}
+function appTextFor(c, appId) {
+  const apps = _appsOf(c)
+  if (apps) {
+    const a = apps.find(x => x.id === appId) || apps.find(x => x.is_default) || apps[0]
+    if (a) return (a.text || '').trim()
+  }
+  return (c?.appearance || c?.traits || '').trim()
+}
+function sceneCharsWithLooks(scene) {
+  const names = scene?._scene_characters || []
+  return (allCharacters.value || []).filter(c => names.includes(c.name) && (_appsOf(c) || []).length > 1)
+}
+// 发给后端的角色对象：appearance 换成该分镜所选外观文本 + 带 appearance_id
+function sceneCharsForBackend(scene) {
+  const names = scene?._scene_characters || []
+  return (allCharacters.value || []).filter(c => names.includes(c.name)).map(c => {
+    const appId = effAppId(scene, c.name)
+    return { name: c.name, role: c.role || '', traits: c.traits || '',
+             appearance: appTextFor(c, appId), appearance_id: appId }
+  })
+}
+// 持久化外观选择：把（除 _scene_character_looks 外原样不变的）scenes 写回 scenes.json（去抖）
+let _saveScenesTimer = null
+async function _saveScenes() {
+  if (!props.projectId) return
+  try { await axios.put(`${API}/projects/${props.projectId}/scenes`, { scenes: scenes.value }) } catch {}
+}
+function _scheduleSaveScenes() {
+  clearTimeout(_saveScenesTimer)
+  _saveScenesTimer = setTimeout(_saveScenes, 700)
+}
+
+async function _whiteBgPortraitB64(charName, appId = '') {
   if (!charName) return ''
-  if (charName in _whiteBgCache) return _whiteBgCache[charName]
+  const cacheKey = appId ? `${charName} ${appId}` : charName
+  if (cacheKey in _whiteBgCache) return _whiteBgCache[cacheKey]
   let b64 = ''
   try {
     const { data } = await axios.get(
       `${API}/projects/${props.projectId}/characters/${encodeURIComponent(charName)}/portraits`)
-    const list = (data && data.portraits) || []
+    let list = (data && data.portraits) || []
+    // v1.6.3: 严格限定到所选外观的立绘。该外观无白底立绘时返回 ''（_msrResolvedChars 据此把该角色
+    // 从提示词与参考图同时剔除，保持图文对齐），而非回退到别的外观的立绘造成图文不一致。
+    if (appId) list = list.filter(p => (p.appearance_id || 'default') === appId)
     // 优先「白底 + 主图」，否则任一白底
     const wb = list.find(p => p.white_bg && p.is_primary) || list.find(p => p.white_bg)
     if (wb && wb.url) b64 = await _srcToB64('http://localhost:18520' + wb.url)
   } catch {}
-  _whiteBgCache[charName] = b64
+  _whiteBgCache[cacheKey] = b64
   return b64
 }
 
@@ -1552,9 +1635,10 @@ async function _msrResolvedChars(s) {
   for (const n of names) {
     const c = byName[n]
     if (!c) continue
-    const b64 = await _whiteBgPortraitB64(n)
-    if (!b64) continue   // 无白底立绘 → 同时从提示词和参考图里排除，保持对齐
-    out.push({ name: c.name, appearance: c.appearance || c.traits || '', b64 })
+    const appId = effAppId(s, n)                          // v1.6.3: 该分镜所选外观
+    const b64 = await _whiteBgPortraitB64(n, appId)
+    if (!b64) continue   // 该外观无白底立绘 → 同时从提示词和参考图里排除，保持对齐
+    out.push({ name: c.name, appearance: appTextFor(c, appId) || c.traits || '', b64 })
   }
   return out
 }
@@ -1617,8 +1701,6 @@ async function genAllMsrPrompts() {
   msrPromptRunning.value = true
   msrPromptProgress.value = 0
   msrPromptTotal.value = targets.length
-  const sceneById = {}
-  targets.forEach(s => { sceneById[String(s.id)] = s })
   try {
     const bodies = await Promise.all(targets.map(_msrPromptBody))
     const resp = await fetch(`${API}/text-engine/generate-msr-video-prompts-batch`, {
@@ -2039,6 +2121,9 @@ async function refreshUpstream() {
     clearTimeout(_promptSaveTimer)
     try { await _savePrompts() } catch {}
   }
+  // v1.6.3: 覆盖 scenes.value 前先 flush 待写的「本镜形象」，否则被 GET 旧快照覆盖（lost update）
+  clearTimeout(_saveScenesTimer)
+  try { await _saveScenes() } catch {}
   try {
     const [scenesRes, imgRes, audRes] = await Promise.all([
       axios.get(`${API}/projects/${props.projectId}/scenes`),
@@ -2100,7 +2185,7 @@ function _anyGenBusy() {
 }
 
 onMounted(loadData)
-onUnmounted(() => { clearTimeout(_promptSaveTimer); _savePrompts(); _clearRedubPreview() })
+onUnmounted(() => { clearTimeout(_promptSaveTimer); _savePrompts(); clearTimeout(_saveScenesTimer); _saveScenes(); _clearRedubPreview() })
 
 // 内层 tab 切回视频页（ProjectView 的 <KeepAlive> → onActivated）：重读上游 + 视频文件。
 // 首次激活与 onMounted 重合（loadData 已读全量），跳过以免双拉。生成中不刷新以防打断/竞争。
@@ -2225,7 +2310,7 @@ function _buildPromptFallback(scene) {
 async function _fetchVideoPromptLLM(scene, abortSignal) {
   const sceneChars = (scene._scene_characters || [])
   const chars = sceneChars.length
-    ? allCharacters.value.filter(c => sceneChars.includes(c.name))
+    ? sceneCharsForBackend(scene)        // v1.6.3: 带该分镜所选外观文本
     : allCharacters.value
 
   const res = await fetch(`${API}/text-engine/generate-video-prompt`, {
@@ -2313,15 +2398,12 @@ async function generateAllPrompts() {
   _videoPromptAbort = new AbortController()
 
   const allScenes = scenesWithData.value
-  const allCharsByName = Object.fromEntries(
-    allCharacters.value.map(c => [c.name, c])
-  )
 
   // 组装每个 scene 的 payload（含 per-scene 角色子集）
   const scenePayloads = allScenes.map(s => {
     const selected = s._scene_characters || []
     const sceneChars = selected.length
-      ? selected.map(n => allCharsByName[n]).filter(Boolean)
+      ? sceneCharsForBackend(s)          // v1.6.3: 带该分镜所选外观文本
       : null
     return {
       scene_id:           String(s.id),
@@ -2786,6 +2868,12 @@ async function showMergedInFolder() {
 }
 .msr-toggle input { cursor: pointer; }
 .msr-hint { display: flex; gap: 6px; flex-wrap: wrap; }
+/* v1.6.3: 每分镜每角色外观选择 */
+.char-looks { margin: 8px 0; padding: 8px; border: 1px dashed var(--color-border, #333); border-radius: 8px; display: flex; flex-direction: column; gap: 4px; }
+.char-looks-title { font-size: 11px; }
+.char-look-row { display: flex; align-items: center; gap: 8px; }
+.char-look-name { font-size: 12px; min-width: 64px; flex-shrink: 0; }
+.char-look-select { flex: 1; max-width: 260px; height: 26px; font-size: 12px; }
 .msr-ref-tag {
   font-size: 11px; padding: 1px 8px; border-radius: 10px;
   border: 1px solid var(--color-border);
