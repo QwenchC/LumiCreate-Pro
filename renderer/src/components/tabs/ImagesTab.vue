@@ -1942,7 +1942,7 @@ async function addOneMore(scene, frameType) {
 .char-looks-title { font-size: 11px; }
 .char-look-row { display: flex; align-items: center; gap: 8px; }
 .char-look-name { font-size: 12px; min-width: 64px; flex-shrink: 0; }
-.char-look-select { flex: 1; max-width: 240px; height: 26px; font-size: 12px; }
+.char-look-select { flex: 1; max-width: 280px; min-height: 30px; font-size: 13px; line-height: 1.5; padding: 3px 8px; }
 .detail-header {
   display: flex; flex-direction: column; gap: 8px;
   padding: 10px 14px; background: var(--bg-input);

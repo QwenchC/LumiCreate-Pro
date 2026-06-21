@@ -605,19 +605,18 @@
                 {{ generatingVideoPromptId === scene.id ? '⏳ 生成中…' : '✦ 生成' }}
               </button>
               <button
-                v-if="scenePrompts[scene.id]"
                 class="btn btn-ghost btn-xs"
                 @click="togglePrompt(scene.id)"
-              >{{ promptVisible[scene.id] ? '收起' : '展开' }}</button>
+              >{{ promptVisible[scene.id] !== false ? '收起' : '展开' }}</button>
             </div>
           </div>
-          <div v-if="promptVisible[scene.id]" class="prompt-editor-wrap">
+          <div v-if="promptVisible[scene.id] !== false" class="prompt-editor-wrap">
             <textarea
               class="prompt-textarea"
               :value="scenePrompts[scene.id]"
               @input="onPromptInput(scene.id, $event.target.value)"
               placeholder="输入视频生成提示词，或点击「生成」自动填写…"
-              rows="3"
+              rows="5"
             />
           </div>
         </div>
@@ -2474,7 +2473,9 @@ async function generateAllPrompts() {
 }
 
 function togglePrompt(sceneId) {
-  promptVisible.value = { ...promptVisible.value, [sceneId]: !promptVisible.value[sceneId] }
+  // v1.6.3: 提示词框默认展开（undefined 视为展开）→ 取反时按 !== false 计算当前态
+  const cur = promptVisible.value[sceneId] !== false
+  promptVisible.value = { ...promptVisible.value, [sceneId]: !cur }
 }
 
 function onPromptInput(sceneId, value) {
@@ -2873,7 +2874,7 @@ async function showMergedInFolder() {
 .char-looks-title { font-size: 11px; }
 .char-look-row { display: flex; align-items: center; gap: 8px; }
 .char-look-name { font-size: 12px; min-width: 64px; flex-shrink: 0; }
-.char-look-select { flex: 1; max-width: 260px; height: 26px; font-size: 12px; }
+.char-look-select { flex: 1; max-width: 280px; min-height: 30px; font-size: 13px; line-height: 1.5; padding: 3px 8px; }
 .msr-ref-tag {
   font-size: 11px; padding: 1px 8px; border-radius: 10px;
   border: 1px solid var(--color-border);
@@ -3042,7 +3043,7 @@ async function showMergedInFolder() {
 .redub-param { display:flex; flex-direction:column; gap:2px; font-size:11px;
   color: var(--color-text-muted); }
 .redub-param > input { width:78px; padding:2px 6px; font-size:12px; }
-.video-player { width:100%; max-height:320px; border-radius:6px; background:#000; }
+.video-player { width:100%; max-height:460px; border-radius:6px; background:#000; }
 
 .empty-state {
   flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; opacity:.7;
@@ -3116,7 +3117,7 @@ async function showMergedInFolder() {
   background: var(--bg-tertiary);
   color: var(--text-primary);
   font-family: inherit;
-  min-height: 64px;
+  min-height: 104px;
 }
 .prompt-textarea:focus {
   outline: none;

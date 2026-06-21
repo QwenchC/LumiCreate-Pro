@@ -423,7 +423,12 @@ VIDEO_PROMPT_SYSTEM = (
     "- CHARACTERS: Include ONLY the characters explicitly listed in the Characters block. "
     "Do NOT introduce or mention any other character.\n"
     "- Use each character's name explicitly. NEVER use pronouns (he/she/they/him/her).\n"
-    "- Do NOT invent or repeat appearance tags \u2014 just name characters and describe their actions and expressions.\n\n"
+    "- Do NOT invent or repeat appearance tags \u2014 just name characters and describe their actions and expressions.\n"
+    "- TEMPORAL ORDER (important): Describe actions, the appearance of things, and movements in the ORDER THEY HAPPEN IN TIME. "
+    "Video models read the prompt roughly as a left-to-right timeline, so words placed earlier tend to render as happening first. "
+    "Without breaking logic, arrange clauses/sentences so the sequence of what appears or moves matches the actual chronology of the clip "
+    "(e.g. write 'Mia turns toward the door, the door slowly opens, then a figure steps through' \u2014 in that order). "
+    "Use ordering/time cues (first, then, as, after) to make the sequence explicit.\n\n"
     "OUTPUT: Plain English, 3\u20135 cinematic sentences. No style tags, no JSON, no markdown."
 )
 
@@ -596,7 +601,11 @@ MSR_VIDEO_PROMPT_SYSTEM = (
     "4. <外观> 必须沿用给定的角色外观原文，保持视觉特征不变，不要增删关键特征。\n"
     "5. 场景行用给定的“背景/场景描述”。\n"
     "6. 动作叙述 2–6 句，把给定台词逐字融入并保留引号，并加入合理的镜头运动（推近 / 拉远 / 跟拍 / 环绕 等）。\n"
-    "7. 只输出最终的中文提示词，不要解释、不要标题、不要 markdown、不要代码块。"
+    "7. 【时序一致 · 重要】动作叙述里事物的【出现顺序 / 运动先后】要与画面实际发生的时间先后尽量一致——"
+    "视频模型大致按提示词从前往后当作时间线读取，靠前的文字更容易被当成先发生。在不破坏逻辑的前提下，"
+    "把先发生的动作 / 先出现的事物写在前面、后发生的写在后面（如：先转身 → 再开门 → 再有人走进来），"
+    "可用“先…接着…随后…之后…”等时间词把先后讲清楚。\n"
+    "8. 只输出最终的中文提示词，不要解释、不要标题、不要 markdown、不要代码块。"
 )
 
 MSR_VIDEO_PROMPT_USER_TEMPLATE = (
